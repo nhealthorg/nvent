@@ -20,6 +20,7 @@ dump.rdb
 **/*.egg-info
 **/*.egg
 **/*.whl
+**/*.venv
 
 # Yarn
 **/.yarn/cache

@@ -715,3 +715,14 @@ yarn test
 ## 📄 License
 
 [MIT License](./LICENSE) - Copyright (c) DevJoghurt
+
+## 📢 Notice: iii Engine Integration and License
+
+This project integrates the iii engine (https://github.com/iii-hq/iii) for event-driven orchestration. The iii engine is licensed under the Elastic License 2.0 (ELv2):
+
+- You may use, modify, and redistribute the iii engine, including for commercial purposes.
+- You may NOT offer the iii engine as a managed service (SaaS) or as part of a competing service to Elastic.
+- You must include the original license and notices in any redistribution.
+- For most integration and internal/embedded use cases, ELv2 is permissive.
+
+See [engine/LICENSE](https://github.com/iii-hq/iii/blob/main/engine/LICENSE) for full terms.

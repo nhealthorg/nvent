@@ -10,7 +10,7 @@ services:
     restart: unless-stopped
   postgres:
     image: postgres:18.1
-    container_name: postgres
+    container_name: nvent-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
