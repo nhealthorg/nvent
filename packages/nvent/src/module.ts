@@ -60,8 +60,8 @@ export default defineNuxtModule<NventIiiOptions>().with({
 
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url)
-    const PYTHON_RUNTIME_SRC = resolve('./iii/python/worker_runtime.py')
-    const PYTHON_NVENT_HELPER_SRC = resolve('./iii/python/nvent.py')
+    const PYTHON_RUNTIME_SRC = resolve('./runtime/python/worker_runtime.py')
+    const PYTHON_NVENT_HELPER_SRC = resolve('./runtime/python/nvent.py')
 
     const userConfig = (nuxt.options as any)[meta.configKey] ?? {}
     const opts: NventIiiOptions = { ...userConfig, ...options }
