@@ -25,6 +25,7 @@
 
 import { useNitroApp } from '#imports'
 import { Logger } from 'iii-sdk'
+import { SpanStatusCode, withSpan } from 'iii-sdk/telemetry'
 
 /** Internal key used to propagate the stream channel through queue messages. */
 export const NVENT_STREAM_KEY = '__nventStream'
@@ -138,36 +139,150 @@ export class FunctionContext {
     this._streamGroupId = inheritedGroupId
     this.logger = new Logger(fnId, 'nvent') as unknown as ILogger
     this.state = {
-      get: (key) => _iii().trigger({ function_id: 'state::get', payload: { scope: fnId, key } }),
-      set: (key, value) => _iii().trigger({ function_id: 'state::set', payload: { scope: fnId, key, value } }) as Promise<{ new_value: unknown; old_value: unknown }>,
-      delete: (key) => _iii().trigger({ function_id: 'state::delete', payload: { scope: fnId, key } }) as Promise<void>,
-      update: (key, ops) => _iii().trigger({ function_id: 'state::update', payload: { scope: fnId, key, ops } }) as Promise<{ new_value: unknown; old_value: unknown }>,
-      list: () => _iii().trigger({ function_id: 'state::list', payload: { scope: fnId } }) as Promise<unknown[]>,
+      get: (key) => withSpan('state::get', {}, async (span) => {
+        span.setAttribute('nvent.state.scope', fnId)
+        span.setAttribute('nvent.state.key', key)
+        try {
+          return await _iii().trigger({ function_id: 'state::get', payload: { scope: fnId, key } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      set: (key, value) => withSpan('state::set', {}, async (span) => {
+        span.setAttribute('nvent.state.scope', fnId)
+        span.setAttribute('nvent.state.key', key)
+        try {
+          return await _iii().trigger({ function_id: 'state::set', payload: { scope: fnId, key, value } }) as { new_value: unknown; old_value: unknown }
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      delete: (key) => withSpan('state::delete', {}, async (span) => {
+        span.setAttribute('nvent.state.scope', fnId)
+        span.setAttribute('nvent.state.key', key)
+        try {
+          await _iii().trigger({ function_id: 'state::delete', payload: { scope: fnId, key } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      update: (key, ops) => withSpan('state::update', {}, async (span) => {
+        span.setAttribute('nvent.state.scope', fnId)
+        span.setAttribute('nvent.state.key', key)
+        try {
+          return await _iii().trigger({ function_id: 'state::update', payload: { scope: fnId, key, ops } }) as { new_value: unknown; old_value: unknown }
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      list: () => withSpan('state::list', {}, async (span) => {
+        span.setAttribute('nvent.state.scope', fnId)
+        try {
+          return await _iii().trigger({ function_id: 'state::list', payload: { scope: fnId } }) as unknown[]
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
     }
     this.stream = {
       subscription: () => {
         if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
         return { streamName: this._streamName, groupId: this._streamGroupId }
       },
-      set: (itemId, data) => {
+      set: (itemId, data) => withSpan('stream::set', {}, async (span) => {
         if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        return _iii().trigger({ function_id: 'stream::set', payload: { stream_name: this._streamName, group_id: this._streamGroupId, item_id: itemId, data } }) as Promise<void>
-      },
-      send: (data) => {
+        span.setAttribute('nvent.stream.name', this._streamName)
+        span.setAttribute('nvent.stream.group_id', this._streamGroupId)
+        span.setAttribute('nvent.stream.item_id', itemId)
+        try {
+          await _iii().trigger({ function_id: 'stream::set', payload: { stream_name: this._streamName, group_id: this._streamGroupId, item_id: itemId, data } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      send: (data) => withSpan('stream::send', {}, async (span) => {
         if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        return _iii().trigger({ function_id: 'stream::send', payload: { stream_name: this._streamName, group_id: this._streamGroupId, data } }) as Promise<void>
-      },
+        span.setAttribute('nvent.stream.name', this._streamName)
+        span.setAttribute('nvent.stream.group_id', this._streamGroupId)
+        try {
+          await _iii().trigger({ function_id: 'stream::send', payload: { stream_name: this._streamName, group_id: this._streamGroupId, data } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
       // Explicit: target any stream+group
-      setIn: (name, group, itemId, data) =>
-        _iii().trigger({ function_id: 'stream::set', payload: { stream_name: name, group_id: group, item_id: itemId, data } }) as Promise<void>,
-      get: (name, group, itemId) =>
-        _iii().trigger({ function_id: 'stream::get', payload: { stream_name: name, group_id: group, item_id: itemId } }) as Promise<never>,
-      delete: (name, group, itemId) =>
-        _iii().trigger({ function_id: 'stream::delete', payload: { stream_name: name, group_id: group, item_id: itemId } }) as Promise<void>,
-      list: (name, group) =>
-        _iii().trigger({ function_id: 'stream::list', payload: { stream_name: name, group_id: group } }) as Promise<never[]>,
-      sendTo: (name, group, data) =>
-        _iii().trigger({ function_id: 'stream::send', payload: { stream_name: name, group_id: group, data } }) as Promise<void>,
+      setIn: (name, group, itemId, data) => withSpan('stream::set', {}, async (span) => {
+        span.setAttribute('nvent.stream.name', name)
+        span.setAttribute('nvent.stream.group_id', group)
+        span.setAttribute('nvent.stream.item_id', itemId)
+        try {
+          await _iii().trigger({ function_id: 'stream::set', payload: { stream_name: name, group_id: group, item_id: itemId, data } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      get: (name, group, itemId) => withSpan('stream::get', {}, async (span) => {
+        span.setAttribute('nvent.stream.name', name)
+        span.setAttribute('nvent.stream.group_id', group)
+        span.setAttribute('nvent.stream.item_id', itemId)
+        try {
+          return await _iii().trigger({ function_id: 'stream::get', payload: { stream_name: name, group_id: group, item_id: itemId } }) as never
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      delete: (name, group, itemId) => withSpan('stream::delete', {}, async (span) => {
+        span.setAttribute('nvent.stream.name', name)
+        span.setAttribute('nvent.stream.group_id', group)
+        span.setAttribute('nvent.stream.item_id', itemId)
+        try {
+          await _iii().trigger({ function_id: 'stream::delete', payload: { stream_name: name, group_id: group, item_id: itemId } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      list: (name, group) => withSpan('stream::list', {}, async (span) => {
+        span.setAttribute('nvent.stream.name', name)
+        span.setAttribute('nvent.stream.group_id', group)
+        try {
+          return await _iii().trigger({ function_id: 'stream::list', payload: { stream_name: name, group_id: group } }) as never[]
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
+      sendTo: (name, group, data) => withSpan('stream::send', {}, async (span) => {
+        span.setAttribute('nvent.stream.name', name)
+        span.setAttribute('nvent.stream.group_id', group)
+        try {
+          await _iii().trigger({ function_id: 'stream::send', payload: { stream_name: name, group_id: group, data } })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+          span.recordException(err as Error)
+          throw err
+        }
+      }),
     }
   }
 
