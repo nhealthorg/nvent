@@ -1,5 +1,5 @@
 export default defineFunction({
-  id: 'orders::notify',
+  name: 'orders::notify',
   description: 'Send confirmation after order is processed',
   triggers: [
     { type: 'queue', config: { topic: 'order.processed' } },

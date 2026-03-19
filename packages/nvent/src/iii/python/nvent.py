@@ -170,6 +170,26 @@ except ImportError:
             """
             ...
 
+        async def enqueue_named(self, payload: dict) -> dict:
+            """Dispatch directly to a function via a named queue.
+
+            Unlike ``enqueue()``, this targets a specific function and routes it
+            through a named queue for FIFO ordering, concurrency control, or
+            custom retry behaviour. Requires the queue to be declared in
+            nvent's ``queue_configs``.
+
+            Returns ``{"messageReceiptId": "..."}`` immediately.
+
+            ```python
+            result = await ctx.enqueue_named({
+                "queue": "orders",
+                "function_id": "orders::process",
+                "data": {"orderId": "123"},
+            })
+            ```
+            """
+            ...
+
         async def match(self, handlers: dict[str, Any]) -> Any:
             """Route to a sub-handler based on the trigger type.
 

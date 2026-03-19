@@ -18,14 +18,22 @@ function stripStreamContext(input: unknown): unknown {
   return input
 }
 
+/** Build a descriptive trigger suffix (no whitespace for valid function_id). */
+function triggerSuffix(type: string, cfg: Record<string, unknown>): string {
+  if (type === 'http') return `http(${cfg.http_method ?? 'GET'}_${cfg.api_path ?? '/'})`
+  if (type === 'queue') return `queue(${cfg.topic ?? ''})`
+  if (type === 'cron') return `cron(${cfg.expression ?? ''})`
+  return type
+}
+
 export interface NodeFnInfo {
-  id: string
+  name: string
   description?: string
   handler: (input: unknown, ctx: FunctionContext) => Promise<unknown>
   triggers: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
   enqueues: string[]
   flows: string[]
-  /** Explicit stream name for implicit ctx.stream ops. Falls back to flows[0] then id prefix. */
+  /** Explicit stream name for implicit ctx.stream ops. Falls back to flows[0] then name prefix. */
   stream?: string
   filePath?: string
 }
@@ -37,7 +45,7 @@ export interface NodeFnInfo {
 export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
   for (const fn of fns) {
     const metadata = {
-      name: fn.id,
+      name: fn.name,
       description: fn.description,
       filePath: fn.filePath,
       triggers: (fn.triggers ?? []).map(t => {
@@ -55,24 +63,23 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
 
     for (const [index, trigger] of (fn.triggers ?? []).entries()) {
       const cfg = trigger.config ?? {}
-      let suffix = trigger.type
-      if (seenSuffixes.has(suffix)) suffix = `${suffix}-${index}`
+      let suffix = triggerSuffix(trigger.type, cfg)
+      if (seenSuffixes.has(suffix)) suffix = `${suffix}::${index}`
       seenSuffixes.add(suffix)
 
-      // Engine expects exactly one :: separator (service::function)
-      const sanitizedId = fn.id.replace(/::/g, '_')
-      const function_id = `${sanitizedId}::${suffix}`
+      // Motia-style function_id: steps::<name>::trigger::<descriptive-suffix>
+      const function_id = `steps::${fn.name}::trigger::${suffix}`
 
       const triggerType = trigger.type
-      // Resolve the implicit stream name: explicit > first flow > id prefix
-      const streamName = fn.stream ?? fn.flows?.[0] ?? fn.id.split('::')[0]
+      // Resolve the implicit stream name: explicit > first flow > name prefix
+      const streamName = fn.stream ?? fn.flows?.[0] ?? fn.name.split('::')[0]
       iii.registerFunction(
         { id: function_id, metadata },
         (input: unknown) => {
           const inherited = extractStreamContext(input)
           const cleanInput = stripStreamContext(input)
           const effectiveStream = inherited?.name ?? streamName
-          return fn.handler(cleanInput, new FunctionContext(triggerType, fn.id, effectiveStream, inherited?.groupId))
+          return fn.handler(cleanInput, new FunctionContext(triggerType, fn.name, effectiveStream, inherited?.groupId))
         },
       )
       iii.registerTrigger({ type: trigger.type, function_id, config: { ...cfg, metadata } })

@@ -15,6 +15,7 @@
 #   _iii_sdk           — the iii Python SDK (re-exported for entry scripts)
 
 import sys
+import re
 import inspect
 import importlib.util
 import logging as _logging
@@ -84,21 +85,21 @@ class _Stream:
     async def set(self, item_id: str, data: dict) -> None:
         """Set (create/update) an item in the implicit stream channel."""
         group = self._get_group_id()
-        await self._client.trigger("stream::set", {
+        await self._client._async_trigger({"function_id": "stream::set", "payload": {
             "stream_name": self._stream_name,
             "group_id": group,
             "item_id": item_id,
             "data": data,
-        })
+        }})
 
     async def send(self, data: dict) -> None:
         """Send a custom event to all subscribers of the implicit stream channel."""
         group = self._get_group_id()
-        await self._client.trigger("stream::send", {
+        await self._client._async_trigger({"function_id": "stream::send", "payload": {
             "stream_name": self._stream_name,
             "group_id": group,
             "data": data,
-        })
+        }})
 
     def subscription(self) -> dict:
         """Return ``{"streamName": ..., "groupId": ...}`` for the implicit channel.
@@ -115,31 +116,31 @@ class _Stream:
 
     async def set_in(self, name: str, group: str, item_id: str, data: dict) -> None:
         """Set (create/update) an item in an explicit stream group."""
-        await self._client.trigger("stream::set", {
+        await self._client._async_trigger({"function_id": "stream::set", "payload": {
             "stream_name": name, "group_id": group, "item_id": item_id, "data": data,
-        })
+        }})
 
     async def get_item(self, name: str, group: str, item_id: str) -> dict:
         """Get a single item from a stream group."""
-        return await self._client.trigger("stream::get", {
+        return await self._client._async_trigger({"function_id": "stream::get", "payload": {
             "stream_name": name, "group_id": group, "item_id": item_id,
-        })
+        }})
 
     async def delete_item(self, name: str, group: str, item_id: str) -> None:
         """Delete an item from a stream group."""
-        await self._client.trigger("stream::delete", {
+        await self._client._async_trigger({"function_id": "stream::delete", "payload": {
             "stream_name": name, "group_id": group, "item_id": item_id,
-        })
+        }})
 
     async def list_items(self, name: str, group: str) -> list:
         """List all items in a stream group."""
-        return await self._client.trigger("stream::list", {"stream_name": name, "group_id": group})
+        return await self._client._async_trigger({"function_id": "stream::list", "payload": {"stream_name": name, "group_id": group}})
 
     async def send_to(self, name: str, group: str, data: dict) -> None:
         """Send a custom event to all subscribers of an explicit stream group."""
-        await self._client.trigger("stream::send", {
+        await self._client._async_trigger({"function_id": "stream::send", "payload": {
             "stream_name": name, "group_id": group, "data": data,
-        })
+        }})
 
 
 # ---------------------------------------------------------------------------
@@ -154,16 +155,16 @@ class _State:
         self._fn_id = fn_id
 
     async def get(self, key: str):
-        return await self._client.trigger("state::get", {"scope": self._fn_id, "key": key})
+        return await self._client._async_trigger({"function_id": "state::get", "payload": {"scope": self._fn_id, "key": key}})
 
     async def set(self, key: str, value) -> None:
-        await self._client.trigger("state::set", {"scope": self._fn_id, "key": key, "value": value})
+        await self._client._async_trigger({"function_id": "state::set", "payload": {"scope": self._fn_id, "key": key, "value": value}})
 
     async def delete(self, key: str) -> None:
-        await self._client.trigger("state::delete", {"scope": self._fn_id, "key": key})
+        await self._client._async_trigger({"function_id": "state::delete", "payload": {"scope": self._fn_id, "key": key}})
 
     async def list(self):
-        return await self._client.trigger("state::list", {"scope": self._fn_id})
+        return await self._client._async_trigger({"function_id": "state::list", "payload": {"scope": self._fn_id}})
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +219,7 @@ class FlowContext:
         return self._stream_name
 
     async def enqueue(self, payload: dict) -> None:
-        """Emit a message to a topic.
+        """Emit a message to a queue topic.
         If a stream channel is active, its context is propagated automatically.
         Usage: await ctx.enqueue({"topic": "order.created", "data": {"id": "x"}})
         """
@@ -226,7 +227,38 @@ class FlowContext:
         data = dict(payload.get("data") or {})
         if self._stream_group_id:
             data[_NVENT_STREAM_KEY] = {"name": self._stream_name, "groupId": self._stream_group_id}
-        await self._client.trigger(f"queue::{topic}", data)
+        await self._client._async_trigger({
+            "function_id": "enqueue",
+            "payload": {"topic": topic, "data": data},
+        })
+
+    async def enqueue_named(self, payload: dict) -> dict:
+        """Dispatch directly to a function via a named queue.
+
+        Unlike ``enqueue()``, which publishes to a topic, this targets a
+        specific function and routes the call through the named queue for
+        FIFO ordering, concurrency control, or custom retry behaviour.
+        Requires the queue to be declared in nvent's ``queue_configs``.
+
+        Returns ``{"messageReceiptId": "..."}`` immediately — the function
+        runs asynchronously.
+
+        Usage::
+
+            result = await ctx.enqueue_named({
+                "queue": "orders",
+                "function_id": "orders::process",
+                "data": {"orderId": "123"},
+            })
+        """
+        queue = payload["queue"]
+        function_id = payload["function_id"]
+        data = payload.get("data")
+        return await self._client._async_trigger({
+            "function_id": function_id,
+            "payload": data,
+            "action": {"type": "enqueue", "queue": queue},
+        })
 
     async def match(self, handlers: dict):
         """Route to a sub-handler based on the trigger type that activated this step.
@@ -304,6 +336,22 @@ def _trigger_to_iii_cfg(t: dict) -> dict:
     return dict(t.get("config") or {k: v for k, v in t.items() if k != "type"})
 
 
+def _trigger_suffix(trigger: dict) -> str:
+    """Build a descriptive trigger suffix (no whitespace for valid function_id)."""
+    t_type = trigger.get("type", "")
+    if t_type == "http":
+        method = trigger.get("method") or (trigger.get("config") or {}).get("http_method", "GET")
+        path = trigger.get("path") or (trigger.get("config") or {}).get("api_path", "/")
+        return f"http({method}_{path})"
+    if t_type == "queue":
+        topic = trigger.get("topic") or (trigger.get("config") or {}).get("topic", "")
+        return f"queue({topic})"
+    if t_type == "cron":
+        expr = trigger.get("expression") or (trigger.get("config") or {}).get("expression", "")
+        return f"cron({expr})"
+    return t_type
+
+
 def _register(client, mod, default_id: str) -> None:
     """Register a loaded module's handler and triggers with the iii client.
 
@@ -331,6 +379,10 @@ def _register(client, mod, default_id: str) -> None:
     if config_dict is not None:
         # New motia-compatible format: config = { name, description, triggers, flows, enqueues, stream }
         fn_id = config_dict.get("name") or default_id
+        if not config_dict.get("name"):
+            print(f"[nvent] WARNING: Python step at {getattr(mod, '__file__', '?')} has no 'name' in config — "
+                  f"falling back to file-path-derived name {fn_id!r}. "
+                  "Add `config['name'] = '<your-step-name>'` to fix this.", flush=True)
         description = config_dict.get("description")
         triggers = list(config_dict.get("triggers") or [])
         flows = list(config_dict.get("flows") or [])
@@ -339,7 +391,11 @@ def _register(client, mod, default_id: str) -> None:
     else:
         # Legacy format: meta = {...}, triggers = [...]
         meta = dict(getattr(mod, "meta", {}) or {})
-        fn_id = meta.get("id") or default_id
+        fn_id = meta.get("name") or default_id
+        if not meta.get("name"):
+            print(f"[nvent] WARNING: Python step at {getattr(mod, '__file__', '?')} has no 'name' in meta — "
+                  f"falling back to file-path-derived name {fn_id!r}. "
+                  "Add `meta['name'] = '<your-step-name>'` to fix this.", flush=True)
         description = meta.get("description")
         triggers = list(getattr(mod, "triggers", []) or [])
         flows = list(meta.get("flows") or [])
@@ -368,14 +424,13 @@ def _register(client, mod, default_id: str) -> None:
     seen_suffixes: set = set()
     for i, trigger in enumerate(triggers):
         t_type = trigger.get("type", "")
-        suffix = t_type
+        suffix = _trigger_suffix(trigger)
         if suffix in seen_suffixes:
-            suffix = f"{suffix}-{i}"
+            suffix = f"{suffix}::{i}"
         seen_suffixes.add(suffix)
 
-        # engine expects exactly one :: separator (service::function)
-        sanitized_id = fn_id.replace('::', '_')
-        function_id = f"{sanitized_id}::{suffix}"
+        # Motia-style function_id: steps::<name>::trigger::<descriptive-suffix>
+        function_id = f"steps::{fn_id}::trigger::{suffix}"
         iii_cfg = _trigger_to_iii_cfg(trigger)
         is_http = t_type == "http"
 
@@ -400,8 +455,15 @@ def _register(client, mod, default_id: str) -> None:
             return _wrapped
 
         wrapped = _make_wrapper(handler_fn, is_http, t_type, fn_id, has_ctx, stream_name)
-        client.register_function(function_id, wrapped, description=description, metadata=metadata)
-        client.register_trigger(t_type, function_id, {**iii_cfg, "metadata": metadata})
+        client.register_function(
+            {"id": function_id, "description": description, "metadata": metadata},
+            wrapped,
+        )
+        client.register_trigger({
+            "type": t_type,
+            "function_id": function_id,
+            "config": {**iii_cfg, "metadata": metadata},
+        })
 
     print(f"[nvent] registered {fn_id!r} ({len(triggers)} trigger(s))", flush=True)
 
@@ -412,8 +474,6 @@ def _register(client, mod, default_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import asyncio
-
     if len(sys.argv) < 4 or (len(sys.argv) - 3) % 2 != 0:
         print(
             "Usage: _runtime.py <ws_url> <worker_name> <path1> <id1> [<path2> <id2> ...]",
@@ -425,13 +485,15 @@ if __name__ == "__main__":
     _worker_name = sys.argv[2]
     _fn_pairs = [(sys.argv[i], sys.argv[i + 1]) for i in range(3, len(sys.argv), 2)]
 
-    async def _main():
-        options = _iii_sdk.InitOptions(worker_name=_worker_name)
-        client = _iii_sdk.III(_ws_url, options)
-        for _path, _fn_id in _fn_pairs:
-            _mod = _load(_path, _fn_id)
-            _register(client, _mod, _fn_id)
-        await client.connect()
-        await asyncio.get_event_loop().create_future()  # keep alive until killed
-
-    asyncio.run(_main())
+    options = _iii_sdk.InitOptions(
+        worker_name=_worker_name,
+        otel={"enabled": True, "service_name": "nvent", "metrics_enabled": False},
+        telemetry=_iii_sdk.TelemetryOptions(framework="nvent", project_name=_worker_name),
+    )
+    client = _iii_sdk.register_worker(_ws_url, options)
+    for _path, _fn_id in _fn_pairs:
+        _mod = _load(_path, _fn_id)
+        _register(client, _mod, _fn_id)
+    # Keep process alive — the SDK's background thread is daemon=True so we must
+    # block the main thread until the process is externally killed.
+    client._thread.join()

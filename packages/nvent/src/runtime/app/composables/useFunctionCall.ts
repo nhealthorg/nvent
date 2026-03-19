@@ -10,7 +10,7 @@
 
 import { ref } from 'vue'
 
-export function useFunctionCall<TInput = unknown, TOutput = unknown>(path: string) {
+export function useFunctionCall<TInput = unknown, TOutput = unknown>(path: string): { pending: import('vue').Ref<boolean>; error: import('vue').Ref<Error | null>; data: import('vue').Ref<TOutput | null>; call: (input?: TInput, options?: { method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' }) => Promise<TOutput> } {
   const pending = ref(false)
   const error = ref<Error | null>(null)
   const data = ref<TOutput | null>(null)

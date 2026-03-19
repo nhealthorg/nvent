@@ -28,14 +28,10 @@ async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     ctx.logger.info("analyze called", {"text_length": len(text)})
 
     # --- state: track a running invocation counter ---
-    try:
-        raw = await ctx.state.get("item-0")
-        count = (raw.get("value") or 0) if isinstance(raw, dict) else 0
-    except Exception:
-        count = 0
-
-    count += 1
-    await ctx.state.set("item-0", count)
+    raw = await ctx.state.get("invocation_count")
+    # state::get returns the stored value directly (or None if not set yet)
+    count = int(raw or 0) + 1
+    await ctx.state.set("invocation_count", count)
     ctx.logger.debug(f"invocation_count is  now {count}")
 
     # --- compute stats ---

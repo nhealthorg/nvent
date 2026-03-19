@@ -3,11 +3,143 @@
  *
  * Generates the iii-config.yaml that the engine process reads at startup.
  * Maps nvent module options to the iii engine config format.
+ *
+ * Reference: https://iii.dev/docs/how-to/configure-engine
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { stringifyYAML } from 'confbox'
+import type { NventIiiOptions } from './options'
+
+// ---------------------------------------------------------------------------
+// Adapter configs
+// ---------------------------------------------------------------------------
+
+export interface KvStoreAdapterConfig {
+  /** 'file_based' persists to disk, 'in_memory' is ephemeral. Default: 'file_based' */
+  store_method?: 'file_based' | 'in_memory'
+  /** Path for file_based storage. Default: './data/<module>_store' */
+  file_path?: string
+}
+
+export interface RedisAdapterConfig {
+  /** Redis connection URL. Falls back to REDIS_URL env var. */
+  redis_url?: string
+}
+
+export interface RabbitMQAdapterConfig {
+  /** AMQP connection URL. Falls back to AMQP_URL env var. */
+  amqp_url?: string
+}
+
+// ---------------------------------------------------------------------------
+// Named queue config
+// ---------------------------------------------------------------------------
+
+export interface NamedQueueConfig {
+  type?: 'standard' | 'fifo'
+  concurrency?: number
+  max_retries?: number
+  backoff_ms?: number
+  /** FIFO only: field in the payload used to group messages */
+  message_group_field?: string
+}
+
+// ---------------------------------------------------------------------------
+// Module-level adapter discriminated unions
+// ---------------------------------------------------------------------------
+
+export type StateAdapter =
+  | { class: 'modules::state::adapters::KvStore'; config?: KvStoreAdapterConfig }
+  | { class: 'modules::state::adapters::RedisAdapter'; config: RedisAdapterConfig }
+
+export type QueueAdapter =
+  | { class: 'modules::queue::BuiltinQueueAdapter'; config?: KvStoreAdapterConfig }
+  | { class: 'modules::queue::RedisAdapter'; config: RedisAdapterConfig }
+  | { class: 'modules::queue::RabbitMQAdapter'; config: RabbitMQAdapterConfig }
+
+export type CronAdapter =
+  | { class: 'modules::cron::KvCronAdapter'; config?: KvStoreAdapterConfig }
+  | { class: 'modules::cron::RedisCronAdapter'; config: RedisAdapterConfig }
+
+export type StreamAdapter =
+  | { class: 'modules::stream::adapters::KvStore'; config?: KvStoreAdapterConfig }
+  | { class: 'modules::stream::adapters::RedisAdapter'; config: RedisAdapterConfig }
+
+// ---------------------------------------------------------------------------
+// Module configs
+// ---------------------------------------------------------------------------
+
+export interface RestApiModuleConfig {
+  port?: number
+  /** Network interface to bind. Default: '0.0.0.0' */
+  host?: string
+  default_timeout?: number
+  concurrency_request_limit?: number
+}
+
+export interface StateModuleConfig {
+  adapter?: StateAdapter
+}
+
+export interface QueueModuleConfig {
+  adapter?: QueueAdapter
+  queue_configs?: Record<string, NamedQueueConfig>
+}
+
+export interface CronModuleConfig {
+  adapter?: CronAdapter
+}
+
+export interface StreamModuleConfig {
+  port?: number
+  host?: string
+  auth_function?: string | null
+  adapter?: StreamAdapter
+}
+
+export interface OtelModuleConfig {
+  /** Master switch for all observability. Default: true */
+  enabled?: boolean
+  service_name?: string
+  service_version?: string
+  service_namespace?: string
+  /**
+   * Trace export destination.
+   * - 'memory': queryable via iii API (used by the iii console)
+   * - 'otlp': send to external collector
+   * - 'both': memory + otlp
+   * Default: 'memory'
+   */
+  exporter?: 'memory' | 'otlp' | 'both'
+  /** OTLP collector endpoint. Required when exporter is 'otlp' or 'both'. */
+  endpoint?: string
+  sampling_ratio?: number
+  memory_max_spans?: number
+  metrics_enabled?: boolean
+  /** Default: 'memory' */
+  metrics_exporter?: 'memory' | 'otlp'
+  metrics_retention_seconds?: number
+  metrics_max_count?: number
+  logs_enabled?: boolean
+  /** Default: 'both' */
+  logs_exporter?: 'memory' | 'otlp' | 'both'
+  logs_max_count?: number
+  logs_retention_seconds?: number
+  logs_batch_size?: number
+  logs_flush_interval_ms?: number
+  logs_sampling_ratio?: number
+  logs_console_output?: boolean
+  /** Engine console log level */
+  level?: 'trace' | 'debug' | 'info' | 'warn' | 'error'
+  /** Console output format */
+  format?: 'default' | 'json'
+}
+
+// ---------------------------------------------------------------------------
+// Top-level engine config
+// ---------------------------------------------------------------------------
 
 export interface IiiEngineConfig {
   /** WebSocket port for workers (default: 49134) */
@@ -18,42 +150,25 @@ export interface IiiEngineConfig {
   streamPort: number
   /** Enable/disable optional modules */
   modules: {
-    state: boolean
-    queue: boolean
-    cron: boolean
-    observability: boolean
-    stream: boolean
+    state?: boolean
+    queue?: boolean
+    cron?: boolean
+    observability?: boolean
+    stream?: boolean
   }
+  /** Per-module detailed configuration */
+  restApi?: RestApiModuleConfig
+  state?: StateModuleConfig
+  queue?: QueueModuleConfig
+  cron?: CronModuleConfig
+  stream?: StreamModuleConfig
+  observability?: OtelModuleConfig
 }
 
-/**
- * Generates the YAML string for iii-config.yaml from nvent config.
- */
-export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
-  const modules: object[] = [
-    { class: 'modules::api::RestApiModule', config: { port: cfg.httpPort } },
-  ]
+// ---------------------------------------------------------------------------
+// Default config
+// ---------------------------------------------------------------------------
 
-  if (cfg.modules.state) modules.push({ class: 'modules::state::StateModule' })
-  if (cfg.modules.queue) modules.push({ class: 'modules::queue::QueueModule' })
-  if (cfg.modules.cron) modules.push({ class: 'modules::cron::CronModule' })
-  if (cfg.modules.stream) modules.push({ class: 'modules::stream::StreamModule', config: { port: cfg.streamPort } })
-  if (cfg.modules.observability) modules.push({ class: 'modules::observability::OtelModule' })
-
-  return `# Auto-generated by nvent — do not edit manually\n` + stringifyYAML({ port: cfg.wsPort, modules })
-}
-
-/**
- * Writes the iii-config.yaml to the given path.
- */
-export function writeIiiConfig(outputPath: string, cfg: IiiEngineConfig): void {
-  mkdirSync(dirname(outputPath), { recursive: true })
-  writeFileSync(outputPath, generateIiiConfigYaml(cfg), 'utf-8')
-}
-
-/**
- * Default config factory.
- */
 export function defaultIiiEngineConfig(): IiiEngineConfig {
   return {
     wsPort: 49134,
@@ -66,5 +181,228 @@ export function defaultIiiEngineConfig(): IiiEngineConfig {
       observability: true,
       stream: true,
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Default adapter factories — always use built-in / internal storage
+// ---------------------------------------------------------------------------
+
+function defaultStateAdapter(stateDir?: string): StateAdapter {
+  return {
+    class: 'modules::state::adapters::KvStore',
+    config: { store_method: 'file_based', file_path: stateDir ?? './data/state_store' },
+  }
+}
+
+function defaultQueueAdapter(queueDir?: string): QueueAdapter {
+  return {
+    class: 'modules::queue::BuiltinQueueAdapter',
+    config: { store_method: 'file_based', file_path: queueDir ?? './data/queue_store' },
+  }
+}
+
+function defaultCronAdapter(): CronAdapter {
+  return { class: 'modules::cron::KvCronAdapter' }
+}
+
+function defaultStreamAdapter(): StreamAdapter {
+  return { class: 'modules::stream::adapters::KvStore' }
+}
+
+// ---------------------------------------------------------------------------
+// YAML generator
+// ---------------------------------------------------------------------------
+
+export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
+  const modules: object[] = []
+
+  // RestApiModule — always present
+  const restApiConfig: Record<string, unknown> = {
+    port: cfg.restApi?.port ?? cfg.httpPort,
+  }
+  if (cfg.restApi?.host) restApiConfig.host = cfg.restApi.host
+  if (cfg.restApi?.default_timeout != null) restApiConfig.default_timeout = cfg.restApi.default_timeout
+  if (cfg.restApi?.concurrency_request_limit != null) restApiConfig.concurrency_request_limit = cfg.restApi.concurrency_request_limit
+  modules.push({ class: 'modules::api::RestApiModule', config: restApiConfig })
+
+  // StateModule
+  if (cfg.modules.state !== false) {
+    const adapter = cfg.state?.adapter ?? defaultStateAdapter()
+    modules.push({ class: 'modules::state::StateModule', config: { adapter } })
+  }
+
+  // QueueModule
+  if (cfg.modules.queue !== false) {
+    const adapter = cfg.queue?.adapter ?? defaultQueueAdapter()
+    const queueModCfg: Record<string, unknown> = { adapter }
+    const queueConfigs = cfg.queue?.queue_configs
+    if (queueConfigs && Object.keys(queueConfigs).length > 0) {
+      queueModCfg.queue_configs = queueConfigs
+    }
+    modules.push({ class: 'modules::queue::QueueModule', config: queueModCfg })
+  }
+
+  // CronModule
+  if (cfg.modules.cron !== false) {
+    const adapter = cfg.cron?.adapter ?? defaultCronAdapter()
+    modules.push({ class: 'modules::cron::CronModule', config: { adapter } })
+  }
+
+  // StreamModule
+  if (cfg.modules.stream !== false) {
+    const streamCfg: Record<string, unknown> = {
+      port: cfg.stream?.port ?? cfg.streamPort,
+    }
+    if (cfg.stream?.host) streamCfg.host = cfg.stream.host
+    if (cfg.stream?.auth_function !== undefined) streamCfg.auth_function = cfg.stream.auth_function
+    const streamAdapter = cfg.stream?.adapter ?? defaultStreamAdapter()
+    streamCfg.adapter = streamAdapter
+    modules.push({ class: 'modules::stream::StreamModule', config: streamCfg })
+  }
+
+  // OtelModule
+  if (cfg.modules.observability !== false) {
+    const oCfg = cfg.observability ?? {}
+    const otelConfig: Record<string, unknown> = {
+      enabled: oCfg.enabled ?? true,
+      service_name: oCfg.service_name ?? 'nvent',
+      exporter: oCfg.exporter ?? 'memory',
+    }
+    if (oCfg.service_version) otelConfig.service_version = oCfg.service_version
+    if (oCfg.service_namespace) otelConfig.service_namespace = oCfg.service_namespace
+    if (oCfg.endpoint) otelConfig.endpoint = oCfg.endpoint
+    if (oCfg.sampling_ratio != null) otelConfig.sampling_ratio = oCfg.sampling_ratio
+    if (oCfg.memory_max_spans != null) otelConfig.memory_max_spans = oCfg.memory_max_spans
+    // Metrics
+    if (oCfg.metrics_enabled != null) otelConfig.metrics_enabled = oCfg.metrics_enabled
+    if (oCfg.metrics_exporter) otelConfig.metrics_exporter = oCfg.metrics_exporter
+    if (oCfg.metrics_retention_seconds != null) otelConfig.metrics_retention_seconds = oCfg.metrics_retention_seconds
+    if (oCfg.metrics_max_count != null) otelConfig.metrics_max_count = oCfg.metrics_max_count
+    // Logs
+    if (oCfg.logs_enabled != null) otelConfig.logs_enabled = oCfg.logs_enabled
+    if (oCfg.logs_exporter) otelConfig.logs_exporter = oCfg.logs_exporter
+    if (oCfg.logs_max_count != null) otelConfig.logs_max_count = oCfg.logs_max_count
+    if (oCfg.logs_retention_seconds != null) otelConfig.logs_retention_seconds = oCfg.logs_retention_seconds
+    if (oCfg.logs_batch_size != null) otelConfig.logs_batch_size = oCfg.logs_batch_size
+    if (oCfg.logs_flush_interval_ms != null) otelConfig.logs_flush_interval_ms = oCfg.logs_flush_interval_ms
+    if (oCfg.logs_sampling_ratio != null) otelConfig.logs_sampling_ratio = oCfg.logs_sampling_ratio
+    if (oCfg.logs_console_output != null) otelConfig.logs_console_output = oCfg.logs_console_output
+    if (oCfg.level) otelConfig.level = oCfg.level
+    if (oCfg.format) otelConfig.format = oCfg.format
+    modules.push({ class: 'modules::observability::OtelModule', config: otelConfig })
+  }
+
+  return `# Auto-generated by nvent — do not edit manually\n` + stringifyYAML({ port: cfg.wsPort, modules })
+}
+
+/**
+ * Writes the iii-config.yaml to the given path.
+ */
+export function writeIiiConfig(outputPath: string, cfg: IiiEngineConfig): void {
+  mkdirSync(dirname(outputPath), { recursive: true })
+  writeFileSync(outputPath, generateIiiConfigYaml(cfg), 'utf-8')
+}
+
+// ---------------------------------------------------------------------------
+// Module options → engine config (camelCase → snake_case)
+// ---------------------------------------------------------------------------
+
+export function buildEngineConfig(iiiOpts: NonNullable<NventIiiOptions['iii']>): IiiEngineConfig {
+  const queueConfigs = iiiOpts.queue?.queueConfigs
+  const hasQueueConfigs = queueConfigs != null && Object.keys(queueConfigs).length > 0
+
+  return {
+    ...defaultIiiEngineConfig(),
+    wsPort: iiiOpts.wsPort ?? 49134,
+    httpPort: iiiOpts.httpPort ?? 3111,
+    streamPort: iiiOpts.streamPort ?? 3112,
+    modules: { state: true, queue: true, cron: true, observability: true, stream: true, ...iiiOpts.modules },
+    state: iiiOpts.state ? { adapter: mapStateAdapter(iiiOpts.state) } : undefined,
+    queue: iiiOpts.queue ? {
+      adapter: mapQueueAdapter(iiiOpts.queue?.adapter),
+      queue_configs: hasQueueConfigs
+        ? Object.fromEntries(
+            Object.entries(queueConfigs!).map(([name, cfg]) => [
+              name,
+              { type: cfg.type, concurrency: cfg.concurrency, max_retries: cfg.maxRetries, backoff_ms: cfg.backoffMs, message_group_field: cfg.messageGroupField },
+            ]),
+          )
+        : undefined,
+    } : undefined,
+    cron: iiiOpts.cron ? { adapter: mapCronAdapter(iiiOpts.cron) } : undefined,
+    stream: iiiOpts.stream ? {
+      host: iiiOpts.stream.host,
+      auth_function: iiiOpts.stream.authFunction,
+      adapter: mapStreamAdapter(iiiOpts.stream),
+    } : undefined,
+    restApi: iiiOpts.restApi ? {
+      host: iiiOpts.restApi.host,
+      default_timeout: iiiOpts.restApi.defaultTimeout,
+      concurrency_request_limit: iiiOpts.restApi.concurrencyRequestLimit,
+    } : undefined,
+    observability: iiiOpts.observability ? {
+      enabled: iiiOpts.observability.enabled,
+      service_name: iiiOpts.observability.serviceName,
+      service_version: iiiOpts.observability.serviceVersion,
+      service_namespace: iiiOpts.observability.serviceNamespace,
+      exporter: iiiOpts.observability.exporter,
+      endpoint: iiiOpts.observability.endpoint,
+      sampling_ratio: iiiOpts.observability.samplingRatio,
+      memory_max_spans: iiiOpts.observability.memoryMaxSpans,
+      metrics_enabled: iiiOpts.observability.metricsEnabled,
+      metrics_exporter: iiiOpts.observability.metricsExporter,
+      metrics_retention_seconds: iiiOpts.observability.metricsRetentionSeconds,
+      metrics_max_count: iiiOpts.observability.metricsMaxCount,
+      logs_enabled: iiiOpts.observability.logsEnabled,
+      logs_exporter: iiiOpts.observability.logsExporter,
+      logs_max_count: iiiOpts.observability.logsMaxCount,
+      logs_retention_seconds: iiiOpts.observability.logsRetentionSeconds,
+      logs_batch_size: iiiOpts.observability.logsBatchSize,
+      logs_flush_interval_ms: iiiOpts.observability.logsFlushIntervalMs,
+      logs_sampling_ratio: iiiOpts.observability.logsSamplingRatio,
+      logs_console_output: iiiOpts.observability.logsConsoleOutput,
+      level: iiiOpts.observability.level,
+      format: iiiOpts.observability.format,
+    } : undefined,
+  }
+}
+
+function mapStateAdapter(a: NonNullable<NventIiiOptions['iii']>['state']): StateAdapter | undefined {
+  if (!a?.adapter) return undefined
+  if (a.adapter.type === 'redis')
+    return { class: 'modules::state::adapters::RedisAdapter', config: { redis_url: a.adapter.redisUrl } }
+  return {
+    class: 'modules::state::adapters::KvStore',
+    config: { store_method: a.adapter.storeMethod, file_path: a.adapter.filePath },
+  }
+}
+
+function mapQueueAdapter(a: NonNullable<NonNullable<NventIiiOptions['iii']>['queue']>['adapter']): QueueAdapter | undefined {
+  if (!a) return undefined
+  if (a.type === 'redis')
+    return { class: 'modules::queue::RedisAdapter', config: { redis_url: a.redisUrl } }
+  if (a.type === 'rabbitmq')
+    return { class: 'modules::queue::RabbitMQAdapter', config: { amqp_url: a.amqpUrl } }
+  return {
+    class: 'modules::queue::BuiltinQueueAdapter',
+    config: { store_method: a.storeMethod, file_path: a.filePath },
+  }
+}
+
+function mapCronAdapter(a: NonNullable<NventIiiOptions['iii']>['cron']): CronAdapter | undefined {
+  if (!a?.adapter) return undefined
+  if (a.adapter.type === 'redis')
+    return { class: 'modules::cron::RedisCronAdapter', config: { redis_url: a.adapter.redisUrl } }
+  return { class: 'modules::cron::KvCronAdapter' }
+}
+
+function mapStreamAdapter(a: NonNullable<NventIiiOptions['iii']>['stream']): StreamAdapter | undefined {
+  if (!a?.adapter) return undefined
+  if (a.adapter.type === 'redis')
+    return { class: 'modules::stream::adapters::RedisAdapter', config: { redis_url: a.adapter.redisUrl } }
+  return {
+    class: 'modules::stream::adapters::KvStore',
+    config: { store_method: a.adapter.storeMethod, file_path: a.adapter.filePath },
   }
 }

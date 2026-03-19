@@ -1,5 +1,5 @@
 export default defineFunction({
-  id: 'pipeline::start',
+  name: 'pipeline::start',
   flows: ['pipeline'],
   triggers: [
     {
@@ -17,6 +17,8 @@ export default defineFunction({
     // The stream channel is identified by the flow name ('pipeline') and the
     // current trace ID — no need to create or pass a separate job ID.
     const { streamName, groupId } = ctx.stream.subscription()
+
+    ctx.logger.info('Pipeline started', { streamName, groupId })
 
     // Enqueue the heavy analysis so the HTTP response returns immediately.
     // The trace ID is propagated through the queue message automatically,

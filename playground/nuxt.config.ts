@@ -15,6 +15,15 @@ export default defineNuxtConfig({
   colorMode: {
     preference: 'light',
   },
+  
+  vite: {
+    optimizeDeps: {
+      include: [
+        '@vue/devtools-core',
+        '@vue/devtools-kit',
+      ]
+    }
+  },
 
   nvent: {
     iii: {
@@ -24,8 +33,10 @@ export default defineNuxtConfig({
       logLevel: 'warn',
     },
     functions: {
-      dir: 'functions/iii',
-      python: '.venv/bin/python3',
+      dir: 'functions',
+      python: {
+        devPath: '.venv/bin/python3',
+      }
     },
     console: {
       enabled: true,

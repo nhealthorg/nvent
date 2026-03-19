@@ -10,6 +10,8 @@ node_modules
 .cache
 .local
 dump.rdb
+/data
+/examples
 
 # Python
 **/__pycache__

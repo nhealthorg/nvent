@@ -1,5 +1,5 @@
 export default defineFunction({
-  id: 'orders::process',
+  name: 'orders::process',
   description: 'Process a placed order and notify downstream',
   triggers: [
     { type: 'queue', config: { topic: 'order.placed' } },

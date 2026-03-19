@@ -7,6 +7,7 @@
  */
 
 import { defineNitroPlugin, useRuntimeConfig } from '#imports'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { registerWorker } from 'iii-sdk'
 import { registerNodeFunctions } from '../utils/workers/node'
@@ -24,6 +25,17 @@ declare module 'nitropack' {
   }
 }
 
+function readProjectName(): string | undefined {
+  try {
+    const pkgPath = join(process.cwd(), 'package.json')
+    if (!existsSync(pkgPath)) return undefined
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    return typeof pkg.name === 'string' ? pkg.name : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export default defineNitroPlugin(async (nitroApp) => {
   const runtimeConfig = useRuntimeConfig()
   const nventCfg = (runtimeConfig as any).nvent ?? {}
@@ -32,6 +44,9 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   const wsUrl: string = cfg.wsUrl ?? process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
   const logLevel: string = cfg.logLevel ?? 'warn'
+  // Python binary: configurable at deploy time via NVENT_PYTHON_BIN env var.
+  // Never baked in at build time — the build-machine venv path won't exist on the target.
+  const pythonBin = process.env.NVENT_PYTHON_BIN ?? 'python3'
 
   const workerName = cfg.workerName ?? `nvent-${process.pid}`
 
@@ -41,16 +56,21 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   const iii = registerWorker(wsUrl, {
     workerName,
+    otel: {
+      enabled: true,
+      serviceName: 'nvent',
+    },
+    telemetry: {
+      framework: 'nvent',
+      project_name: readProjectName(),
+    },
     reconnectionConfig: {
       initialDelayMs: 500,
       maxDelayMs: 15_000,
       maxRetries: -1,
     },
   })
-
-  iii.on('connected', () => {
-    console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
-  })
+  console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
 
   // Register all Node.js functions and triggers with the iii engine
   registerNodeFunctions(iii, registry.functions ?? [])
@@ -60,17 +80,21 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   // Python workers — started here only in production.
   // In development, module.ts manages Python workers directly in the Nuxt process.
-  const workersDir = join(process.cwd(), 'node_modules', '.nvent', 'workers')
+  // Python workers — started here only in production.
+  // In development, module.ts manages Python workers directly in the Nuxt process.
+  // workersDir: prefer .nvent/workers at cwd (Docker: .output contents at WORKDIR)
+  //             fall back to node_modules/.nvent/workers (traditional deployment).
+  const workersDir = join(process.cwd(), '.nvent', 'workers')
   const orchestrator = new PythonWorkersOrchestrator(
     workersDir,
     pythonCfg.runtimeContent ?? '',
     pythonCfg.nventHelperContent ?? '',
     wsUrl,
-    pythonCfg.bin ?? 'python3',
+    pythonBin,
     logLevel,
   )
 
-  if (process.env.NODE_ENV !== 'development') {
+  if (process.env.NODE_ENV !== 'development' && !pythonCfg.skip) {
     await orchestrator.start(pythonFunctions ?? [])
   }
 

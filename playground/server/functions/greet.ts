@@ -1,5 +1,5 @@
 export default defineFunction({
-  id: 'greet',
+  name: 'greet',
   description: 'Returns a greeting message. Optionally takes a name as input.',
   triggers: [
     { type: 'http', config: { api_path: 'greet', http_method: 'GET', input: { name: 'string' } } }

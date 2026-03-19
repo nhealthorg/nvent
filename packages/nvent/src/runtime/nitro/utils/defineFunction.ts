@@ -1,13 +1,13 @@
 /**
  * defineFunction — the single primitive for declaring nvent functions.
  *
- * A function bundles config (id, description, triggers, enqueues, flows)
+ * A function bundles config (name, description, triggers, enqueues, flows)
  * and the handler in one call. The handler receives `(input, ctx)` where
  * `ctx` is a `FunctionContext` with logger, state, enqueue, and match.
  *
  * ```ts
  * export default defineFunction({
- *   id: 'orders::process',
+ *   name: 'orders::process',
  *   description: 'Process a placed order',
  *   triggers: [
  *     { type: 'queue', config: { topic: 'order.placed' } },
@@ -138,11 +138,11 @@ export class FunctionContext {
     this._streamGroupId = inheritedGroupId
     this.logger = new Logger(fnId, 'nvent') as unknown as ILogger
     this.state = {
-      get: (key) => _iii().trigger('state::get', { scope: fnId, key }),
-      set: (key, value) => _iii().trigger('state::set', { scope: fnId, key, value }) as Promise<{ new_value: unknown; old_value: unknown }>,
-      delete: (key) => _iii().trigger('state::delete', { scope: fnId, key }) as Promise<void>,
-      update: (key, ops) => _iii().trigger('state::update', { scope: fnId, key, ops }) as Promise<{ new_value: unknown; old_value: unknown }>,
-      list: () => _iii().trigger('state::list', { scope: fnId }) as Promise<unknown[]>,
+      get: (key) => _iii().trigger({ function_id: 'state::get', payload: { scope: fnId, key } }),
+      set: (key, value) => _iii().trigger({ function_id: 'state::set', payload: { scope: fnId, key, value } }) as Promise<{ new_value: unknown; old_value: unknown }>,
+      delete: (key) => _iii().trigger({ function_id: 'state::delete', payload: { scope: fnId, key } }) as Promise<void>,
+      update: (key, ops) => _iii().trigger({ function_id: 'state::update', payload: { scope: fnId, key, ops } }) as Promise<{ new_value: unknown; old_value: unknown }>,
+      list: () => _iii().trigger({ function_id: 'state::list', payload: { scope: fnId } }) as Promise<unknown[]>,
     }
     this.stream = {
       subscription: () => {
@@ -151,23 +151,23 @@ export class FunctionContext {
       },
       set: (itemId, data) => {
         if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        return _iii().trigger('stream::set', { stream_name: this._streamName, group_id: this._streamGroupId, item_id: itemId, data }) as Promise<void>
+        return _iii().trigger({ function_id: 'stream::set', payload: { stream_name: this._streamName, group_id: this._streamGroupId, item_id: itemId, data } }) as Promise<void>
       },
       send: (data) => {
         if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        return _iii().trigger('stream::send', { stream_name: this._streamName, group_id: this._streamGroupId, data }) as Promise<void>
+        return _iii().trigger({ function_id: 'stream::send', payload: { stream_name: this._streamName, group_id: this._streamGroupId, data } }) as Promise<void>
       },
       // Explicit: target any stream+group
       setIn: (name, group, itemId, data) =>
-        _iii().trigger('stream::set', { stream_name: name, group_id: group, item_id: itemId, data }) as Promise<void>,
+        _iii().trigger({ function_id: 'stream::set', payload: { stream_name: name, group_id: group, item_id: itemId, data } }) as Promise<void>,
       get: (name, group, itemId) =>
-        _iii().trigger('stream::get', { stream_name: name, group_id: group, item_id: itemId }) as Promise<never>,
+        _iii().trigger({ function_id: 'stream::get', payload: { stream_name: name, group_id: group, item_id: itemId } }) as Promise<never>,
       delete: (name, group, itemId) =>
-        _iii().trigger('stream::delete', { stream_name: name, group_id: group, item_id: itemId }) as Promise<void>,
+        _iii().trigger({ function_id: 'stream::delete', payload: { stream_name: name, group_id: group, item_id: itemId } }) as Promise<void>,
       list: (name, group) =>
-        _iii().trigger('stream::list', { stream_name: name, group_id: group }) as Promise<never[]>,
+        _iii().trigger({ function_id: 'stream::list', payload: { stream_name: name, group_id: group } }) as Promise<never[]>,
       sendTo: (name, group, data) =>
-        _iii().trigger('stream::send', { stream_name: name, group_id: group, data }) as Promise<void>,
+        _iii().trigger({ function_id: 'stream::send', payload: { stream_name: name, group_id: group, data } }) as Promise<void>,
     }
   }
 
@@ -180,7 +180,34 @@ export class FunctionContext {
     const injectData = this._streamGroupId != null
       ? { ...(typeof data === 'object' && data !== null ? data : { data }), [NVENT_STREAM_KEY]: { name: this._streamName, groupId: this._streamGroupId } }
       : data
-    return _iii().trigger('enqueue', { topic, data: injectData })
+    return _iii().trigger({
+      function_id: 'enqueue',
+      payload: { topic, data: injectData },
+    })
+  }
+
+  /**
+   * Dispatches directly to a function via a named queue (requires the queue to be
+   * declared in `nvent.iii.queue.queueConfigs`). Unlike `enqueue()`, which publishes to
+   * a topic, this targets a specific function and routes the call through the named
+   * queue for FIFO ordering, concurrency control, or custom retry behaviour.
+   *
+   * Returns `{ messageReceiptId }` immediately — the function runs asynchronously.
+   *
+   * ```ts
+   * const { messageReceiptId } = await ctx.enqueueNamed({
+   *   queue: 'orders',
+   *   functionId: 'orders::process',
+   *   data: { orderId: '123' },
+   * })
+   * ```
+   */
+  enqueueNamed({ queue, functionId, data }: { queue: string; functionId: string; data?: unknown }): Promise<{ messageReceiptId: string }> {
+    return _iii().trigger({
+      function_id: functionId,
+      payload: data,
+      action: { type: 'enqueue' as const, queue },
+    }) as Promise<{ messageReceiptId: string }>
   }
 
   /**
@@ -376,8 +403,8 @@ export type TriggerConfig =
 // ─── defineFunction ──────────────────────────────────────────────────────────
 
 export interface FunctionDef<TInput = unknown, TOutput = unknown> {
-  /** iii function ID (namespace::name). Auto-derived from file path if omitted. */
-  id?: string
+  /** Step name. Auto-derived from file path if omitted. Equivalent to Motia's `name` field. */
+  name?: string
   description?: string
   triggers?: TriggerConfig[]
   /**
@@ -438,7 +465,7 @@ export function defineFunction<
   TOutput = unknown,
 >(
   config: {
-    id?: string
+    name?: string
     description?: string
     triggers?: TTriggers
     enqueues?: string[]

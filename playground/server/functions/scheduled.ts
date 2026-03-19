@@ -1,5 +1,5 @@
 export default defineFunction({
-  id: 'scheduled',
+  name: 'scheduled',
   description: 'Heartbeat that fires every minute',
   triggers: [
     { type: 'cron', config: { expression: '0 0 */2 * * * *' } },

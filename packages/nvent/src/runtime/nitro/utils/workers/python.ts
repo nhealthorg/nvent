@@ -128,7 +128,7 @@ export class PythonWorkerManager {
       logger.error(`Python worker process error: ${err.message}`)
       this.process = null
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        logger.error(`Python binary not found: ${this.python}. Check functions.python in nvent config.`)
+        logger.error(`Python binary not found: ${this.python}. Check functions.python.path in nvent config.`)
         this.stopped = true
         return
       }
