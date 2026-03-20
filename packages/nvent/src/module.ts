@@ -208,8 +208,6 @@ export default defineNuxtModule<NventIiiOptions>({
 
     // Server auto-imports
     addServerImports([
-      { from: registryTemplatePath, name: 'registry' },
-      { from: registryTemplatePath, name: 'pythonFunctions' },
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIii' },
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIiiHealth' },
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'getContext' },

@@ -13,12 +13,7 @@ import { resolveNventDir } from '../utils/nventDir'
 import { registerWorker } from 'iii-sdk'
 import { registerNodeFunctions } from '../utils/workers/node'
 import { PythonWorkersOrchestrator } from '../utils/workers/python'
-// `registry` and `pythonFunctions` are auto-imported from the generated iii-registry template
-declare const registry: {
-  functions: import('../utils/workers/node').NodeFnInfo[]
-  triggers: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
-}
-declare const pythonFunctions: Array<{ id: string; absPath: string; standalone: boolean }>
+import { registry, pythonFunctions } from '#nvent/iii-registry'
 
 declare module 'nitropack' {
   interface NitroApp {
