@@ -59,6 +59,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     otel: {
       enabled: true,
       serviceName: 'nvent',
+      metricsExportIntervalMs: 10_000,
     },
     telemetry: {
       framework: 'nvent',

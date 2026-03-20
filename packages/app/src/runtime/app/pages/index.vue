@@ -1,68 +1,52 @@
 <template>
-  <NventComponentRouter
+    <NUtilsComponentRouter
     v-slot="{ component }"
     :routes="routes"
     base="p"
     mode="query"
   >
-    <NventComponentShell
+    <NUtilsComponentShell
       orientation="horizontal"
       :items="navItems"
     >
+      <template #leading>
+        <div class="px-4 py-3 border-gray-200 dark:border-gray-800 flex items-center gap-2.5">
+          <div class="flex items-center justify-center w-7 h-7 rounded-lg bg-primary-100 dark:bg-primary-900/40 shrink-0">
+            <UIcon name="i-lucide-scan-line" class="w-4 h-4 text-primary-600 dark:text-primary-400" />
+          </div>
+          <span class="text-sm font-semibold tracking-tight">NVENT</span>
+        </div>
+      </template>
+
+      <template #trailing>
+        <div class="mt-auto px-3 py-3 border-t border-gray-200 dark:border-gray-800">
+            <!-- TODO -->
+        </div>
+      </template>
+
       <component :is="component" />
-    </NventComponentShell>
-  </NventComponentRouter>
+    </NUtilsComponentShell>
+  </NUtilsComponentRouter>
+
+  <!-- Confirm Modal from nutils -->
+  <NUtilsConfirmModal />
 </template>
 
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 import Dashboard from './dashboard.vue'
-import Queue from './queues/index.vue'
-import QueueJobs from './queues/jobs.vue'
-import QueueJob from './queues/job.vue'
-import Flows from './flows/index.vue'
-import FlowDetail from './flows/[name].vue'
-import Triggers from './triggers/index.vue'
-import TriggerDetail from './triggers/[name].vue'
-import TriggerNew from './triggers/new.vue'
-import TriggerEdit from './triggers/[name]/edit.vue'
-import SettingsScheduler from './settings/scheduler.vue'
+import Workers from './workers.vue'
 
 const navItems: NavigationMenuItem[][] = [
   [
     { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', path: '/' } as any,
-    { label: 'Queues', icon: 'i-lucide-app-window', path: '/queues' } as any,
-    { label: 'Flows', icon: 'i-lucide-git-branch', path: '/flows' } as any,
-    { label: 'Triggers', icon: 'i-lucide-zap', path: '/triggers' } as any,
-  ],
-  [
-    {
-      label: 'Settings',
-      icon: 'i-lucide-settings',
-      children: [
-        {
-          label: 'Scheduler',
-          description: 'Monitor scheduled jobs and their execution',
-          icon: 'i-lucide-clock',
-          path: '/settings/scheduler',
-        } as any,
-      ],
-    } as any,
-  ],
+    { label: 'Workers', icon: 'i-lucide-server', path: '/workers' } as any,
+  ]
 ]
 
 const routes = {
   '/': Dashboard,
-  '/queues': Queue,
-  '/queues/:name/jobs': QueueJobs,
-  '/queues/:name/jobs/:id': QueueJob,
-  '/flows': Flows,
-  '/flows/:name': FlowDetail,
-  '/triggers': Triggers,
-  '/triggers/new': TriggerNew,
-  '/triggers/:name/edit': TriggerEdit,
-  '/triggers/:name': TriggerDetail,
-  '/settings/scheduler': SettingsScheduler,
+  '/workers': Workers,
 }
 
 // Consumer mode: read the current router context from inside this page

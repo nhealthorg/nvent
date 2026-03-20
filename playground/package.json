@@ -11,12 +11,6 @@
     "nuxt": "*",
     "@nuxt/ui": "*",
     "nvent": "workspace:*",
-    "@nvent-addon/app": "workspace:*",
-    "@nvent-addon/adapter-queue-redis": "workspace:*",
-    "@nvent-addon/adapter-store-redis": "workspace:*",
-    "@nvent-addon/adapter-stream-redis": "workspace:*",
-    "@nvent-addon/adapter-store-postgres": "workspace:*",
-    "@nvent-addon/adapter-queue-postgres": "workspace:*",
-    "@nvent-addon/adapter-stream-postgres": "workspace:*"
+    "@nvent-addon/app": "workspace:*"
   }
 }

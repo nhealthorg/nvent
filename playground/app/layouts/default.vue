@@ -1,7 +1,7 @@
 <script setup lang="ts">
 const links = [
   { label: 'Home', to: '/' },
-  { label: 'Triggers & Await', to: '/triggers' },
+  { label: 'Pipeline', to: '/pipeline' },
 ]
 </script>
 

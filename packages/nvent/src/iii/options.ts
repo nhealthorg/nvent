@@ -145,18 +145,16 @@ export interface NventIiiOptions {
       skip?: boolean
     }
   }
-  console?: {
-    /** Enable the nvent API proxy routes (/api/_nvent/...). Default: true */
+  app?: {
+    /** Enable the nvent app UI and its built-in route. Default: true */
     enabled?: boolean
-    route?: string
-  }
-}
-
-declare module '@nuxt/schema' {
-  interface NuxtConfig {
-    nvent?: NventIiiOptions
-  }
-  interface NuxtOptions {
-    nvent?: NventIiiOptions
+    /** Route path for the nvent app. Default: '/_nvent' */
+    routePath?: string
+    /**
+     * Layout to use for the nvent app route.
+     * Set to false for no layout, or a string to use a named layout.
+     * Default: false
+     */
+    layout?: string | false
   }
 }

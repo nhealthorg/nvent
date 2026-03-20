@@ -4,6 +4,7 @@ export default defineNuxtConfig({
   modules: [
     '@nuxt/ui',
     'nvent',
+    '@nvent-addon/app'
   ],
 
   devtools: {
@@ -38,7 +39,7 @@ export default defineNuxtConfig({
         devPath: '.venv/bin/python3',
       }
     },
-    console: {
+    app: {
       enabled: true,
     },
   },

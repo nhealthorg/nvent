@@ -25,6 +25,7 @@ import {
   addImports,
   addTemplate,
   updateTemplates,
+  hasNuxtModule,
 } from '@nuxt/kit'
 import { readFileSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { ensureIiiEngine } from './iii/install'
@@ -54,10 +55,14 @@ const meta = {
 
 const III_REGISTRY_TEMPLATE = 'iii-registry.mjs'
 
-export default defineNuxtModule<NventIiiOptions>().with({
+export default defineNuxtModule<NventIiiOptions>({
   meta,
   defaults: {},
-
+  moduleDependencies: {
+    '@nvent-addon/app':{
+      optional: true
+    }
+  },
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url)
     const PYTHON_RUNTIME_SRC = resolve('./runtime/python/worker_runtime.py')
@@ -76,7 +81,20 @@ export default defineNuxtModule<NventIiiOptions>().with({
     // `from nvent import ...` automatically without any user configuration.
     installNventPyToSitePackages(pythonBin, readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'))
 
-    const consoleEnabled = opts.console?.enabled ?? true
+    const consoleEnabled = opts.app?.enabled ?? true
+
+    // Forward nvent.app options to @nvent-addon/app module (configKey: 'nventapp').
+    // nvent runs first in module order, so setting nuxt.options.nventapp here means
+    // @nvent-addon/app will pick those up as its defaults when its setup runs.
+    // Direct `nventapp` config in nuxt.config takes priority (already set before this).
+    if (hasNuxtModule('@nvent-addon/app')) {
+      const nventOpts = nuxt.options as any
+      nventOpts.nventapp ??= {}
+      // nvent.app.enabled controls whether the route is added
+      nventOpts.nventapp.route ??= opts.app?.enabled !== false
+      if (opts.app?.routePath) nventOpts.nventapp.routePath ??= opts.app.routePath
+      if (opts.app?.layout !== undefined) nventOpts.nventapp.layout ??= opts.app.layout
+    }
     const wsUrl = iiiOpts.wsUrl ?? 'ws://localhost:49134'
     const mode = iiiOpts.mode ?? 'local'
     // managed: default true for local mode (nvent handles engine lifecycle),
@@ -175,18 +193,6 @@ export default defineNuxtModule<NventIiiOptions>().with({
     addServerPlugin(resolve('./runtime/nitro/plugins/00.iii-worker'))
     // Add the lifecycle plugin (starts iii engine, Python workers, console at server runtime)
     addServerPlugin(resolve('./runtime/nitro/plugins/01.iii-lifecycle'))
-
-    // Add nvent console routes if enabled
-    if (consoleEnabled) {
-      addServerHandler({ route: '/api/_nvent/health', handler: resolve('./runtime/nitro/routes/_nvent/health'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/functions', handler: resolve('./runtime/nitro/routes/_nvent/functions'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/workers', handler: resolve('./runtime/nitro/routes/_nvent/workers'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/triggers', handler: resolve('./runtime/nitro/routes/_nvent/triggers'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/traces', handler: resolve('./runtime/nitro/routes/_nvent/traces'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/logs', handler: resolve('./runtime/nitro/routes/_nvent/logs'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/metrics', handler: resolve('./runtime/nitro/routes/_nvent/metrics'), method: 'get' })
-      addServerHandler({ route: '/api/_nvent/trigger/:id', handler: resolve('./runtime/nitro/routes/_nvent/invoke'), method: 'post' })
-    }
 
     // Proxy /functions/** to the iii engine HTTP API.
     // routeRules with proxy also tells the client-side router to skip these paths.
@@ -372,5 +378,3 @@ export default defineNuxtModule<NventIiiOptions>().with({
     }
   },
 })
-
-export type { NventIiiOptions as ModuleOptions }

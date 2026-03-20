@@ -33,7 +33,7 @@ export function useIii(): { iii: IiiInstance } {
  */
 export async function useIiiHealth(): Promise<Record<string, unknown>> {
   const { iii } = useIii()
-  return iii.trigger('engine::health::check', {}) as Promise<Record<string, unknown>>
+  return iii.trigger({ function_id: 'engine::health::check', payload: {} }) as Promise<Record<string, unknown>>
 }
 
 export { getContext } from 'iii-sdk'

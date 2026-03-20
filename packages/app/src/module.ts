@@ -50,6 +50,7 @@ export default defineNuxtModule<ModuleOptions>({
     '@nuxt/ui': {
       version: '>=4',
     },
+    '@nhealth/nutils': {},
   },
   async setup(options, nuxt) {
     const { resolve } = resolver
@@ -104,9 +105,9 @@ export default defineNuxtModule<ModuleOptions>({
       })
     }
 
-    // add jsoneditor to vite optimize -> for esm support
+    // add libs to vite optimize -> for esm support
     nuxt.options.vite.optimizeDeps = defu(nuxt.options.vite.optimizeDeps, {
-      include: ['vanilla-jsoneditor'],
+      include: ['vanilla-jsoneditor', '@vue-flow/core', '@vue-flow/controls', '@vue-flow/minimap', '@vue-flow/background'],
     })
   },
 })
