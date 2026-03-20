@@ -14,7 +14,7 @@
     "dev:iii": "playground/node_modules/.nvent/bin/iii -c playground/.nuxt/iii-config.yaml",
     "dev:console": "playground/node_modules/.nvent/bin/iii-console --engine-port 3111 --ws-port 3112 --bridge-port 49134",
     "dev:build": "nuxi build playground",
-    "dev:preview": "nuxi preview playground",
+    "dev:preview": "NVENT_PYTHON_BIN=playground/.venv/bin/python3 nuxi preview playground",
     "test": "vitest run",
     "test:unit": "vitest test/unit",
     "test:e2e": "vitest test/e2e",
