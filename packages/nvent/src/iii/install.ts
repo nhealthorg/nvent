@@ -72,11 +72,17 @@ async function fetchLatestVersion(): Promise<string> {
   const res = await fetch('https://api.github.com/repos/iii-hq/iii/releases/latest', {
     headers: { 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
   })
+  if (res.status === 403 || res.status === 429) {
+    const retryAfter = res.headers.get('retry-after') ?? res.headers.get('x-ratelimit-reset')
+    throw new RateLimitError(`GitHub API rate limit exceeded${retryAfter ? ` (retry after ${retryAfter})` : ''}`)
+  }
   if (!res.ok) throw new Error(`Failed to fetch latest iii version: ${res.statusText}`)
   const data = await res.json() as { tag_name: string }
   // Return the raw tag_name so the download URL is constructed correctly
   return data.tag_name
 }
+
+class RateLimitError extends Error {}
 
 async function getCurrentVersion(binaryPath: string): Promise<string | null> {
   try {
@@ -140,8 +146,20 @@ export async function ensureIiiEngine(options: InstallOptions): Promise<string> 
   let version = options.version
   if (!version || version === 'latest') {
     if (logLevel === 'info') logger.info('Resolving latest iii engine version...')
-    version = await fetchLatestVersion()
-    if (logLevel === 'info') logger.info(`Latest iii engine version: ${version}`)
+    try {
+      version = await fetchLatestVersion()
+      if (logLevel === 'info') logger.info(`Latest iii engine version: ${version}`)
+    }
+    catch (err) {
+      if (err instanceof RateLimitError) {
+        if (existsSync(binaryPath)) {
+          logger.warn(`[nvent] ${err.message} — using existing binary at ${binaryPath}`)
+          return binaryPath
+        }
+        throw new Error(`${err.message} and no existing iii binary found. Specify a version in nvent config (e.g. version: '0.8.0') to avoid GitHub API calls.`)
+      }
+      throw err
+    }
   }
 
   // Check if binary already exists at the right version

@@ -68,46 +68,55 @@ export default defineNuxtModule<NventIiiOptions>({
     const PYTHON_RUNTIME_SRC = resolve('./runtime/python/worker_runtime.py')
     const PYTHON_NVENT_HELPER_SRC = resolve('./runtime/python/nvent.py')
 
+    // -------------------------------------------------------------------------
+    // Options
+    // -------------------------------------------------------------------------
     const userConfig = (nuxt.options as any)[meta.configKey] ?? {}
     const opts: NventIiiOptions = { ...userConfig, ...options }
-
     const iiiOpts = opts.iii ?? {}
+
     const functionsDir = opts.functions?.dir ?? 'functions'
     const pythonBin = opts.functions?.python?.devPath
       ? join(nuxt.options.rootDir, opts.functions.python.devPath)
       : 'python3'
+    const skipPython = opts.functions?.python?.skip ?? false
+    const wsUrl = iiiOpts.wsUrl ?? 'ws://localhost:49134'
+    const mode = iiiOpts.mode ?? 'local'
+    // managed: true by default for local mode — nvent owns the engine lifecycle.
+    // false for docker/remote modes where an external service runs the engine.
+    const managed = iiiOpts.managed ?? (mode === 'local')
+    const version = iiiOpts.version ?? 'latest'
+    const logLevel = iiiOpts.logLevel ?? 'warn'
+    const consoleCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
 
-    // Install nvent.py into the venv site-packages so Pylance / VS Code resolves
-    // `from nvent import ...` automatically without any user configuration.
+    // -------------------------------------------------------------------------
+    // IDE integration: install nvent.py into the venv site-packages so
+    // Pylance / VS Code resolves `from nvent import ...` automatically.
+    // -------------------------------------------------------------------------
     installNventPyToSitePackages(pythonBin, readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'))
 
-    const consoleEnabled = opts.app?.enabled ?? true
-
-    // Forward nvent.app options to @nvent-addon/app module (configKey: 'nventapp').
-    // nvent runs first in module order, so setting nuxt.options.nventapp here means
-    // @nvent-addon/app will pick those up as its defaults when its setup runs.
-    // Direct `nventapp` config in nuxt.config takes priority (already set before this).
+    // -------------------------------------------------------------------------
+    // Forward nvent.app options to @nvent-addon/app (configKey: 'nventapp').
+    // nvent runs first in module order, so values set here become defaults for
+    // @nvent-addon/app. Direct `nventapp` config in nuxt.config takes priority.
+    // -------------------------------------------------------------------------
     if (hasNuxtModule('@nvent-addon/app')) {
       const nventOpts = nuxt.options as any
       nventOpts.nventapp ??= {}
-      // nvent.app.enabled controls whether the route is added
       nventOpts.nventapp.route ??= opts.app?.enabled !== false
       if (opts.app?.routePath) nventOpts.nventapp.routePath ??= opts.app.routePath
       if (opts.app?.layout !== undefined) nventOpts.nventapp.layout ??= opts.app.layout
     }
-    const wsUrl = iiiOpts.wsUrl ?? 'ws://localhost:49134'
-    const mode = iiiOpts.mode ?? 'local'
-    // managed: default true for local mode (nvent handles engine lifecycle),
-    // false for docker/remote modes (external service manages the engine).
-    const managed = iiiOpts.managed ?? (mode === 'local')
-    const skipPython = opts.functions?.python?.skip ?? false
 
-    // Build engine config from user options, then write iii-config.yaml for dev Nitro usage.
+    // -------------------------------------------------------------------------
+    // Engine config + runtimeConfig
+    // -------------------------------------------------------------------------
     const engineCfg = buildEngineConfig(iiiOpts)
     const engineConfigYaml = generateIiiConfigYaml(engineCfg)
+
+    // Write iii-config.yaml into .nuxt/ so the dev-mode Nitro server can read it.
     writeIiiConfig(join(nuxt.options.buildDir, 'iii-config.yaml'), engineCfg)
 
-    // Pass iii connection info through runtimeConfig so plugins can read it
     const rc = nuxt.options.runtimeConfig as any
     rc.nvent = {
       ...(rc.nvent ?? {}),
@@ -119,11 +128,11 @@ export default defineNuxtModule<NventIiiOptions>({
         streamPort: engineCfg.streamPort,
         managed,
         mode,
-        version: iiiOpts.version ?? 'latest',
+        version,
         modules: engineCfg.modules,
-        logLevel: iiiOpts.logLevel ?? 'warn',
-        // YAML config stored at build time so the production lifecycle plugin can write
-        // iii-config.yaml without needing confbox or rebuilding it from options.
+        logLevel,
+        // YAML config embedded at build time so the production lifecycle plugin can
+        // write iii-config.yaml without needing confbox or rebuilding from options.
         engineConfigYaml,
       },
       python: {
@@ -133,24 +142,26 @@ export default defineNuxtModule<NventIiiOptions>({
       },
       console: {
         enabled: !!iiiOpts.console,
-        version: typeof iiiOpts.console === 'object' ? (iiiOpts.console.version ?? '') : '',
-        port: (typeof iiiOpts.console === 'object' ? iiiOpts.console.port : undefined) ?? 3113,
-        host: (typeof iiiOpts.console === 'object' ? iiiOpts.console.host : undefined) ?? 'localhost',
-        flow: (typeof iiiOpts.console === 'object' ? iiiOpts.console.flow : undefined) ?? true,
+        version: consoleCfg.version ?? '',
+        port: consoleCfg.port ?? 3113,
+        host: consoleCfg.host ?? 'localhost',
+        flow: consoleCfg.flow ?? true,
       },
     }
 
-    // Collect layer infos for scanning
+    // -------------------------------------------------------------------------
+    // Function registry
+    // -------------------------------------------------------------------------
     const layerInfos = nuxt.options._layers.map(l => ({
       rootDir: l.config.rootDir,
       serverDir: l.config?.serverDir ?? join(l.config.rootDir, 'server'),
     }))
 
-    // Initial scan
     let lastScanned: ScannedRegistry = await scanFunctions({ layerInfos, functionsDir })
-    // In production, Python absPath values in the registry are rewritten to the runtime
-    // location (node_modules/.nvent/functions/<rel>) relative to process.cwd() = .output/server/.
-    // Computed eagerly here so the registry template is already correct when Nitro bundles it.
+
+    // In production, Python absPath values are rewritten to paths relative to
+    // .output/nvent/functions/ (e.g. 'analyze.py') so the worker plugin can
+    // resolve them regardless of where .output/ is deployed.
     let pythonPathRewrite: PythonPathRewrite | undefined
     if (!nuxt.options.dev && !skipPython && lastScanned.pythonFunctions.length > 0) {
       pythonPathRewrite = new Map()
@@ -158,117 +169,75 @@ export default defineNuxtModule<NventIiiOptions>({
         for (const layer of layerInfos) {
           const fnDir = join(layer.serverDir, functionsDir)
           if (fn.absPath.startsWith(fnDir)) {
-            pythonPathRewrite.set(fn.absPath, join('node_modules', '.nvent', 'functions', relative(fnDir, fn.absPath)))
+            pythonPathRewrite.set(fn.absPath, relative(fnDir, fn.absPath))
             break
           }
         }
       }
     }
 
-    // Register the generated registry template
-    // The Nitro worker plugin imports this as '#nvent/iii-registry'
     addTemplate({
       filename: III_REGISTRY_TEMPLATE,
       write: true,
       getContents: () => generateIiiRegistryTemplate(lastScanned, pythonPathRewrite),
     })
-
     const registryTemplatePath = resolve(nuxt.options.buildDir, III_REGISTRY_TEMPLATE)
-
-    // Alias for Vite/TypeScript
     nuxt.options.alias['#nvent/iii-registry'] = registryTemplatePath
-
-    // Tell Rollup/Nitro to bundle/transpile the generated registry and all its
-    // transitive imports (the function .ts files). Without this the function files
-    // are loaded raw by Node.js ESM where virtual aliases like `#imports` don't exist.
+    // Transpile so Nitro bundles the registry + all function .ts files; without
+    // this Node.js ESM tries to load them raw and virtual aliases like `#imports` break.
     nuxt.options.build.transpile.push(registryTemplatePath)
 
-    // Expose registry exports as server auto-imports
+    // -------------------------------------------------------------------------
+    // Nuxt / Nitro wiring (always, dev + prod)
+    // -------------------------------------------------------------------------
+
+    // Server plugins: lifecycle first (starts the engine), workers second (connects).
+    addServerPlugin(resolve('./runtime/nitro/plugins/00.iii-lifecycle'))
+    addServerPlugin(resolve('./runtime/nitro/plugins/01.iii-worker'))
+
+    // Proxy /functions/** to the iii engine HTTP API.
+    const nitroOpts = (nuxt.options as any).nitro ??= {}
+    nitroOpts.routeRules ??= {}
+    nitroOpts.routeRules['/functions/**'] = {
+      proxy: `http://${iiiOpts.httpHost ?? 'localhost'}:${engineCfg.httpPort}/**`,
+    }
+    // WebSocket support for the stream-proxy route handler.
+    nitroOpts.experimental ??= {}
+    nitroOpts.experimental.websocket = true
+    addServerHandler({ route: '/stream/**', handler: resolve('./runtime/nitro/routes/stream-proxy') })
+
+    // Server auto-imports
     addServerImports([
       { from: registryTemplatePath, name: 'registry' },
       { from: registryTemplatePath, name: 'pythonFunctions' },
+      { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIii' },
+      { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIiiHealth' },
+      { from: resolve('./runtime/nitro/utils/useIii'), name: 'getContext' },
+      { from: resolve('./runtime/nitro/utils/defineFunction'), name: 'defineFunction' },
+      { from: resolve('./runtime/nitro/utils/defineFunction'), name: 'FunctionContext' },
     ])
 
-    // Add the Nitro worker plugin
-    addServerPlugin(resolve('./runtime/nitro/plugins/00.iii-worker'))
-    // Add the lifecycle plugin (starts iii engine, Python workers, console at server runtime)
-    addServerPlugin(resolve('./runtime/nitro/plugins/01.iii-lifecycle'))
-
-    // Proxy /functions/** to the iii engine HTTP API.
-    // routeRules with proxy also tells the client-side router to skip these paths.
-    const nitroOpts = (nuxt.options as any).nitro ??= {}
-    nitroOpts.routeRules ??= {}
-    const engineHost = iiiOpts.httpHost ?? 'localhost'
-    nitroOpts.routeRules['/functions/**'] = { proxy: `http://${engineHost}:${engineCfg.httpPort}/**` }
-    // Enable Nitro WebSocket support so the stream-proxy route handler works.
-    nitroOpts.experimental ??= {}
-    nitroOpts.experimental.websocket = true
-
-    // Proxy WebSocket connections for the iii Stream module via a dedicated handler.
-    // The iii stream port is separate (default 3112); the handler bridges /stream/**
-    // WebSocket connections from the Nuxt origin to that port transparently.
-    addServerHandler({ route: '/stream/**', handler: resolve('./runtime/nitro/routes/stream-proxy') })
-
-    // Auto-imports for function files
-    addServerImports([
-      {
-        name: 'useIii',
-        from: resolve('./runtime/nitro/utils/useIii'),
-      },
-      {
-        name: 'useIiiHealth',
-        from: resolve('./runtime/nitro/utils/useIii'),
-      },
-      {
-        name: 'getContext',
-        from: resolve('./runtime/nitro/utils/useIii'),
-      },
-      {
-        name: 'defineFunction',
-        from: resolve('./runtime/nitro/utils/defineFunction'),
-      },
-      {
-        name: 'FunctionContext',
-        from: resolve('./runtime/nitro/utils/defineFunction'),
-      },
-    ])
-
-    // Client-side auto-imports (Vue composables)
+    // Client-side composables
     addImports([
-      {
-        name: 'useFunctionCall',
-        from: resolve('./runtime/app/composables/useFunctionCall'),
-      },
-      {
-        name: 'useNventStream',
-        from: resolve('./runtime/app/composables/useNventStream'),
-      },
+      { from: resolve('./runtime/app/composables/useFunctionCall'), name: 'useFunctionCall' },
+      { from: resolve('./runtime/app/composables/useNventStream'), name: 'useNventStream' },
     ])
 
-    // Engine lifecycle management
-    // For 'local' mode: binaries are downloaded here (both dev and prod build).
-    // Dev:  engine + console + Python workers are started in the Nuxt process so they
-    //       survive Nitro hot-reloads.
-    // Prod: binaries are copied to .output/.nvent/bin/ so the Docker image is self-contained.
-    //       The lifecycle Nitro plugin (01.iii-lifecycle.ts) handles actual startup at runtime.
-    if (managed && mode === 'local') {
+    // -------------------------------------------------------------------------
+    // Dev mode
+    // -------------------------------------------------------------------------
+    if (nuxt.options.dev) {
       const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
       const binDir = join(nventDir, 'bin')
-      const version = iiiOpts.version ?? 'latest'
-      const logLevel = iiiOpts.logLevel ?? 'warn'
 
-      // Download iii engine binary (idempotent — skipped if already at the right version).
-      const binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+      if (managed && mode === 'local') {
+        // Download binaries (idempotent — skipped when already at the right version).
+        const binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+        const consoleBinaryPath = iiiOpts.console
+          ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
+          : undefined
 
-      // Download iii-console binary if the console UI is requested (dev + prod).
-      let consoleBinaryPath: string | undefined
-      if (iiiOpts.console) {
-        const uiCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
-        consoleBinaryPath = await ensureIiiConsole({ binDir, version: uiCfg.version ?? version, logLevel })
-      }
-
-      if (nuxt.options.dev) {
-        // --- Dev: start everything in the Nuxt process ---
+        // Start the engine in the Nuxt process so it survives Nitro hot-reloads.
         const nventConfigPath = join(nventDir, 'iii-config.yaml')
         writeIiiConfig(nventConfigPath, engineCfg)
         const engine = createEngineManager({
@@ -281,100 +250,115 @@ export default defineNuxtModule<NventIiiOptions>({
         await engine.start()
         nuxt.hook('close', async () => { await engine.stop() })
 
-        if (!skipPython) {
-          // Install Python requirements at dev startup
-          for (const reqPath of [
-            join(nuxt.options.rootDir, 'requirements.txt'),
-            join(nuxt.options.rootDir, 'server', 'requirements.txt'),
-          ]) {
-            await installPythonRequirements(reqPath, pythonBin, logLevel)
-          }
-
-          // Start Python workers in the Nuxt process so they survive Nitro hot-reloads
-          // and can be restarted directly on .py file changes without globalThis tricks.
-          const workersDir = join(nventDir, 'workers')
-          const pythonOrchestrator = new PythonWorkersOrchestrator(
-            workersDir,
-            readFileSync(PYTHON_RUNTIME_SRC, 'utf-8'),
-            readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'),
-            wsUrl,
-            pythonBin,
-            logLevel,
-          )
-          await pythonOrchestrator.start(lastScanned.pythonFunctions)
-          nuxt.hook('close', async () => { await pythonOrchestrator.stop() })
-
-          // Attach to Nuxt instance for Python HMR (chokidar watcher below)
-          ;(nuxt as any).__nventPythonOrchestrator = pythonOrchestrator
-        }
-
-        if (iiiOpts.console && consoleBinaryPath) {
-          const uiCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
+        // Start the console UI if configured.
+        if (consoleBinaryPath) {
           const consoleManager = new ConsoleManager({
             binaryPath: consoleBinaryPath,
-            port: uiCfg.port ?? 3113,
+            port: consoleCfg.port ?? 3113,
             enginePort: engineCfg.httpPort,
             bridgePort: engineCfg.wsPort,
-            flow: uiCfg.flow ?? true,
+            flow: consoleCfg.flow ?? true,
             logLevel,
           })
           await consoleManager.start()
           nuxt.hook('close', async () => { await consoleManager.stop() })
         }
       }
-      else {
-        // nitro:build:public-assets fires after Nitro has fully written .output/server/,
-        // so nothing gets wiped after our copies land.
-        ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
-          // node runs from .output/ (CWD), so place files at .output/node_modules/.nvent/
-          const nventDir = join(nitro.options.output.dir, 'node_modules', '.nvent')
-          const binDir = join(nventDir, 'bin')
-          mkdirSync(binDir, { recursive: true })
-          copyFileSync(binaryPath, join(binDir, basename(binaryPath)))
-          if (consoleBinaryPath) copyFileSync(consoleBinaryPath, join(binDir, basename(consoleBinaryPath)))
-          writeFileSync(join(nventDir, 'iii-config.yaml'), engineConfigYaml, 'utf-8')
-          if (!skipPython) {
-            for (const fn of lastScanned.pythonFunctions) {
-              for (const layer of layerInfos) {
-                const fnDir = join(layer.serverDir, functionsDir)
-                if (fn.absPath.startsWith(fnDir)) {
-                  const dest = join(nventDir, 'functions', relative(fnDir, fn.absPath))
-                  mkdirSync(join(dest, '..'), { recursive: true })
-                  copyFileSync(fn.absPath, dest)
-                  break
-                }
-              }
-            }
-          }
-          console.log('[nvent] Binaries + config copied to .output/node_modules/.nvent/')
-        })
-      }
-    }
 
-    // Hot reload in dev: handle function file changes via Nuxt's own file watcher.
-    // Using builder:watch instead of a separate chokidar instance avoids duplicated
-    // watchers and lets us coordinate with Nitro's restart behaviour.
-    if (nuxt.options.dev) {
+      if (!skipPython) {
+        const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
+
+        // Install Python requirements on dev startup.
+        for (const reqPath of [
+          join(nuxt.options.rootDir, 'requirements.txt'),
+          join(nuxt.options.rootDir, 'server', 'requirements.txt'),
+        ]) {
+          await installPythonRequirements(reqPath, pythonBin, logLevel)
+        }
+
+        // Start Python workers in the Nuxt process so they survive Nitro hot-reloads
+        // and can be restarted directly on .py file changes.
+        const workersDir = join(nventDir, 'workers')
+        const pythonOrchestrator = new PythonWorkersOrchestrator(
+          workersDir,
+          readFileSync(PYTHON_RUNTIME_SRC, 'utf-8'),
+          readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'),
+          wsUrl,
+          pythonBin,
+          logLevel,
+        )
+        await pythonOrchestrator.start(lastScanned.pythonFunctions)
+        nuxt.hook('close', async () => { await pythonOrchestrator.stop() })
+        ;(nuxt as any).__nventPythonOrchestrator = pythonOrchestrator
+      }
+
+      // HMR: watch function files and refresh the registry on changes.
       const dirsToWatch = layerInfos.map(l =>
         join(l.serverDir ?? join(l.rootDir, 'server'), functionsDir),
       )
-
       const refresh = debounce(async (changedPath?: string) => {
         lastScanned = await scanFunctions({ layerInfos, functionsDir })
         await updateTemplates({ filter: t => t.filename === III_REGISTRY_TEMPLATE })
         console.log(`[nvent] registry refreshed${changedPath ? ` (${changedPath})` : ''}`)
-
         if (!skipPython && changedPath?.endsWith('.py')) {
           const orchestrator: PythonWorkersOrchestrator | undefined = (nuxt as any).__nventPythonOrchestrator
           await orchestrator?.onFileChanged(changedPath, lastScanned.pythonFunctions)
         }
       }, 200)
-
       chokidar.watch(dirsToWatch, {
         ignoreInitial: true,
         ignored: ['**/node_modules/**', '**/.nuxt/**', '**/__pycache__/**', '**/*.pyc'],
         awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 100 },
       }).on('all', (_event, path) => refresh(path))
+    }
+
+    // -------------------------------------------------------------------------
+    // Production build
+    // nitro:build:public-assets fires after Nitro has written .output/server/,
+    // so our copies land after Nitro is done and nothing gets wiped.
+    // -------------------------------------------------------------------------
+    else {
+      if (managed && mode === 'local') {
+        // Download binaries at build time so they can be embedded in the image.
+        const binDir = join(nuxt.options.rootDir, 'node_modules', '.nvent', 'bin')
+        const binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+        const consoleBinaryPath = iiiOpts.console
+          ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
+          : undefined
+
+        ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
+          const outputNventDir = join(nitro.options.output.dir, 'nvent')
+          const outputBinDir = join(outputNventDir, 'bin')
+          mkdirSync(outputBinDir, { recursive: true })
+          copyFileSync(binaryPath, join(outputBinDir, basename(binaryPath)))
+          if (consoleBinaryPath) copyFileSync(consoleBinaryPath, join(outputBinDir, basename(consoleBinaryPath)))
+          writeFileSync(join(outputNventDir, 'iii-config.yaml'), engineConfigYaml, 'utf-8')
+          console.log('[nvent] Engine binaries + config copied to .output/nvent/')
+        })
+      }
+
+      if (!skipPython) {
+        ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
+          const outputNventDir = join(nitro.options.output.dir, 'nvent')
+          const workersDir = join(outputNventDir, 'workers')
+          mkdirSync(workersDir, { recursive: true })
+          copyFileSync(PYTHON_RUNTIME_SRC, join(workersDir, '_runtime.py'))
+          copyFileSync(PYTHON_NVENT_HELPER_SRC, join(workersDir, 'nvent.py'))
+
+          for (const fn of lastScanned.pythonFunctions) {
+            for (const layer of layerInfos) {
+              const fnDir = join(layer.serverDir, functionsDir)
+              if (fn.absPath.startsWith(fnDir)) {
+                const dest = join(outputNventDir, 'functions', relative(fnDir, fn.absPath))
+                mkdirSync(join(dest, '..'), { recursive: true })
+                copyFileSync(fn.absPath, dest)
+                break
+              }
+            }
+          }
+          console.log('[nvent] Python worker files copied to .output/nvent/')
+        })
+      }
     }
   },
 })

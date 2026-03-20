@@ -8,7 +8,8 @@
 
 import { defineNitroPlugin, useRuntimeConfig } from '#imports'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
+import { resolveNventDir } from '../utils/nventDir'
 import { registerWorker } from 'iii-sdk'
 import { registerNodeFunctions } from '../utils/workers/node'
 import { PythonWorkersOrchestrator } from '../utils/workers/python'
@@ -46,7 +47,27 @@ export default defineNitroPlugin(async (nitroApp) => {
   const logLevel: string = cfg.logLevel ?? 'warn'
   // Python binary: configurable at deploy time via NVENT_PYTHON_BIN env var.
   // Never baked in at build time — the build-machine venv path won't exist on the target.
-  const pythonBin = process.env.NVENT_PYTHON_BIN ?? 'python3'
+  // If the value is a relative path, resolve it against multiple candidate roots so that
+  // `playground/.venv/bin/python3` works regardless of what directory the server starts from.
+  const pythonBin = (() => {
+    const raw = process.env.NVENT_PYTHON_BIN ?? 'python3'
+    if (!raw || raw === 'python3' || raw === 'python' || isAbsolute(raw)) return raw
+    // Relative path: walk up from CWD trying each ancestor until we find a match.
+    // Also try NVENT_DIR as a sibling root if set.
+    const roots = [
+      process.cwd(),
+      join(process.cwd(), '..'),
+      join(process.cwd(), '..', '..'),
+      join(process.cwd(), '..', '..', '..'),
+      process.env.NVENT_DIR ? join(process.env.NVENT_DIR, '..') : null,
+    ].filter(Boolean) as string[]
+    for (const root of roots) {
+      const candidate = resolve(root, raw)
+      if (existsSync(candidate)) return candidate
+    }
+    // Nothing found — return as-is and let spawn produce a clear ENOENT.
+    return raw
+  })()
 
   const workerName = cfg.workerName ?? `nvent-${process.pid}`
 
@@ -81,22 +102,42 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   // Python workers — started here only in production.
   // In development, module.ts manages Python workers directly in the Nuxt process.
-  // Python workers — started here only in production.
-  // In development, module.ts manages Python workers directly in the Nuxt process.
-  // workersDir: prefer .nvent/workers at cwd (Docker: .output contents at WORKDIR)
-  //             fall back to node_modules/.nvent/workers (traditional deployment).
-  const workersDir = join(process.cwd(), '.nvent', 'workers')
+  // nventDir is always .output/nvent/ — the sibling of .output/server/ where
+  // import.meta.url (the Nitro entry) lives. CWD-independent, deploy-safe.
+  // Set NVENT_DIR env var to override for custom deploy layouts.
+  const nventArtifactsDir = resolveNventDir(import.meta.url)
+  const workersDir = join(nventArtifactsDir, 'workers')
+  // Read runtime files from disk (.output/nvent/workers/ — copied there by the build hook).
+  // Fall back to the runtimeConfig-embedded strings for environments where the files
+  // may not have been copied (e.g. custom deploys that strip non-JS assets).
+  const runtimeFilePath = join(workersDir, '_runtime.py')
+  const nventHelperFilePath = join(workersDir, 'nvent.py')
+  const runtimeContent = existsSync(runtimeFilePath)
+    ? readFileSync(runtimeFilePath, 'utf-8')
+    : (pythonCfg.runtimeContent ?? '')
+  const nventHelperContent = existsSync(nventHelperFilePath)
+    ? readFileSync(nventHelperFilePath, 'utf-8')
+    : (pythonCfg.nventHelperContent ?? '')
   const orchestrator = new PythonWorkersOrchestrator(
     workersDir,
-    pythonCfg.runtimeContent ?? '',
-    pythonCfg.nventHelperContent ?? '',
+    runtimeContent,
+    nventHelperContent,
     wsUrl,
     pythonBin,
     logLevel,
   )
 
   if (process.env.NODE_ENV !== 'development' && !pythonCfg.skip) {
-    await orchestrator.start(pythonFunctions ?? [])
+    // Resolve relative absPath entries to absolute paths using nventArtifactsDir.
+    // The registry stores a functions-dir-relative path (e.g. 'analyze.py') so that
+    // the runtime CWD doesn't matter — we always produce a correct absolute path here.
+    const resolvedPythonFunctions = (pythonFunctions ?? []).map(fn => ({
+      ...fn,
+      absPath: isAbsolute(fn.absPath)
+        ? fn.absPath
+        : join(nventArtifactsDir, 'functions', fn.absPath),
+    }))
+    await orchestrator.start(resolvedPythonFunctions)
   }
 
   // Graceful shutdown
