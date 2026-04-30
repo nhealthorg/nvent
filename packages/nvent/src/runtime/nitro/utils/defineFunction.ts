@@ -296,7 +296,7 @@ export class FunctionContext {
       ? { ...(typeof data === 'object' && data !== null ? data : { data }), [NVENT_STREAM_KEY]: { name: this._streamName, groupId: this._streamGroupId } }
       : data
     return _iii().trigger({
-      function_id: 'enqueue',
+      function_id: 'iii::durable::publish',
       payload: { topic, data: injectData },
     })
   }

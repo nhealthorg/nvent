@@ -21,7 +21,7 @@ function stripStreamContext(input: unknown): unknown {
 /** Build a descriptive trigger suffix (no whitespace for valid function_id). */
 function triggerSuffix(type: string, cfg: Record<string, unknown>): string {
   if (type === 'http') return `http(${cfg.http_method ?? 'GET'}_${cfg.api_path ?? '/'})`
-  if (type === 'queue') return `queue(${cfg.topic ?? ''})`
+  if (type === 'durable:subscriber') return `queue(${cfg.topic ?? ''})`
   if (type === 'cron') return `cron(${cfg.expression ?? ''})`
   return type
 }
@@ -63,26 +63,28 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
 
     for (const [index, trigger] of (fn.triggers ?? []).entries()) {
       const cfg = trigger.config ?? {}
-      let suffix = triggerSuffix(trigger.type, cfg)
+      // Translate nvent's user-facing 'queue' type to iii 0.11+ 'durable:subscriber'
+      const iiiTriggerType = trigger.type === 'queue' ? 'durable:subscriber' : trigger.type
+      let suffix = triggerSuffix(iiiTriggerType, cfg)
       if (seenSuffixes.has(suffix)) suffix = `${suffix}::${index}`
       seenSuffixes.add(suffix)
 
       // Motia-style function_id: steps::<name>::trigger::<descriptive-suffix>
       const function_id = `steps::${fn.name}::trigger::${suffix}`
 
-      const triggerType = trigger.type
       // Resolve the implicit stream name: explicit > first flow > name prefix
       const streamName = fn.stream ?? fn.flows?.[0] ?? fn.name.split('::')[0]
       iii.registerFunction(
-        { id: function_id, metadata },
+        function_id,
         (input: unknown) => {
           const inherited = extractStreamContext(input)
           const cleanInput = stripStreamContext(input)
           const effectiveStream = inherited?.name ?? streamName
-          return fn.handler(cleanInput, new FunctionContext(triggerType, fn.name, effectiveStream, inherited?.groupId))
+          return fn.handler(cleanInput, new FunctionContext(trigger.type, fn.name, effectiveStream, inherited?.groupId))
         },
+        { metadata },
       )
-      iii.registerTrigger({ type: trigger.type, function_id, config: { ...cfg, metadata } })
+      iii.registerTrigger({ type: iiiTriggerType, function_id, config: cfg })
     }
   }
 }

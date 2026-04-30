@@ -51,21 +51,21 @@ export interface NamedQueueConfig {
 // ---------------------------------------------------------------------------
 
 export type StateAdapter =
-  | { class: 'modules::state::adapters::KvStore'; config?: KvStoreAdapterConfig }
-  | { class: 'modules::state::adapters::RedisAdapter'; config: RedisAdapterConfig }
+  | { name: 'kv'; config?: KvStoreAdapterConfig }
+  | { name: 'redis'; config: RedisAdapterConfig }
 
 export type QueueAdapter =
-  | { class: 'modules::queue::BuiltinQueueAdapter'; config?: KvStoreAdapterConfig }
-  | { class: 'modules::queue::RedisAdapter'; config: RedisAdapterConfig }
-  | { class: 'modules::queue::RabbitMQAdapter'; config: RabbitMQAdapterConfig }
+  | { name: 'builtin'; config?: KvStoreAdapterConfig }
+  | { name: 'redis'; config: RedisAdapterConfig }
+  | { name: 'rabbitmq'; config: RabbitMQAdapterConfig }
 
 export type CronAdapter =
-  | { class: 'modules::cron::KvCronAdapter'; config?: KvStoreAdapterConfig }
-  | { class: 'modules::cron::RedisCronAdapter'; config: RedisAdapterConfig }
+  | { name: 'kv'; config?: KvStoreAdapterConfig }
+  | { name: 'redis'; config: RedisAdapterConfig }
 
 export type StreamAdapter =
-  | { class: 'modules::stream::adapters::KvStore'; config?: KvStoreAdapterConfig }
-  | { class: 'modules::stream::adapters::RedisAdapter'; config: RedisAdapterConfig }
+  | { name: 'kv'; config?: KvStoreAdapterConfig }
+  | { name: 'redis'; config: RedisAdapterConfig }
 
 // ---------------------------------------------------------------------------
 // Module configs
@@ -190,24 +190,24 @@ export function defaultIiiEngineConfig(): IiiEngineConfig {
 
 function defaultStateAdapter(stateDir?: string): StateAdapter {
   return {
-    class: 'modules::state::adapters::KvStore',
+    name: 'kv',
     config: { store_method: 'file_based', file_path: stateDir ?? './data/state_store' },
   }
 }
 
 function defaultQueueAdapter(queueDir?: string): QueueAdapter {
   return {
-    class: 'modules::queue::BuiltinQueueAdapter',
+    name: 'builtin',
     config: { store_method: 'file_based', file_path: queueDir ?? './data/queue_store' },
   }
 }
 
 function defaultCronAdapter(): CronAdapter {
-  return { class: 'modules::cron::KvCronAdapter' }
+  return { name: 'kv' }
 }
 
 function defaultStreamAdapter(): StreamAdapter {
-  return { class: 'modules::stream::adapters::KvStore' }
+  return { name: 'kv' }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,24 +215,27 @@ function defaultStreamAdapter(): StreamAdapter {
 // ---------------------------------------------------------------------------
 
 export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
-  const modules: object[] = []
+  const workers: object[] = []
 
-  // RestApiModule — always present
+  // iii-worker-manager — sets the WebSocket port for SDK workers to connect
+  workers.push({ name: 'iii-worker-manager', config: { port: cfg.wsPort } })
+
+  // iii-http — always present
   const restApiConfig: Record<string, unknown> = {
     port: cfg.restApi?.port ?? cfg.httpPort,
   }
   if (cfg.restApi?.host) restApiConfig.host = cfg.restApi.host
   if (cfg.restApi?.default_timeout != null) restApiConfig.default_timeout = cfg.restApi.default_timeout
   if (cfg.restApi?.concurrency_request_limit != null) restApiConfig.concurrency_request_limit = cfg.restApi.concurrency_request_limit
-  modules.push({ class: 'modules::api::RestApiModule', config: restApiConfig })
+  workers.push({ name: 'iii-http', config: restApiConfig })
 
-  // StateModule
+  // iii-state
   if (cfg.modules.state !== false) {
     const adapter = cfg.state?.adapter ?? defaultStateAdapter()
-    modules.push({ class: 'modules::state::StateModule', config: { adapter } })
+    workers.push({ name: 'iii-state', config: { adapter } })
   }
 
-  // QueueModule
+  // iii-queue
   if (cfg.modules.queue !== false) {
     const adapter = cfg.queue?.adapter ?? defaultQueueAdapter()
     const queueModCfg: Record<string, unknown> = { adapter }
@@ -240,16 +243,16 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
     if (queueConfigs && Object.keys(queueConfigs).length > 0) {
       queueModCfg.queue_configs = queueConfigs
     }
-    modules.push({ class: 'modules::queue::QueueModule', config: queueModCfg })
+    workers.push({ name: 'iii-queue', config: queueModCfg })
   }
 
-  // CronModule
+  // iii-cron
   if (cfg.modules.cron !== false) {
     const adapter = cfg.cron?.adapter ?? defaultCronAdapter()
-    modules.push({ class: 'modules::cron::CronModule', config: { adapter } })
+    workers.push({ name: 'iii-cron', config: { adapter } })
   }
 
-  // StreamModule
+  // iii-stream
   if (cfg.modules.stream !== false) {
     const streamCfg: Record<string, unknown> = {
       port: cfg.stream?.port ?? cfg.streamPort,
@@ -258,7 +261,7 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
     if (cfg.stream?.auth_function !== undefined) streamCfg.auth_function = cfg.stream.auth_function
     const streamAdapter = cfg.stream?.adapter ?? defaultStreamAdapter()
     streamCfg.adapter = streamAdapter
-    modules.push({ class: 'modules::stream::StreamModule', config: streamCfg })
+    workers.push({ name: 'iii-stream', config: streamCfg })
   }
 
   // OtelModule
@@ -290,10 +293,10 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
     if (oCfg.logs_console_output != null) otelConfig.logs_console_output = oCfg.logs_console_output
     if (oCfg.level) otelConfig.level = oCfg.level
     if (oCfg.format) otelConfig.format = oCfg.format
-    modules.push({ class: 'modules::observability::OtelModule', config: otelConfig })
+    workers.push({ name: 'iii-observability', config: otelConfig })
   }
 
-  return `# Auto-generated by nvent — do not edit manually\n` + stringifyYAML({ port: cfg.wsPort, modules })
+  return `# Auto-generated by nvent — do not edit manually\n` + stringifyYAML({ workers })
 }
 
 /**
@@ -371,9 +374,9 @@ export function buildEngineConfig(iiiOpts: NonNullable<NventIiiOptions['iii']>):
 function mapStateAdapter(a: NonNullable<NventIiiOptions['iii']>['state']): StateAdapter | undefined {
   if (!a?.adapter) return undefined
   if (a.adapter.type === 'redis')
-    return { class: 'modules::state::adapters::RedisAdapter', config: { redis_url: a.adapter.redisUrl } }
+    return { name: 'redis', config: { redis_url: a.adapter.redisUrl } }
   return {
-    class: 'modules::state::adapters::KvStore',
+    name: 'kv',
     config: { store_method: a.adapter.storeMethod, file_path: a.adapter.filePath },
   }
 }
@@ -381,11 +384,11 @@ function mapStateAdapter(a: NonNullable<NventIiiOptions['iii']>['state']): State
 function mapQueueAdapter(a: NonNullable<NonNullable<NventIiiOptions['iii']>['queue']>['adapter']): QueueAdapter | undefined {
   if (!a) return undefined
   if (a.type === 'redis')
-    return { class: 'modules::queue::RedisAdapter', config: { redis_url: a.redisUrl } }
+    return { name: 'redis', config: { redis_url: a.redisUrl } }
   if (a.type === 'rabbitmq')
-    return { class: 'modules::queue::RabbitMQAdapter', config: { amqp_url: a.amqpUrl } }
+    return { name: 'rabbitmq', config: { amqp_url: a.amqpUrl } }
   return {
-    class: 'modules::queue::BuiltinQueueAdapter',
+    name: 'builtin',
     config: { store_method: a.storeMethod, file_path: a.filePath },
   }
 }
@@ -393,16 +396,16 @@ function mapQueueAdapter(a: NonNullable<NonNullable<NventIiiOptions['iii']>['que
 function mapCronAdapter(a: NonNullable<NventIiiOptions['iii']>['cron']): CronAdapter | undefined {
   if (!a?.adapter) return undefined
   if (a.adapter.type === 'redis')
-    return { class: 'modules::cron::RedisCronAdapter', config: { redis_url: a.adapter.redisUrl } }
-  return { class: 'modules::cron::KvCronAdapter' }
+    return { name: 'redis', config: { redis_url: a.adapter.redisUrl } }
+  return { name: 'kv' }
 }
 
 function mapStreamAdapter(a: NonNullable<NventIiiOptions['iii']>['stream']): StreamAdapter | undefined {
   if (!a?.adapter) return undefined
   if (a.adapter.type === 'redis')
-    return { class: 'modules::stream::adapters::RedisAdapter', config: { redis_url: a.adapter.redisUrl } }
+    return { name: 'redis', config: { redis_url: a.adapter.redisUrl } }
   return {
-    class: 'modules::stream::adapters::KvStore',
+    name: 'kv',
     config: { store_method: a.adapter.storeMethod, file_path: a.adapter.filePath },
   }
 }

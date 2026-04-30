@@ -25,7 +25,7 @@ export async function installPythonRequirements(
   if (!existsSync(requirementsPath)) return
   if (logLevel !== 'none') console.log(`[nvent] Installing Python requirements from ${requirementsPath}`)
   return new Promise((resolve) => {
-    const proc = spawn(pythonBin, ['-m', 'pip', 'install', '-r', requirementsPath, '--quiet'], {
+    const proc = spawn(pythonBin, ['-m', 'pip', 'install', '-r', requirementsPath, '--upgrade', '--quiet'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stderr = ''

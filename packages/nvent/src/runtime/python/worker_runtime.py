@@ -67,7 +67,7 @@ def operation_span(operation: str, **attributes):
 
         with operation_span("state::get", **{"nvent.state.scope": scope, "nvent.state.key": key}) as span:
             try:
-                result = await client._async_trigger(...)
+                result = await client.trigger_async(...)
                 set_span_ok(span)
                 return result
             except Exception as exc:
@@ -155,7 +155,7 @@ class _Stream:
             "nvent.stream.item_id": item_id,
         }) as span:
             try:
-                await self._client._async_trigger({"function_id": "stream::set", "payload": {
+                await self._client.trigger_async({"function_id": "stream::set", "payload": {
                     "stream_name": self._stream_name,
                     "group_id": group,
                     "item_id": item_id,
@@ -174,7 +174,7 @@ class _Stream:
             "nvent.stream.group_id": group,
         }) as span:
             try:
-                await self._client._async_trigger({"function_id": "stream::send", "payload": {
+                await self._client.trigger_async({"function_id": "stream::send", "payload": {
                     "stream_name": self._stream_name,
                     "group_id": group,
                     "data": data,
@@ -205,7 +205,7 @@ class _Stream:
             "nvent.stream.item_id": item_id,
         }) as span:
             try:
-                await self._client._async_trigger({"function_id": "stream::set", "payload": {
+                await self._client.trigger_async({"function_id": "stream::set", "payload": {
                     "stream_name": name, "group_id": group, "item_id": item_id, "data": data,
                 }})
                 set_span_ok(span)
@@ -221,7 +221,7 @@ class _Stream:
             "nvent.stream.item_id": item_id,
         }) as span:
             try:
-                result = await self._client._async_trigger({"function_id": "stream::get", "payload": {
+                result = await self._client.trigger_async({"function_id": "stream::get", "payload": {
                     "stream_name": name, "group_id": group, "item_id": item_id,
                 }})
                 set_span_ok(span)
@@ -238,7 +238,7 @@ class _Stream:
             "nvent.stream.item_id": item_id,
         }) as span:
             try:
-                await self._client._async_trigger({"function_id": "stream::delete", "payload": {
+                await self._client.trigger_async({"function_id": "stream::delete", "payload": {
                     "stream_name": name, "group_id": group, "item_id": item_id,
                 }})
                 set_span_ok(span)
@@ -253,7 +253,7 @@ class _Stream:
             "nvent.stream.group_id": group,
         }) as span:
             try:
-                result = await self._client._async_trigger({"function_id": "stream::list", "payload": {"stream_name": name, "group_id": group}})
+                result = await self._client.trigger_async({"function_id": "stream::list", "payload": {"stream_name": name, "group_id": group}})
                 set_span_ok(span)
                 return result
             except Exception as exc:
@@ -267,7 +267,7 @@ class _Stream:
             "nvent.stream.group_id": group,
         }) as span:
             try:
-                await self._client._async_trigger({"function_id": "stream::send", "payload": {
+                await self._client.trigger_async({"function_id": "stream::send", "payload": {
                     "stream_name": name, "group_id": group, "data": data,
                 }})
                 set_span_ok(span)
@@ -290,7 +290,7 @@ class _State:
     async def get(self, key: str):
         with operation_span("state::get", **{"nvent.state.scope": self._fn_id, "nvent.state.key": key}) as span:
             try:
-                result = await self._client._async_trigger({"function_id": "state::get", "payload": {"scope": self._fn_id, "key": key}})
+                result = await self._client.trigger_async({"function_id": "state::get", "payload": {"scope": self._fn_id, "key": key}})
                 set_span_ok(span)
                 return result
             except Exception as exc:
@@ -300,7 +300,7 @@ class _State:
     async def set(self, key: str, value) -> None:
         with operation_span("state::set", **{"nvent.state.scope": self._fn_id, "nvent.state.key": key}) as span:
             try:
-                result = await self._client._async_trigger({"function_id": "state::set", "payload": {"scope": self._fn_id, "key": key, "value": value}})
+                result = await self._client.trigger_async({"function_id": "state::set", "payload": {"scope": self._fn_id, "key": key, "value": value}})
                 set_span_ok(span)
                 return result
             except Exception as exc:
@@ -310,7 +310,7 @@ class _State:
     async def delete(self, key: str) -> None:
         with operation_span("state::delete", **{"nvent.state.scope": self._fn_id, "nvent.state.key": key}) as span:
             try:
-                await self._client._async_trigger({"function_id": "state::delete", "payload": {"scope": self._fn_id, "key": key}})
+                await self._client.trigger_async({"function_id": "state::delete", "payload": {"scope": self._fn_id, "key": key}})
                 set_span_ok(span)
             except Exception as exc:
                 record_exception(span, exc)
@@ -319,7 +319,7 @@ class _State:
     async def list(self):
         with operation_span("state::list", **{"nvent.state.scope": self._fn_id}) as span:
             try:
-                result = await self._client._async_trigger({"function_id": "state::list", "payload": {"scope": self._fn_id}})
+                result = await self._client.trigger_async({"function_id": "state::list", "payload": {"scope": self._fn_id}})
                 set_span_ok(span)
                 return result
             except Exception as exc:
@@ -387,8 +387,8 @@ class FlowContext:
         data = dict(payload.get("data") or {})
         if self._stream_group_id:
             data[_NVENT_STREAM_KEY] = {"name": self._stream_name, "groupId": self._stream_group_id}
-        await self._client._async_trigger({
-            "function_id": "enqueue",
+        await self._client.trigger_async({
+            "function_id": "iii::durable::publish",
             "payload": {"topic": topic, "data": data},
         })
 
@@ -414,7 +414,7 @@ class FlowContext:
         queue = payload["queue"]
         function_id = payload["function_id"]
         data = payload.get("data")
-        return await self._client._async_trigger({
+        return await self._client.trigger_async({
             "function_id": function_id,
             "payload": data,
             "action": {"type": "enqueue", "queue": queue},
@@ -615,14 +615,17 @@ def _register(client, mod, default_id: str) -> None:
             return _wrapped
 
         wrapped = _make_wrapper(handler_fn, is_http, t_type, fn_id, has_ctx, stream_name)
+        # Translate nvent's user-facing 'queue' type to iii 0.11+ 'durable:subscriber'
+        iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
         client.register_function(
-            {"id": function_id, "description": description, "metadata": metadata},
+            function_id,
             wrapped,
+            metadata=metadata,
         )
         client.register_trigger({
-            "type": t_type,
+            "type": iii_trigger_type,
             "function_id": function_id,
-            "config": {**iii_cfg, "metadata": metadata},
+            "config": iii_cfg,
         })
 
     print(f"[nvent] registered {fn_id!r} ({len(triggers)} trigger(s))", flush=True)

@@ -96,8 +96,11 @@ export class PythonWorkerManager {
       const text = chunk.toString()
       stdoutBuffer += text
       if (this.logLevel === 'none') return
+      let lastLevel: LogLevel = 'info'
       for (const line of text.split('\n').filter(Boolean)) {
-        const level = parsePythonLineLevel(line) ?? 'info'
+        const parsed = parsePythonLineLevel(line)
+        if (parsed) lastLevel = parsed
+        const level = parsed ?? lastLevel
         if (!shouldShow(level, this.logLevel)) continue
         if (level === 'error') logger.error(`[python] ${line}`)
         else if (level === 'warn') logger.warn(`[python] ${line}`)
