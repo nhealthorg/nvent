@@ -4,7 +4,7 @@
  * ```ts
  * const { call, pending, data, error } = useFunctionCall('pipeline/start')
  * const result = await call({ text: 'Hello' })
- * // result may include a streamId to pass to useNventStream
+ * // result may include a streamId to pass to useIiiStream
  * ```
  */
 

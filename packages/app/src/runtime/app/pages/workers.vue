@@ -45,25 +45,25 @@
       <div class="max-w-5xl mx-auto p-6 space-y-6">
         <!-- Stat cards -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard
+          <NventStatCard
             icon="i-lucide-server"
             :count="namedWorkers.length"
             label="Workers"
             variant="blue"
           />
-          <StatCard
+          <NventStatCard
             icon="i-lucide-zap"
             :count="totalActiveInvocations"
             label="Active invocations"
             variant="amber"
           />
-          <StatCard
+          <NventStatCard
             icon="i-lucide-cpu"
             :count="totalFunctions"
             label="Functions"
             variant="purple"
           />
-          <StatCard
+          <NventStatCard
             icon="i-lucide-shield-check"
             :count="`${healthyComponentCount}/${totalComponentCount}`"
             label="Components healthy"

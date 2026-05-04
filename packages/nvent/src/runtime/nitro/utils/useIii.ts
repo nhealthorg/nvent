@@ -1,14 +1,15 @@
 /**
- * useIii — returns the iii SDK instance stored by the worker plugin.
+ * useIii — returns the raw iii SDK instance stored by the worker plugin.
  *
- * Available in any Nitro event handler or iii function:
+ * Available in any Nitro event handler or server utility:
  * ```ts
- * const { iii } = useIii()
- * const result = await iii.trigger('orders::process', data)
+ * // server/api/health.get.ts
+ * import { useIii } from '#nvent/server'
  *
- * // Inside a registered function handler, get the execution context separately:
- * const { iii } = useIii()
- * const { logger } = getContext()  // auto-imported from iii-sdk via #imports
+ * export default defineEventHandler(async () => {
+ *   const iii = useIii()
+ *   return iii.trigger({ function_id: 'engine::health::check', payload: {} })
+ * })
  * ```
  */
 
@@ -17,7 +18,7 @@ import type { registerWorker } from 'iii-sdk'
 
 type IiiInstance = ReturnType<typeof registerWorker>
 
-export function useIii(): { iii: IiiInstance } {
+export function useIii(): IiiInstance {
   const nitroApp = useNitroApp()
   const iii = (nitroApp as any).$iii as IiiInstance | undefined
 
@@ -25,15 +26,15 @@ export function useIii(): { iii: IiiInstance } {
     throw new Error('[nvent] iii SDK not initialized. Is the iii-worker Nitro plugin loaded?')
   }
 
-  return { iii }
+  return iii
 }
 
 /**
  * useIiiHealth — returns the current engine health status.
  */
 export async function useIiiHealth(): Promise<Record<string, unknown>> {
-  const { iii } = useIii()
+  const iii = useIii()
   return iii.trigger({ function_id: 'engine::health::check', payload: {} }) as Promise<Record<string, unknown>>
 }
 
-export { getContext } from 'iii-sdk'
+

@@ -34,8 +34,9 @@ export interface NventIiiOptions {
     /** State module adapter configuration */
     state?: {
       adapter?:
-        | { type: 'kv'; storeMethod?: 'file_based' | 'in_memory'; filePath?: string }
+        | { type: 'kv'; storeMethod?: 'file_based' | 'in_memory'; filePath?: string; saveIntervalMs?: number }
         | { type: 'redis'; redisUrl?: string }
+        | { type: 'bridge'; bridgeUrl: string }
     }
     /**
      * Queue module configuration.
@@ -43,9 +44,28 @@ export interface NventIiiOptions {
      */
     queue?: {
       adapter?:
-        | { type: 'builtin'; storeMethod?: 'file_based' | 'in_memory'; filePath?: string }
+        | {
+            type: 'builtin'
+            storeMethod?: 'file_based' | 'in_memory'
+            filePath?: string
+            saveIntervalMs?: number
+            maxAttempts?: number
+            backoffMs?: number
+            concurrency?: number
+            pollIntervalMs?: number
+            /** Processing order. 'concurrent' (parallel) or 'fifo' (sequential). Default: 'concurrent' */
+            mode?: 'concurrent' | 'fifo'
+          }
         | { type: 'redis'; redisUrl?: string }
-        | { type: 'rabbitmq'; amqpUrl?: string }
+        | {
+            type: 'rabbitmq'
+            amqpUrl?: string
+            maxAttempts?: number
+            prefetchCount?: number
+            /** 'standard' or 'quorum' (HA replicated). Default: 'standard' */
+            queueMode?: 'standard' | 'quorum'
+          }
+        | { type: 'bridge'; bridgeUrl: string }
       queueConfigs?: Record<string, {
         type?: 'standard' | 'fifo'
         concurrency?: number
@@ -58,7 +78,7 @@ export interface NventIiiOptions {
     /** Cron module adapter configuration */
     cron?: {
       adapter?:
-        | { type: 'kv' }
+        | { type: 'kv'; lockTtlMs?: number; lockIndex?: string; storeMethod?: 'file_based' | 'in_memory'; filePath?: string; saveIntervalMs?: number }
         | { type: 'redis'; redisUrl?: string }
     }
     /** WebSocket Stream module configuration */
@@ -66,14 +86,22 @@ export interface NventIiiOptions {
       host?: string
       authFunction?: string | null
       adapter?:
-        | { type: 'kv'; storeMethod?: 'file_based' | 'in_memory'; filePath?: string }
+        | { type: 'kv'; storeMethod?: 'file_based' | 'in_memory'; filePath?: string; saveIntervalMs?: number }
         | { type: 'redis'; redisUrl?: string }
+        | { type: 'bridge'; bridgeUrl: string }
     }
     /** REST API module extra settings */
     restApi?: {
       host?: string
       defaultTimeout?: number
       concurrencyRequestLimit?: number
+      /** CORS configuration for browser clients */
+      cors?: {
+        /** Origins allowed to make requests. Use '*' for any, or list specific domains. */
+        allowedOrigins?: string[]
+        /** HTTP methods permitted for cross-origin requests. */
+        allowedMethods?: string[]
+      }
     }
     /** OtelModule (observability) configuration */
     observability?: {
@@ -103,6 +131,24 @@ export interface NventIiiOptions {
       logsFlushIntervalMs?: number
       logsSamplingRatio?: number
       logsConsoleOutput?: boolean
+      /** Advanced sampling rules — override samplingRatio for matched operations. */
+      sampling?: {
+        default?: number
+        parentBased?: boolean
+        rules?: Array<{ operation?: string; service?: string; rate: number }>
+        rateLimit?: { maxTracesPerSecond?: number }
+      }
+      /** Alert rules — trigger a webhook or function when a metric crosses a threshold. */
+      alerts?: Array<{
+        name: string
+        metric: string
+        threshold: number
+        operator: '>' | '>=' | '<' | '<=' | '==' | '!='
+        windowSeconds: number
+        enabled?: boolean
+        cooldownSeconds?: number
+        action: { type: 'webhook'; url: string } | { type: 'function'; path: string }
+      }>
       level?: 'trace' | 'debug' | 'info' | 'warn' | 'error'
       format?: 'default' | 'json'
     }
@@ -126,10 +172,94 @@ export interface NventIiiOptions {
       /** Enable the Flow visualization page */
       flow?: boolean
     }
+    /** PubSub worker — topic-based event fanout across functions. */
+    pubsub?: {
+      adapter?:
+        | { type: 'local' }
+        | { type: 'redis'; redisUrl?: string }
+    }
+    /**
+     * HTTP Functions worker — enables outbound HTTP calls from the engine.
+     * Required for functions registered with HttpInvocationConfig.
+     */
+    httpFunctions?: {
+      security?: {
+        /** URL patterns allowed for outbound requests. Use '*' to allow all. */
+        urlAllowlist?: string[]
+        /** Block requests to private/internal IP ranges (SSRF prevention). Default: true */
+        blockPrivateIps?: boolean
+        /** Require HTTPS for all outbound requests. Default: true */
+        requireHttps?: boolean
+      }
+    }
+    /**
+     * Additional iii-worker-manager instance with RBAC.
+     * nvent uses this automatically when browser SDK is enabled.
+     * Can also be configured manually for custom auth scenarios.
+     */
+    workerManager?: {
+      rbac?: {
+        /** Port for the RBAC worker manager. Default: 49135 */
+        port?: number
+        /** Function ID called on every WebSocket upgrade for auth. */
+        authFunctionId?: string
+        /** Functions the connecting worker is allowed to invoke (patterns supported). */
+        exposeFunctions?: string[]
+        /** Function invoked before each handler — enrich or audit requests. */
+        middlewareFunctionId?: string
+        /** Allow workers to register their own function handlers. Default: true */
+        allowFunctionRegistration?: boolean
+        /** Allow workers to register new trigger types. Default: false */
+        allowTriggerTypeRegistration?: boolean
+        /** Prefix prepended to every function the worker registers. */
+        functionRegistrationPrefix?: string
+        /** TTL for signed browser auth tokens generated by the Nuxt proxy. Default: 120 */
+        tokenTtlSeconds?: number
+        /** Allow browser connections without a custom resolver returning user context. Default: true */
+        allowAnonymous?: boolean
+        /** Optional path (relative to project root) to a custom browser auth resolver module. */
+        authResolverPath?: string
+      }
+    }
+    /**
+     * Bridge client workers — connects this engine to remote iii instances.
+     * Each entry creates an `iii-bridge` worker in the config.
+     */
+    bridge?: Array<{
+      url: string
+      serviceId: string
+      serviceName?: string
+      expose?: Array<{ localFunction: string; remoteFunction?: string }>
+      forward?: Array<{ localFunction: string; remoteFunction: string; timeoutMs?: number }>
+    }>
+    /**
+     * Exec workers — spawns external processes alongside the engine.
+     * Each entry creates an `iii-exec` worker in the config.
+     */
+    exec?: Array<{
+      watch?: string[]
+      exec: string[]
+    }>
+    /** Anonymous usage telemetry. Set enabled: false to opt out. */
+    telemetry?: {
+      enabled?: boolean
+      apiKey?: string
+      sdkApiKey?: string
+      heartbeatIntervalSecs?: number
+    }
   }
   functions?: {
     /** Directory under server/ where functions are, relative to serverDir (default: 'functions') */
     dir?: string
+    /**
+     * Function ID prefix for this layer's functions.
+     * Set in a layer's `nuxt.config.ts` to namespace its functions.
+     * Priority: this value → `$meta.name` → package.json name → directory name.
+     * Set to `''` (empty string) to explicitly opt out of any prefix.
+     * Has no effect in the root project (always un-prefixed).
+     * Example: 'myorg::auth'
+     */
+    prefix?: string
     python?: {
       /**
        * Path to the Python executable used **in development only** (e.g. a virtualenv).

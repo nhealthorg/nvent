@@ -1,5 +1,3 @@
-import { log } from "node:console";
-
 export default defineNuxtConfig({
   modules: [
     '@nuxt/ui',
@@ -26,12 +24,30 @@ export default defineNuxtConfig({
     }
   },
 
+  nitro: {
+    // In pnpm monorepos, transitive deps like `unhead` are not hoisted into
+    // the playground's node_modules, so Nitro's dependency tracer fails to
+    // copy them to .output/server/node_modules. Inlining them bundles the
+    // package directly into the server chunk instead.
+    externals: {
+      inline: ['unhead'],
+    },
+  },
+
   nvent: {
     iii: {
       version: 'latest',
       mode: 'local',
       console: true,
       logLevel: 'warn',
+      workerManager: {
+        rbac: {
+          port: 49135,
+          exposeFunctions: [
+            'match("pipeline::*")',
+          ],
+        },
+      },
     },
     functions: {
       dir: 'functions',

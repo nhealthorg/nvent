@@ -63,15 +63,31 @@ function parseEngineLineLevel(line: string): LogLevel | null {
   return null // continuation line (└, ├, indented)
 }
 
-const LOG_LEVEL_RANK: Record<string, number> = { none: 0, error: 1, warn: 2, info: 3 }
-
-function shouldShow(lineLevel: LogLevel, minLevel: string): boolean {
-  return LOG_LEVEL_RANK[lineLevel] <= LOG_LEVEL_RANK[minLevel]
+/**
+ * Strip the redundant timestamp and level tag the engine embeds in each line.
+ * Consola adds its own, so showing both is noisy.
+ * "[01:06:00.947 PM] [WARN] iii::services Bad format"  →  "iii::services Bad format"
+ */
+function cleanEngineLine(line: string): string {
+  return line
+    .replace(/\[\d{1,2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*[AP]M)?\]\s*/gi, '')
+    .replace(/\[(ERROR|WARN|INFO)\]\s*/g, '')
+    .trim()
 }
+
 
 export class EngineManager {
   private process: ChildProcess | null = null
   private readonly opts: Required<EngineManagerOptions>
+
+  // Counts of non-error lines seen since the last summary was printed.
+  private startupCounts: Record<string, number> = {}
+  private runtimeCounts: Record<string, number> = {}
+  private startupComplete = false
+
+  // Pending continuation-line group (debounced 60 ms so └ lines attach to parent).
+  private pendingGroup: { level: LogLevel; lines: string[] } | null = null
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(opts: EngineManagerOptions) {
     this.opts = { httpPort: 3111, wsPort: 49134, logLevel: 'warn', ...opts }
@@ -79,6 +95,78 @@ export class EngineManager {
 
   isRunning(): boolean {
     return this.process !== null && !this.process.killed && this.process.exitCode === null
+  }
+
+  // ── Internal helpers ─────────────────────────────────────────────────────
+
+  private handleGroup(level: LogLevel, lines: string[]): void {
+    const { logLevel } = this.opts
+    if (logLevel === 'none') return
+
+    const text = lines.join('\n  ')
+
+    // Errors always surface immediately regardless of mode.
+    if (level === 'error') {
+      logger.error(`[iii] ${text}`)
+      return
+    }
+
+    // In verbose mode stream everything cleaned.
+    if (logLevel === 'info') {
+      if (level === 'warn') logger.warn(`[iii] ${text}`)
+      else logger.info(`[iii] ${text}`)
+      return
+    }
+
+    // Silent mode: just count.
+    const bucket = this.startupComplete ? this.runtimeCounts : this.startupCounts
+    bucket[level] = (bucket[level] ?? 0) + 1
+  }
+
+  private flushPendingGroup(): void {
+    if (!this.pendingGroup) return
+    const { level, lines } = this.pendingGroup
+    this.pendingGroup = null
+    if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = null }
+    this.handleGroup(level, lines)
+  }
+
+  private bufferRawLine(level: LogLevel | null, rawLine: string): void {
+    const cleaned = cleanEngineLine(rawLine)
+    if (level !== null) {
+      this.flushPendingGroup()
+      this.pendingGroup = { level, lines: [cleaned] }
+    }
+    else if (this.pendingGroup) {
+      this.pendingGroup.lines.push(cleaned)
+    }
+    else {
+      this.pendingGroup = { level: 'warn', lines: [cleaned] }
+    }
+    if (this.pendingTimer) clearTimeout(this.pendingTimer)
+    this.pendingTimer = setTimeout(() => this.flushPendingGroup(), 60)
+  }
+
+  private summaryCounts(counts: Record<string, number>): string | null {
+    const total = Object.values(counts).reduce((a, b) => a + b, 0)
+    if (total === 0) return null
+    const parts = Object.entries(counts).map(([l, n]) => `${n} ${l}`)
+    return parts.join(', ')
+  }
+
+  private flushStartupSummary(): void {
+    this.startupComplete = true
+    const summary = this.summaryCounts(this.startupCounts)
+    this.startupCounts = {}
+    if (!summary) return
+    logger.warn(`[iii] ${summary} message(s) suppressed during startup — set nvent.iii.logLevel:'info' to see all`)
+  }
+
+  private flushRuntimeSummary(): void {
+    const summary = this.summaryCounts(this.runtimeCounts)
+    this.runtimeCounts = {}
+    if (!summary) return
+    logger.warn(`[iii] ${summary} message(s) suppressed — set nvent.iii.logLevel:'info' to see all`)
   }
 
   async start(): Promise<void> {
@@ -90,29 +178,23 @@ export class EngineManager {
     const { binaryPath, configPath, httpPort, wsPort, logLevel } = this.opts
     if (logLevel === 'info') logger.info(`Starting iii engine — config: ${configPath}`)
 
+    this.startupCounts = {}
+    this.runtimeCounts = {}
+    this.startupComplete = false
+
     this.process = spawn(binaryPath, ['--config', configPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
     })
 
-    let lastLevel: LogLevel = 'info'
     this.process.stdout?.on('data', (chunk: Buffer) => {
-      if (logLevel === 'none') return
-      for (const line of chunk.toString().split('\n').filter(Boolean)) {
-        const parsed = parseEngineLineLevel(line)
-        if (parsed) lastLevel = parsed
-        const effectiveLevel = parsed ?? lastLevel
-        if (!shouldShow(effectiveLevel, logLevel)) continue
-        if (effectiveLevel === 'error') logger.error(`[iii] ${line}`)
-        else if (effectiveLevel === 'warn') logger.warn(`[iii] ${line}`)
-        else logger.info(`[iii] ${line}`)
-      }
+      for (const line of chunk.toString().split('\n').filter(Boolean))
+        this.bufferRawLine(parseEngineLineLevel(line), line)
     })
 
     this.process.stderr?.on('data', (chunk: Buffer) => {
-      if (logLevel === 'none') return
       for (const line of chunk.toString().split('\n').filter(Boolean))
-        logger.warn(`[iii] ${line}`)
+        this.bufferRawLine('warn', line)
     })
 
     let earlyExitCode: number | null = null
@@ -132,6 +214,9 @@ export class EngineManager {
 
     await Promise.race([pollReady(httpPort), earlyExitPromise])
 
+    this.flushPendingGroup()
+    this.flushStartupSummary()
+
     if (earlyExitCode !== null && earlyExitCode !== 0) {
       const [httpOk, wsOk] = await Promise.all([isTcpPortOpen(httpPort), isTcpPortOpen(wsPort)])
       if (httpOk && wsOk) {
@@ -144,16 +229,23 @@ export class EngineManager {
       )
     }
 
-    if (logLevel === 'info') logger.info(`iii engine ready (WS :${wsPort}, HTTP :${httpPort})`)
+    logger.info(`[iii] engine ready`)
   }
 
   async stop(): Promise<void> {
     if (!this.isRunning() || !this.process) return
 
     const { logLevel } = this.opts
+    this.flushPendingGroup()
+    this.flushRuntimeSummary()
+
     if (logLevel === 'info') logger.info('Stopping iii engine...')
     return new Promise((resolve) => {
-      this.process!.once('exit', () => { this.process = null; if (logLevel === 'info') logger.info('iii engine stopped'); resolve() })
+      this.process!.once('exit', () => {
+        this.process = null
+        if (logLevel === 'info') logger.info('iii engine stopped')
+        resolve()
+      })
       this.process!.kill('SIGTERM')
       setTimeout(() => { if (this.process) this.process.kill('SIGKILL') }, 5000)
     })

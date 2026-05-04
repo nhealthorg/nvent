@@ -9,7 +9,7 @@ import { defineWebSocketHandler } from 'h3'
  *
  *   { type: 'join', data: { streamName, groupId, subscriptionId } }
  *
- * This handler matches `/stream/{streamName}/{groupId}[/]` on the Nuxt/Nitro
+ * This handler matches `/_iii/stream/{streamName}/{groupId}[/]` on the Nuxt/Nitro
  * side, extracts the stream name and group ID from the URL path, connects to
  * the upstream root, sends the join message, and then transparently bridges
  * all subsequent messages so the browser never needs to know about port 3112
@@ -22,10 +22,10 @@ export default defineWebSocketHandler({
     const port = nvent.iii.streamPort as number
 
     // Extract streamName and groupId from the request path.
-    // Expected path: /stream/{streamName}/{groupId}[/]
+    // Expected path: /_iii/stream/{streamName}/{groupId}[/]
     const rawUrl = peer.request.url
     const pathname = rawUrl.startsWith('http') ? new URL(rawUrl).pathname : rawUrl.split('?')[0]
-    const parts = pathname.replace(/^\/stream\//, '').replace(/\/$/, '').split('/')
+    const parts = pathname.replace(/^\/_iii\/stream\//, '').replace(/\/$/, '').split('/')
     const streamName = parts[0] ?? ''
     const groupId = parts[1] ?? ''
 

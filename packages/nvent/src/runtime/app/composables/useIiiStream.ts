@@ -1,14 +1,14 @@
 /**
- * useNventStream — subscribe to an iii stream group via WebSocket.
+ * useIiiStream — subscribe to an iii stream group via WebSocket.
  *
  * The iii stream module serves WebSocket connections at:
- *   ws://host/stream/{stream_name}/{group_id}/
+ *   ws://host/_iii/stream/{stream_name}/{group_id}/
  *
- * Nitro proxies `/stream/**` → `ws://iii-engine:3112/stream/**`, so connecting
+ * Nitro proxies `/_iii/stream/**` → `ws://iii-engine:3112/`, so connecting
  * to the current page host is sufficient — no hardcoded ports needed.
  *
  * ```ts
- * const { messages, status, subscribe, close } = useNventStream<MyEvent>()
+ * const { messages, status, subscribe, close } = useIiiStream<MyEvent>()
  * subscribe('pipeline', jobId)   // start listening
  * // messages.value grows as events arrive
  * ```
@@ -16,11 +16,11 @@
 
 import { ref, onUnmounted } from 'vue'
 
-export type NventStreamStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
+export type IiiStreamStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
 
-export function useNventStream<TMessage = unknown>() {
-  const messages = ref<unknown[]>([])
-  const status = ref<NventStreamStatus>('idle')
+export function useIiiStream<TMessage = unknown>() {
+  const messages = ref<TMessage[]>([])
+  const status = ref<IiiStreamStatus>('idle')
   let ws: WebSocket | null = null
 
   function subscribe(streamName: string, groupId: string) {
@@ -30,7 +30,7 @@ export function useNventStream<TMessage = unknown>() {
 
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = typeof window !== 'undefined' ? window.location.host : 'localhost'
-    ws = new WebSocket(`${protocol}//${host}/stream/${streamName}/${groupId}/`)
+    ws = new WebSocket(`${protocol}//${host}/_iii/stream/${streamName}/${groupId}/`)
 
     ws.onopen = () => {
       status.value = 'connected'
@@ -55,14 +55,14 @@ export function useNventStream<TMessage = unknown>() {
         }
         // For group sync, data is an array — flatten into the messages list.
         if (Array.isArray(payload)) {
-          messages.value = [...messages.value, ...payload]
+          messages.value = [...messages.value, ...(payload as TMessage[])]
         }
         else {
-          messages.value = [...messages.value, payload]
+          messages.value = [...messages.value, payload as TMessage]
         }
       }
       catch {
-        messages.value = [...messages.value, e.data]
+        messages.value = [...messages.value, e.data as unknown as TMessage]
       }
     }
 
@@ -80,17 +80,11 @@ export function useNventStream<TMessage = unknown>() {
     if (ws) {
       ws.close()
       ws = null
-      status.value = 'closed'
     }
+    if (status.value !== 'idle') status.value = 'closed'
   }
 
   onUnmounted(close)
 
-  return {
-    messages: messages as ReturnType<typeof ref<TMessage[]>>,
-    status,
-    subscribe,
-    close,
-  }
+  return { messages, status, subscribe, close }
 }
-

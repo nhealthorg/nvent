@@ -1,12 +1,9 @@
 declare module '#nvent/iii-registry' {
   interface NodeFnInfo {
-    name: string
+    id: string
     description?: string
-    handler: (input: unknown, ctx: unknown) => Promise<unknown>
+    handler: (input: unknown) => Promise<unknown> | unknown
     triggers: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
-    enqueues: string[]
-    flows: string[]
-    stream?: string
     filePath?: string
   }
   export const registry: {
@@ -14,4 +11,25 @@ declare module '#nvent/iii-registry' {
     triggers: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
   }
   export const pythonFunctions: Array<{ id: string; absPath: string; standalone: boolean }>
+}
+
+declare module '#nvent/server' {
+  export { defineFunction } from '../nitro/utils/defineFunction'
+  export type {
+    FunctionDef,
+    FunctionHandler,
+    TriggerConfig,
+    HttpTriggerConfig,
+    CronTriggerConfig,
+    QueueTriggerConfig,
+    StateTriggerConfig,
+    StreamTriggerConfig,
+    SubscribeTriggerConfig,
+    LogTriggerConfig,
+    CustomTriggerConfig,
+    HttpRequest,
+  } from '../nitro/utils/defineFunction'
+  export { useIii, useIiiHealth } from '../nitro/utils/useIii'
+  export { Logger, registerWorker, TriggerAction } from 'iii-sdk'
+  export type { ISdk, InitOptions } from 'iii-sdk'
 }

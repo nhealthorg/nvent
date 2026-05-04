@@ -1,364 +1,32 @@
 /**
  * defineFunction — the single primitive for declaring nvent functions.
  *
- * A function bundles config (name, description, triggers, enqueues, flows)
- * and the handler in one call. The handler receives `(input, ctx)` where
- * `ctx` is a `FunctionContext` with logger, state, enqueue, and match.
+ * A thin wrapper: the function ID is derived from the file path at
+ * registration time. The handler receives raw iii input — no injected ctx.
+ * Use `#nvent/server` for access to Logger, useIii, and the full iii SDK.
  *
  * ```ts
+ * import { defineFunction, Logger } from '#nvent/server'
+ *
+ * const logger = new Logger()
+ *
  * export default defineFunction({
- *   name: 'orders::process',
  *   description: 'Process a placed order',
  *   triggers: [
- *     { type: 'queue', config: { topic: 'order.placed' } },
+ *     { type: 'durable:subscriber', config: { topic: 'order.placed' } },
  *   ],
- *   enqueues: ['order.processed'],
- *   flows: ['orders'],
- *   handler: async (input: { orderId: string }, ctx) => {
- *     ctx.logger.info('Processing order', { orderId: input.orderId })
- *     await ctx.enqueue({ topic: 'order.processed', data: input })
+ *   handler: async (input: { orderId: string }) => {
+ *     logger.info('Processing order', { orderId: input.orderId })
  *     return { processed: true }
  *   },
  * })
  * ```
  */
 
-import { useNitroApp } from '#imports'
-import { Logger } from 'iii-sdk'
-import { SpanStatusCode, withSpan } from 'iii-sdk/telemetry'
-
-/** Internal key used to propagate the stream channel through queue messages. */
-export const NVENT_STREAM_KEY = '__nventStream'
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface ILogger {
-  info(msg: string, data?: unknown): void
-  warn(msg: string, data?: unknown): void
-  error(msg: string, data?: unknown): void
-  debug(msg: string, data?: unknown): void
-  trace(msg: string, data?: unknown): void
-}
-
-interface IState {
-  get(key: string): Promise<unknown>
-  set(key: string, value: unknown): Promise<{ new_value: unknown; old_value: unknown }>
-  delete(key: string): Promise<void>
-  update(key: string, ops: unknown[]): Promise<{ new_value: unknown; old_value: unknown }>
-  list(): Promise<unknown[]>
-}
+// ─── HTTP request shape ──────────────────────────────────────────────────────
 
 /**
- * Access to the iii Stream module.
- * Data is organised as `stream_name > group_id > item_id`.
- *
- * **Implicit API** (recommended): `set(itemId, data)` automatically uses the
- * function's flow name as the stream name and a UUID that is stable for the
- * lifetime of the nvent call chain. The HTTP step activates it via
- * `subscription()` and every subsequent `enqueue()` call carries the same
- * channel info forward — no manual coordination needed.
- *
- * ```ts
- * // HTTP step — activate the channel and tell the client where to subscribe:
- * const { streamName, groupId } = ctx.stream.subscription()
- * await ctx.enqueue({ topic: 'my.topic', data: { text } })
- * return { status: 200, body: { streamName, groupId } }
- *
- * // Queue / Python step — just use set(), group ID is inherited automatically:
- * await ctx.stream.set('step-1', { label: 'Tokenizing', step: 1 })
- * await ctx.stream.send({ type: 'done' })
- * ```
- *
- * **Explicit API**: `setIn(name, group, itemId, data)` targets a specific
- * stream and group (useful for cross-flow writes).
- */
-interface IStream {
-  /**
-   * Set (create or update) an item in the **implicit** stream channel for this
-   * execution: `streamName = flow name`, `groupId = current trace ID`.
-   * All WebSocket clients subscribed to that channel receive the update.
-   */
-  set(itemId: string, data: unknown): Promise<void>
-  /**
-   * Send a custom event to all subscribers of the implicit stream channel.
-   * Unlike `set`, events are not persisted — they are fire-and-forget.
-   */
-  send(data: unknown): Promise<void>
-  /**
-   * Returns `{ streamName, groupId }` for the implicit stream channel.
-   * Return this from an HTTP handler so the client knows where to subscribe.
-   *
-   * ```ts
-   * return { status: 200, body: ctx.stream.subscription() }
-   * ```
-   */
-  subscription(): { streamName: string; groupId: string }
-  /**
-   * Set (create or update) an item in an **explicit** stream group.
-   * Use when you need to target a specific stream name and group ID.
-   */
-  setIn(name: string, group: string, itemId: string, data: unknown): Promise<void>
-  /** Get a single item from a stream group. */
-  get<T = unknown>(name: string, group: string, itemId: string): Promise<T>
-  /** Delete an item from a stream group. */
-  delete(name: string, group: string, itemId: string): Promise<void>
-  /** List all items in a stream group. */
-  list<T = unknown>(name: string, group: string): Promise<T[]>
-  /** Send a custom event to all subscribers of an explicit stream group. */
-  sendTo(name: string, group: string, data: unknown): Promise<void>
-}
-
-// ─── FunctionContext ──────────────────────────────────────────────────────────
-
-/**
- * Execution context injected as the second argument to every `defineFunction` handler.
- *
- * ```ts
- * export default defineFunction({
- *   id: 'greet',
- *   triggers: [{ type: 'http', config: { api_path: 'greet', http_method: 'POST' } }],
- *   handler: async (input, ctx) => {
- *     ctx.logger.info('greet called', input)
- *     const count = await ctx.state.get('greet', 'count')
- *     await ctx.enqueue({ topic: 'greeted', data: input })
- *   },
- * })
- * ```
- */
-export class FunctionContext {
-  readonly logger: ILogger
-  readonly state: IState
-  readonly stream: IStream
-  readonly triggerType: string
-  private _streamName: string
-  private _streamGroupId?: string
-
-  constructor(triggerType: string, fnId: string, streamName: string, inheritedGroupId?: string) {
-    this.triggerType = triggerType
-    this._streamName = streamName
-    this._streamGroupId = inheritedGroupId
-    this.logger = new Logger(fnId, 'nvent') as unknown as ILogger
-    this.state = {
-      get: (key) => withSpan('state::get', {}, async (span) => {
-        span.setAttribute('nvent.state.scope', fnId)
-        span.setAttribute('nvent.state.key', key)
-        try {
-          return await _iii().trigger({ function_id: 'state::get', payload: { scope: fnId, key } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      set: (key, value) => withSpan('state::set', {}, async (span) => {
-        span.setAttribute('nvent.state.scope', fnId)
-        span.setAttribute('nvent.state.key', key)
-        try {
-          return await _iii().trigger({ function_id: 'state::set', payload: { scope: fnId, key, value } }) as { new_value: unknown; old_value: unknown }
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      delete: (key) => withSpan('state::delete', {}, async (span) => {
-        span.setAttribute('nvent.state.scope', fnId)
-        span.setAttribute('nvent.state.key', key)
-        try {
-          await _iii().trigger({ function_id: 'state::delete', payload: { scope: fnId, key } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      update: (key, ops) => withSpan('state::update', {}, async (span) => {
-        span.setAttribute('nvent.state.scope', fnId)
-        span.setAttribute('nvent.state.key', key)
-        try {
-          return await _iii().trigger({ function_id: 'state::update', payload: { scope: fnId, key, ops } }) as { new_value: unknown; old_value: unknown }
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      list: () => withSpan('state::list', {}, async (span) => {
-        span.setAttribute('nvent.state.scope', fnId)
-        try {
-          return await _iii().trigger({ function_id: 'state::list', payload: { scope: fnId } }) as unknown[]
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-    }
-    this.stream = {
-      subscription: () => {
-        if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        return { streamName: this._streamName, groupId: this._streamGroupId }
-      },
-      set: (itemId, data) => withSpan('stream::set', {}, async (span) => {
-        if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        span.setAttribute('nvent.stream.name', this._streamName)
-        span.setAttribute('nvent.stream.group_id', this._streamGroupId)
-        span.setAttribute('nvent.stream.item_id', itemId)
-        try {
-          await _iii().trigger({ function_id: 'stream::set', payload: { stream_name: this._streamName, group_id: this._streamGroupId, item_id: itemId, data } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      send: (data) => withSpan('stream::send', {}, async (span) => {
-        if (!this._streamGroupId) this._streamGroupId = globalThis.crypto.randomUUID()
-        span.setAttribute('nvent.stream.name', this._streamName)
-        span.setAttribute('nvent.stream.group_id', this._streamGroupId)
-        try {
-          await _iii().trigger({ function_id: 'stream::send', payload: { stream_name: this._streamName, group_id: this._streamGroupId, data } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      // Explicit: target any stream+group
-      setIn: (name, group, itemId, data) => withSpan('stream::set', {}, async (span) => {
-        span.setAttribute('nvent.stream.name', name)
-        span.setAttribute('nvent.stream.group_id', group)
-        span.setAttribute('nvent.stream.item_id', itemId)
-        try {
-          await _iii().trigger({ function_id: 'stream::set', payload: { stream_name: name, group_id: group, item_id: itemId, data } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      get: (name, group, itemId) => withSpan('stream::get', {}, async (span) => {
-        span.setAttribute('nvent.stream.name', name)
-        span.setAttribute('nvent.stream.group_id', group)
-        span.setAttribute('nvent.stream.item_id', itemId)
-        try {
-          return await _iii().trigger({ function_id: 'stream::get', payload: { stream_name: name, group_id: group, item_id: itemId } }) as never
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      delete: (name, group, itemId) => withSpan('stream::delete', {}, async (span) => {
-        span.setAttribute('nvent.stream.name', name)
-        span.setAttribute('nvent.stream.group_id', group)
-        span.setAttribute('nvent.stream.item_id', itemId)
-        try {
-          await _iii().trigger({ function_id: 'stream::delete', payload: { stream_name: name, group_id: group, item_id: itemId } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      list: (name, group) => withSpan('stream::list', {}, async (span) => {
-        span.setAttribute('nvent.stream.name', name)
-        span.setAttribute('nvent.stream.group_id', group)
-        try {
-          return await _iii().trigger({ function_id: 'stream::list', payload: { stream_name: name, group_id: group } }) as never[]
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-      sendTo: (name, group, data) => withSpan('stream::send', {}, async (span) => {
-        span.setAttribute('nvent.stream.name', name)
-        span.setAttribute('nvent.stream.group_id', group)
-        try {
-          await _iii().trigger({ function_id: 'stream::send', payload: { stream_name: name, group_id: group, data } })
-        } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
-          span.recordException(err as Error)
-          throw err
-        }
-      }),
-    }
-  }
-
-  /** Publishes a message to a queue topic.
-   * If a stream channel has been activated (via `ctx.stream.subscription()` or
-   * `ctx.stream.set()`), the channel info is automatically propagated to the
-   * downstream step so it can write to the same stream without extra wiring.
-   */
-  enqueue({ topic, data }: { topic: string; data?: unknown }): Promise<void> {
-    const injectData = this._streamGroupId != null
-      ? { ...(typeof data === 'object' && data !== null ? data : { data }), [NVENT_STREAM_KEY]: { name: this._streamName, groupId: this._streamGroupId } }
-      : data
-    return _iii().trigger({
-      function_id: 'iii::durable::publish',
-      payload: { topic, data: injectData },
-    })
-  }
-
-  /**
-   * Dispatches directly to a function via a named queue (requires the queue to be
-   * declared in `nvent.iii.queue.queueConfigs`). Unlike `enqueue()`, which publishes to
-   * a topic, this targets a specific function and routes the call through the named
-   * queue for FIFO ordering, concurrency control, or custom retry behaviour.
-   *
-   * Returns `{ messageReceiptId }` immediately — the function runs asynchronously.
-   *
-   * ```ts
-   * const { messageReceiptId } = await ctx.enqueueNamed({
-   *   queue: 'orders',
-   *   functionId: 'orders::process',
-   *   data: { orderId: '123' },
-   * })
-   * ```
-   */
-  enqueueNamed({ queue, functionId, data }: { queue: string; functionId: string; data?: unknown }): Promise<{ messageReceiptId: string }> {
-    return _iii().trigger({
-      function_id: functionId,
-      payload: data,
-      action: { type: 'enqueue' as const, queue },
-    }) as Promise<{ messageReceiptId: string }>
-  }
-
-  /**
-   * Dispatch to a trigger-type-specific handler with correctly-typed input.
-   *
-   * ```ts
-   * handler: async (input, ctx) => ctx.match(input, {
-   *   http: (req) => ({ status: 200, body: { hello: req.query_params.name } }),
-   *   queue: (data) => process(data),
-   *   cron: () => runSweep(),
-   * })
-   * ```
-   */
-  match<THandlers extends Partial<{
-    [K in keyof TriggerInputTypeMap]: (input: TriggerInputTypeMap[K]) => unknown
-  } & { default: (input: unknown) => unknown }>>(
-    input: unknown,
-    handlers: THandlers,
-  ): unknown {
-    const fn = (handlers as any)[this.triggerType] ?? (handlers as any).default
-    if (!fn) throw new Error(`[nvent] ctx.match(): no handler for trigger type '${this.triggerType}'. Available: ${Object.keys(handlers).join(', ')}`)
-    return fn(input)
-  }
-}
-
-function _iii() {
-  const nitroApp = useNitroApp()
-  const iii = (nitroApp as any).$iii
-  if (!iii) throw new Error('[nvent] iii SDK not initialized')
-  return iii
-}
-
-// ─── HTTP request shape (Node.js workers) ────────────────────────────────────
-
-/**
- * Input shape for http-triggered functions (Node.js).
+ * Input shape for http-triggered functions.
  * The engine uses snake_case for path/query params.
  */
 export interface HttpRequest {
@@ -366,7 +34,7 @@ export interface HttpRequest {
   body: unknown | null
   headers: Record<string, string>
   method: string
-  /** Route path as registered (e.g. 'greet') */
+  /** Route path as registered */
   path: string
   /** Path parameters extracted from the route template */
   path_params: Record<string, string>
@@ -379,28 +47,7 @@ export interface HttpRequest {
   }
 }
 
-/**
- * Maps each trigger type to the input shape delivered by the engine.
- * Used to type `ctx.match()` branches and to automatically infer the handler
- * input type when all triggers share the same type.
- */
-export type TriggerInputTypeMap = {
-  http: HttpRequest
-  cron: undefined
-  queue: unknown
-  state: unknown
-  stream: unknown
-  'stream:join': unknown
-  'stream:leave': unknown
-  subscribe: unknown
-  log: unknown
-}
-
-export type FunctionHandler<TInput = unknown, TOutput = unknown> = (
-  input: TInput,
-  ctx: FunctionContext,
-) => TOutput | Promise<TOutput>
-
+// ─── Trigger config types ─────────────────────────────────────────────────────
 
 export interface HttpTriggerConfig {
   type: 'http'
@@ -429,7 +76,7 @@ export interface CronTriggerConfig {
 }
 
 export interface QueueTriggerConfig {
-  type: 'queue'
+  type: 'durable:subscriber'
   /** @internal injected at registration time */
   function_id?: string
   config: {
@@ -443,9 +90,7 @@ export interface StateTriggerConfig {
   /** @internal injected at registration time */
   function_id?: string
   config?: {
-    /** State key to watch */
     key?: string
-    /** State change event to react to */
     event?: 'set' | 'delete' | 'change'
     [key: string]: unknown
   }
@@ -456,32 +101,8 @@ export interface StreamTriggerConfig {
   /** @internal injected at registration time */
   function_id?: string
   config: {
-    /** Stream ID to subscribe to */
     id: string
-    /** Optional filter criteria applied server-side */
     filter?: Record<string, unknown>
-    [key: string]: unknown
-  }
-}
-
-export interface StreamJoinTriggerConfig {
-  type: 'stream:join'
-  /** @internal injected at registration time */
-  function_id?: string
-  config: {
-    /** Stream ID */
-    id: string
-    [key: string]: unknown
-  }
-}
-
-export interface StreamLeaveTriggerConfig {
-  type: 'stream:leave'
-  /** @internal injected at registration time */
-  function_id?: string
-  config: {
-    /** Stream ID */
-    id: string
     [key: string]: unknown
   }
 }
@@ -491,7 +112,6 @@ export interface SubscribeTriggerConfig {
   /** @internal injected at registration time */
   function_id?: string
   config?: {
-    /** Topic to subscribe to */
     topic?: string
     [key: string]: unknown
   }
@@ -504,91 +124,118 @@ export interface LogTriggerConfig {
   config?: Record<string, unknown>
 }
 
+/** Escape hatch for custom trigger types registered via `registerTriggerType()`. */
+export interface CustomTriggerConfig {
+  /** The custom trigger type name (e.g. 'kafka', 'mqtt', 'file-watcher'). */
+  type: string
+  /** @internal injected at registration time */
+  function_id?: string
+  config?: Record<string, unknown>
+}
+
 export type TriggerConfig =
   | HttpTriggerConfig
   | CronTriggerConfig
   | QueueTriggerConfig
   | StateTriggerConfig
   | StreamTriggerConfig
-  | StreamJoinTriggerConfig
-  | StreamLeaveTriggerConfig
   | SubscribeTriggerConfig
   | LogTriggerConfig
+  | CustomTriggerConfig
 
 // ─── defineFunction ──────────────────────────────────────────────────────────
-
-export interface FunctionDef<TInput = unknown, TOutput = unknown> {
-  /** Step name. Auto-derived from file path if omitted. Equivalent to Motia's `name` field. */
-  name?: string
-  description?: string
-  triggers?: TriggerConfig[]
-  /**
-   * Topics this function can publish to via `ctx.enqueue()`.
-   * Used by the nvent console to build flow graphs.
-   */
-  enqueues?: string[]
-  /**
-   * Flow groups this function belongs to.
-   * Functions in the same flow are visualized together in the nvent console.
-   */
-  flows?: string[]
-  /**
-   * The stream name used by `ctx.stream.set()` and `ctx.stream.send()` (the
-   * implicit stream channel). Defaults to `flows[0]`, or the function ID
-   * prefix before `::` if no flows are declared.
-   *
-   * All steps that share this name and run in the same trace will write to
-   * the same WebSocket channel — no manual groupId coordination needed.
-   */
-  stream?: string
-  /** The function's business logic. Receives (input, ctx). */
-  handler: FunctionHandler<TInput, TOutput>
-  /** @internal — runtime marker so the registry can detect defineFunction() exports */
-  readonly __nventStep: true
-}
 
 /** @internal Infers the handler input type from the declared trigger configs. */
 type InferHandlerInput<TTriggers extends TriggerConfig[]> =
   [TTriggers[number]['type']] extends ['http'] ? HttpRequest : unknown
 
+/** Any schema library with a parse method (Zod, Valibot, etc.) */
+type Parseable<T = unknown> = { parse(data: unknown): T }
+
+/** Infer the TypeScript type from a schema object, or fall back to Fallback. */
+type InferSchema<S, Fallback = unknown> = S extends Parseable<infer T> ? T : Fallback
+
+export type FunctionHandler<TInput = unknown, TOutput = unknown> = (
+  input: TInput,
+) => TOutput | Promise<TOutput>
+
+export interface FunctionDef<TInput = unknown, TOutput = unknown> {
+  description?: string
+  triggers?: TriggerConfig[]
+  handler: FunctionHandler<TInput, TOutput>
+  /** JSON Schema for the function input — registered with iii for agent/CLI discovery. */
+  request_format?: Record<string, unknown>
+  /** JSON Schema for the function output — registered with iii for agent/CLI discovery. */
+  response_format?: Record<string, unknown>
+}
+
+/**
+ * Extracts a plain JSON Schema object from a schema library instance (e.g. Zod v4).
+ * Returns the value as-is if it is already a plain object without a `parse` method.
+ * @internal
+ */
+function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined {
+  if (!schema || typeof schema !== 'object') return undefined
+  const s = schema as Record<string, unknown>
+  if (typeof s['parse'] !== 'function') return s as Record<string, unknown> // raw JSON Schema
+  if (typeof s['toJsonSchema'] === 'function') return (s['toJsonSchema'] as () => Record<string, unknown>)()
+  return undefined
+}
+
 /**
  * Defines a nvent function: config + handler in one call.
  *
- * The handler input type is inferred automatically from the trigger types:
- * - http-only triggers → `input` is typed as `HttpRequest`
- * - all other triggers → `input` defaults to `unknown` (annotate explicitly)
+ * Pass Zod (or any schema-library) schemas as `input` / `output` to get:
+ * - automatic TypeScript type inference for the handler arguments and return type
+ * - automatic `request_format` / `response_format` extraction for iii discovery
  *
  * ```ts
- * // HTTP trigger — input inferred as HttpRequest
- * export default defineFunction({
- *   triggers: [{ type: 'http', config: { api_path: 'greet' } }],
- *   handler: async (req, ctx) => {
- *     return { body: { hello: req.query_params.name } }
- *   },
- * })
+ * import { z } from 'zod'
+ * import { defineFunction } from '#nvent/server'
  *
- * // Queue trigger — annotate input type explicitly
+ * const Input = z.object({ name: z.string() })
+ * const Output = z.object({ greeting: z.string() })
+ *
  * export default defineFunction({
- *   triggers: [{ type: 'queue', config: { topic: 'order.placed' } }],
- *   handler: async (input: { orderId: string }, ctx) => { ... },
+ *   description: 'Greet someone',
+ *   input: Input,   // handler input typed as { name: string }
+ *   output: Output, // handler return typed as { greeting: string }
+ *   triggers: [{ type: 'http', config: { api_path: '/greet', http_method: 'POST' } }],
+ *   handler: async (input) => ({ greeting: `Hello ${input.name}` }),
  * })
  * ```
+ *
+ * Without schemas, HTTP triggers infer `HttpRequest` automatically; all others
+ * default to `unknown` (annotate explicitly or use `input`).
+ *
+ * You may also pass raw JSON Schema objects as `request_format` / `response_format`
+ * if you prefer explicit control.
  */
 export function defineFunction<
-  TTriggers extends TriggerConfig[],
-  TInput = InferHandlerInput<TTriggers>,
-  TOutput = unknown,
+  TInSchema extends Parseable<any> | undefined = undefined,
+  TOutSchema extends Parseable<any> | undefined = undefined,
+  TTriggers extends TriggerConfig[] = TriggerConfig[],
+  TInput = TInSchema extends Parseable<infer T> ? T : InferHandlerInput<TTriggers>,
+  TOutput = TOutSchema extends Parseable<infer T> ? T : unknown,
 >(
   config: {
-    name?: string
     description?: string
+    /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
+    input?: TInSchema
+    /** Schema for the handler output. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
+    output?: TOutSchema
+    /** Raw JSON Schema override for the input (takes precedence over `input` extraction). */
+    request_format?: Record<string, unknown>
+    /** Raw JSON Schema override for the output (takes precedence over `output` extraction). */
+    response_format?: Record<string, unknown>
     triggers?: TTriggers
-    enqueues?: string[]
-    flows?: string[]
-    stream?: string
     handler: FunctionHandler<TInput, TOutput>
   },
 ): FunctionDef<TInput, TOutput> {
-  return { ...config, __nventStep: true } as FunctionDef<TInput, TOutput>
+  const { input, output, request_format, response_format, ...rest } = config
+  return {
+    ...rest,
+    request_format: request_format ?? extractJsonSchema(input),
+    response_format: response_format ?? extractJsonSchema(output),
+  } as FunctionDef<TInput, TOutput>
 }
-

@@ -1,0 +1,8 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "server/functions",
+    "layers/test/server/functions"
+  ]
+}

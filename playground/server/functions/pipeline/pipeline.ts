@@ -1,37 +1,33 @@
+import { Logger  } from '#nvent/server'
+
+const logger = new Logger()
+
 export default defineFunction({
-  name: 'pipeline::start',
-  flows: ['pipeline'],
+  description: 'Start the text analysis pipeline',
   triggers: [
-    {
-      type: 'http',
-      config: { api_path: 'pipeline/start', http_method: 'POST' },
-    },
+    { type: 'http', config: { api_path: 'pipeline/start', http_method: 'POST' } },
   ],
-  enqueues: ['pipeline.analyze'],
-  handler: async (req, ctx) => {
-    const text = (req.body as { text?: string })?.text ?? ''
+  handler: async (req) => {
+    // Accept both HTTP trigger (req.body.text) and direct browser SDK trigger (req.text)
+    const body: { text?: string } = (req as any).body ?? req
+    const text = body.text ?? ''
     if (!text.trim()) {
       return { status: 400, body: { error: 'No text provided' } }
     }
 
-    // The stream channel is identified by the flow name ('pipeline') and the
-    // current trace ID — no need to create or pass a separate job ID.
-    const { streamName, groupId } = ctx.stream.subscription()
+    // Create a stream group for this job
+    const groupId = globalThis.crypto.randomUUID()
+    const streamName = 'pipeline'
 
-    ctx.logger.info('Pipeline started', { streamName, groupId })
+    logger.info('Pipeline started', { streamName, groupId })
 
-    // Enqueue the heavy analysis so the HTTP response returns immediately.
-    // The trace ID is propagated through the queue message automatically,
-    // so the Python step will write to the same stream channel.
-    await ctx.enqueue({ topic: 'pipeline.analyze', data: { text } })
+    // Enqueue the heavy analysis
+    const iii = useIii()
+    await iii.trigger({
+      function_id: 'iii::durable::publish',
+      payload: { topic: 'pipeline.analyze', data: { text, streamName, groupId } },
+    })
 
     return { status: 200, body: { streamName, groupId } }
   },
 })
-
-// Node.js steps that want to do immediate streaming work (not delegated to the queue)
-// can still do so directly:
-//
-//   await ctx.stream.set('step-1', { step: 1, total: 4, label: 'Tokenizing text' })
-//   await ctx.stream.send({ type: 'done' })
-

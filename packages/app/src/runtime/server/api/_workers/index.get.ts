@@ -7,18 +7,18 @@ import { defineEventHandler, useIii } from '#imports'
  * production Workers page can show both in a single request.
  */
 export default defineEventHandler(async () => {
-  const { iii } = useIii()
+  const iii = useIii()
 
   const [health, workers] = await Promise.allSettled([
     iii.trigger({ function_id: 'engine::health::check', payload: {} }),
-    iii.listWorkers(),
+    iii.trigger({ function_id: 'engine::workers::list', payload: {} }),
   ])
 
   return {
     health: health.status === 'fulfilled' ? health.value : null,
     healthError: health.status === 'rejected' ? String(health.reason) : null,
     workers: workers.status === 'fulfilled'
-      ? (Array.isArray(workers.value) ? workers.value : [workers.value])
+      ? ((workers.value as any)?.workers ?? [])
       : [],
     workersError: workers.status === 'rejected' ? String(workers.reason) : null,
   }

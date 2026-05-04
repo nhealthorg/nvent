@@ -17,8 +17,8 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const { iii } = useIii()
-  const result = await iii.trigger(functionId, input ?? {})
+  const iii = useIii()
+  const result = await iii.trigger({ function_id: functionId, payload: input ?? {} })
 
   return {
     success: true,

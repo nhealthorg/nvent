@@ -93,6 +93,7 @@
 </template>
 
 <script setup lang="ts">
+// useIiiStream is auto-imported by the nvent module. Run `nuxt prepare` to refresh types.
 interface StepMessage {
   step: number
   total: number
@@ -110,13 +111,10 @@ const text = ref('')
 const groupId = ref<string | null>(null)
 const steps = ref<StepMessage[]>([])
 const result = ref<Record<string, unknown> | null>(null)
+const callPending = ref(false)
+const callError = ref<Error | null>(null)
 
-const { call, pending: callPending, error: callError } = useFunctionCall<
-  { text: string },
-  { streamName: string; groupId: string }
->('pipeline/start')
-
-const { messages, status: streamStatus, subscribe } = useNventStream<StreamMessage>()
+const { messages, status: streamStatus, subscribe } = useIiiStream<StreamMessage>()
 
 // Process incoming WebSocket messages as new items appear in the stream group.
 watch(messages, (all) => {
@@ -137,10 +135,23 @@ async function analyze() {
   steps.value = []
   result.value = null
   groupId.value = null
-
-  const res = await call({ text: text.value })
-  groupId.value = res.groupId
-  subscribe(res.streamName, res.groupId)
+  callPending.value = true
+  callError.value = null
+  try {
+    const iii = useIii()
+    const res = await iii.trigger<{ text: string }, { status: number; body: { streamName: string; groupId: string } }>({
+      function_id: 'pipeline::pipeline',
+      payload: { text: text.value },
+    })
+    groupId.value = res.body.groupId
+    subscribe(res.body.streamName, res.body.groupId)
+  }
+  catch (e) {
+    callError.value = e as Error
+  }
+  finally {
+    callPending.value = false
+  }
 }
 
 function humanKey(key: string) {

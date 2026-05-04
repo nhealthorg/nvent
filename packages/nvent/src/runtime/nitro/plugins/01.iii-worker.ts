@@ -9,10 +9,12 @@
 import { defineNitroPlugin, useRuntimeConfig } from '#imports'
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { resolveNventDir } from '../utils/nventDir'
 import { registerWorker } from 'iii-sdk'
 import { registerNodeFunctions } from '../utils/workers/node'
 import { PythonWorkersOrchestrator } from '../utils/workers/python'
+import { verifyBrowserAuthToken, type BrowserAuthTokenPayload } from '../utils/browserAuthToken'
 import { registry, pythonFunctions } from '#nvent/iii-registry'
 
 declare module 'nitropack' {
@@ -66,6 +68,42 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   const workerName = cfg.workerName ?? `nvent-${process.pid}`
 
+  const browserAuthCfg = cfg.browserAuth ?? {}
+  const browserAuthFnId = cfg.browserAuthFunctionId ?? 'nvent::browser::auth'
+
+  type BrowserAuthResolverResult = {
+    allow?: boolean
+    context?: Record<string, unknown>
+    allowedFunctions?: string[]
+    functionRegistrationPrefix?: string
+    allowFunctionRegistration?: boolean
+    allowTriggerTypeRegistration?: boolean
+  }
+
+  type BrowserAuthResolver = (input: {
+    token: BrowserAuthTokenPayload
+    queryParams: Record<string, string[]>
+  }) => Promise<BrowserAuthResolverResult> | BrowserAuthResolverResult
+
+  let browserAuthResolver: BrowserAuthResolver | null = null
+  const resolverPath = browserAuthCfg.authResolverPath as string | undefined
+  if (resolverPath) {
+    try {
+      const abs = isAbsolute(resolverPath) ? resolverPath : resolve(process.cwd(), resolverPath)
+      const mod = await import(pathToFileURL(abs).href)
+      if (typeof mod.default === 'function') {
+        browserAuthResolver = mod.default as BrowserAuthResolver
+        console.log(`[nvent] browser auth resolver loaded: ${abs}`)
+      }
+      else {
+        console.warn(`[nvent] browser auth resolver has no default function export: ${abs}`)
+      }
+    }
+    catch (e) {
+      console.warn(`[nvent] failed to load browser auth resolver (${resolverPath}): ${(e as Error).message}`)
+    }
+  }
+
   const fnCount = (registry.functions ?? []).length
   const triggerCount = (registry.triggers ?? []).length
   console.log(`[nvent] iii-worker: connecting to ${wsUrl} — ${fnCount} function(s), ${triggerCount} trigger(s)`)
@@ -91,6 +129,44 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   // Register all Node.js functions and triggers with the iii engine
   registerNodeFunctions(iii, registry.functions ?? [])
+
+  // Built-in RBAC auth function used by the browser worker-manager.
+  iii.registerFunction(
+    browserAuthFnId,
+    async (input: any) => {
+      const queryParams = (input?.query_params ?? {}) as Record<string, string[]>
+      const tokenRaw = queryParams._nvent_token?.[0]
+      if (!tokenRaw) {
+        throw new Error('Unauthorized: missing browser auth token')
+      }
+
+      const token = verifyBrowserAuthToken(tokenRaw, String(browserAuthCfg.secret ?? ''))
+      if (!token) {
+        throw new Error('Unauthorized: invalid browser auth token')
+      }
+
+      const custom = browserAuthResolver
+        ? await browserAuthResolver({ token, queryParams })
+        : undefined
+
+      if (custom?.allow === false) {
+        throw new Error('Unauthorized')
+      }
+
+      if (custom?.allow === undefined && browserAuthCfg.allowAnonymous === false) {
+        throw new Error('Unauthorized: anonymous browser sessions are disabled')
+      }
+
+      return {
+        context: custom?.context,
+        allowed_functions: custom?.allowedFunctions,
+        function_registration_prefix: custom?.functionRegistrationPrefix,
+        allow_function_registration: custom?.allowFunctionRegistration,
+        allow_trigger_type_registration: custom?.allowTriggerTypeRegistration,
+      }
+    },
+    { description: 'nvent browser RBAC auth function' },
+  )
 
   // Expose on nitroApp for useIii() composable
   nitroApp.$iii = iii
