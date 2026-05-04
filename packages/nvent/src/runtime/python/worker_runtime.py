@@ -113,13 +113,54 @@ def http(method: str, path: str) -> dict:
 
 
 def queue(topic: str) -> dict:
-    """Queue trigger: queue("order.created")"""
-    return {"type": "queue", "topic": topic}
+    """Queue (durable:subscriber) trigger: queue("order.created")"""
+    return {"type": "durable:subscriber", "topic": topic}
 
 
 def cron(expression: str) -> dict:
     """Cron trigger: cron("0 0 * * * * *")  (7-field: sec min hour dom month dow year)"""
     return {"type": "cron", "expression": expression}
+
+
+_NVENT_FN_MARKER = "__nvent_fn__"
+
+
+def define_function(*, description: str = "", triggers: list = None, handler) -> dict:
+    """Thin wrapper: declares a nvent function without a config dict.
+
+    The function ID is derived from the file path at registration time.
+    The handler receives **raw input only** — no ctx argument.
+
+    Usage::
+
+        from nvent import define_function, http, Logger
+
+        logger = Logger()
+
+        async def handler(req):
+            logger.info("called", {"name": req.query_params.get("name")})
+            return {"statusCode": 200, "body": {"hello": "world"}}
+
+        define_function(
+            description="Greet endpoint",
+            triggers=[http("GET", "/greet")],
+            handler=handler,
+        )
+    """
+    result = {
+        _NVENT_FN_MARKER: True,
+        "description": description,
+        "triggers": list(triggers or []),
+        "handler": handler,
+    }
+    # Auto-register into the calling module's namespace so _register() can
+    # find it even when the caller does not assign the return value to a variable.
+    # Uses CPython frame introspection — safe for all CPython 3.x deployments.
+    import sys as _sys
+    _caller = _sys._getframe(1)
+    _fns = _caller.f_globals.setdefault('__nvent_fns__', [])
+    _fns.append(result)
+    return result
 
 
 class _Stream:
@@ -380,13 +421,12 @@ class FlowContext:
 
     async def enqueue(self, payload: dict) -> None:
         """Emit a message to a queue topic.
-        If a stream channel is active, its context is propagated automatically.
-        Usage: await ctx.enqueue({"topic": "order.created", "data": {"id": "x"}})
+        Include ``streamName`` and ``groupId`` in ``data`` if you need the
+        next step to write to the same stream group.
+        Usage: await ctx.enqueue({"topic": "order.created", "data": {"id": "x", "streamName": ..., "groupId": ...}})
         """
         topic = payload.get("topic")
         data = dict(payload.get("data") or {})
-        if self._stream_group_id:
-            data[_NVENT_STREAM_KEY] = {"name": self._stream_name, "groupId": self._stream_group_id}
         await self._client.trigger_async({
             "function_id": "iii::durable::publish",
             "payload": {"topic": topic, "data": data},
@@ -515,29 +555,88 @@ def _trigger_suffix(trigger: dict) -> str:
 def _register(client, mod, default_id: str) -> None:
     """Register a loaded module's handler and triggers with the iii client.
 
-    Supports two step file formats:
+    Supports three step file formats (in priority order):
 
-    **New motia-compatible format** (preferred):
-        config = {
-            "name": "my-step",
-            "description": "...",
-            "triggers": [http("POST", "/path"), queue("topic"), cron("0 * * * * * *")],
-            "enqueues": ["topic.done"],
-            "flows": ["my-flow"],
-        }
-        async def handler(input, ctx: FlowContext): ...
+    **1. define_function() style** (preferred — matches new TS thin API):
+        ``define_function(description=..., triggers=[...], handler=handler)``
+        Called as a bare statement (result need not be assigned to a variable).
+        Handler takes ``(input,)`` only.
 
-    **Legacy nvent format** (still supported):
-        meta = {"id": "my-step", "description": "...", "flows": [...]}
-        triggers = [{"type": "http", "config": {"api_path": "path", "http_method": "POST"}}]
-        async def handler(input, ctx): ...
+    **2. config dict format** (still supported):
+        ``config = {"name": "my-step", "triggers": [...], ...}``
+        ``async def handler(input, ctx: FlowContext): ...``
 
-    One function per trigger is registered (mirrors JS worker pattern).
+    **3. Legacy meta/triggers format**:
+        ``meta = {"id": "my-step", ...}``
+        ``triggers = [{"type": "http", "config": {...}}]``
+        ``async def handler(input, ctx): ...``
     """
+    # ── 1. define_function() style ───────────────────────────────────────────
+    # Primary: __nvent_fns__ list populated by define_function()'s frame magic
+    # (works even when the caller does not assign the return value).
+    # Fallback: scan module vars for a dict marked with _NVENT_FN_MARKER
+    # (supports the `fn = define_function(...)` assignment style).
+    fn_defs_list = getattr(mod, '__nvent_fns__', None)
+    if not fn_defs_list:
+        fn_defs_list = [
+            v for v in vars(mod).values()
+            if isinstance(v, dict) and v.get(_NVENT_FN_MARKER)
+        ]
+
+    if fn_defs_list:
+        for fn_def in fn_defs_list:
+            _register_one(client, mod, default_id, fn_def)
+        return
+
+    # ── 2. config dict / 3. legacy meta+triggers ─────────────────────────────
+    _register_legacy(client, mod, default_id)
+
+
+def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
+    """Register a single define_function() entry."""
+    fn_id = default_id
+    description = fn_def.get("description", "")
+    triggers = list(fn_def.get("triggers") or [])
+    handler_fn = fn_def.get("handler")
+    if not handler_fn:
+        print(f"[nvent] define_function() in {getattr(mod, '__file__', '?')} has no handler — skipping", flush=True)
+        return
+    file_path = getattr(mod, "__file__", None)
+    metadata = {
+        "name": fn_id,
+        "description": description,
+        "filePath": file_path,
+        "triggers": [_normalize_trigger_meta(t) for t in triggers],
+    }
+    seen_suffixes: set = set()
+    for i, trigger in enumerate(triggers):
+        t_type = trigger.get("type", "")
+        suffix = _trigger_suffix(trigger)
+        if suffix in seen_suffixes:
+            suffix = f"{suffix}::{i}"
+        seen_suffixes.add(suffix)
+        function_id = f"steps::{fn_id}::trigger::{suffix}"
+        iii_cfg = _trigger_to_iii_cfg(trigger)
+        is_http = t_type == "http"
+
+        def _make_wrapper_thin(_h, _is_http):
+            async def _wrapped(data):
+                input_data = _iii_sdk.ApiRequest(**data) if (_is_http and isinstance(data, dict)) else data
+                return await _h(input_data)
+            return _wrapped
+
+        wrapped = _make_wrapper_thin(handler_fn, is_http)
+        iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
+        client.register_function(function_id, wrapped, metadata=metadata)
+        client.register_trigger({"type": iii_trigger_type, "function_id": function_id, "config": iii_cfg})
+    print(f"[nvent] registered {fn_id!r} ({len(triggers)} trigger(s))", flush=True)
+
+
+def _register_legacy(client, mod, default_id: str) -> None:
+    """Register using config dict (format 2) or meta+triggers (format 3)."""
     config_dict = getattr(mod, "config", None)
 
     if config_dict is not None:
-        # New motia-compatible format: config = { name, description, triggers, flows, enqueues, stream }
         fn_id = config_dict.get("name") or default_id
         if not config_dict.get("name"):
             print(f"[nvent] WARNING: Python step at {getattr(mod, '__file__', '?')} has no 'name' in config — "
@@ -549,7 +648,6 @@ def _register(client, mod, default_id: str) -> None:
         enqueues = list(config_dict.get("enqueues") or [])
         stream_name = config_dict.get("stream") or (flows[0] if flows else fn_id.split("::")[0])
     else:
-        # Legacy format: meta = {...}, triggers = [...]
         meta = dict(getattr(mod, "meta", {}) or {})
         fn_id = meta.get("name") or default_id
         if not meta.get("name"):
@@ -589,15 +687,12 @@ def _register(client, mod, default_id: str) -> None:
             suffix = f"{suffix}::{i}"
         seen_suffixes.add(suffix)
 
-        # Motia-style function_id: steps::<name>::trigger::<descriptive-suffix>
         function_id = f"steps::{fn_id}::trigger::{suffix}"
         iii_cfg = _trigger_to_iii_cfg(trigger)
         is_http = t_type == "http"
 
-        # Create a per-trigger wrapper that captures trigger type for ctx.match()
         def _make_wrapper(_h, _is_http, _t_type, _fn_id, _hc, _stream_name):
             async def _wrapped(data):
-                # Extract and strip inherited stream context from queue messages
                 inherited_group = None
                 effective_stream = _stream_name
                 clean_data = data
@@ -615,7 +710,6 @@ def _register(client, mod, default_id: str) -> None:
             return _wrapped
 
         wrapped = _make_wrapper(handler_fn, is_http, t_type, fn_id, has_ctx, stream_name)
-        # Translate nvent's user-facing 'queue' type to iii 0.11+ 'durable:subscriber'
         iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
         client.register_function(
             function_id,

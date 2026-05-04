@@ -1,51 +1,40 @@
-# analyze — example Python step (motia-compatible format)
+# analyze — example Python step (thin API)
 #
 # Demonstrates:
-#   - config dict with http() trigger helper
-#   - ctx.logger            (iii Logger — OTel when available, else stdout)
-#   - ctx.state.get/set     (persistent key-value state)
-#   - ctx.enqueue()         (emit a message to a topic)
+#   - define_function() with http() trigger helper
+#   - Logger from iii-sdk
+#   - iii state via trigger_async (or use iii.state helpers when available)
 #
-# Trigger: POST http://localhost:3111/analyze
-#   Body: { "text": "..." }
+# Trigger: GET http://localhost:3111/analyze
+#   Query: ?text=...
 
-from nvent import http, FlowContext, ApiRequest, ApiResponse
+from nvent import define_function, http, ApiRequest, ApiResponse, Logger
 
-config = {
-    "name": "analyze",
-    "description": "Analyzes text and tracks invocation stats via iii state",
-    "triggers": [http("GET", "/analyze")],
-    "enqueues": [],
-    "flows": ["text-processing"],
-}
+logger = Logger("analyze")
 
 
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
-    # HTTP input arrives as ApiRequest — body holds the JSON payload
+async def handler(req: ApiRequest) -> ApiResponse:
     body = req.body or {}
     text = body.get("text", "") if isinstance(body, dict) else ""
 
-    ctx.logger.info("analyze called", {"text_length": len(text)})
+    logger.info("analyze called", {"text_length": len(text)})
 
-    # --- state: track a running invocation counter ---
-    raw = await ctx.state.get("invocation_count")
-    # state::get returns the stored value directly (or None if not set yet)
-    count = int(raw or 0) + 1
-    await ctx.state.set("invocation_count", count)
-    ctx.logger.debug(f"invocation_count is  now {count}")
-
-    # --- compute stats ---
     words = text.split()
-    unique = list(set(w.lower() for w in words))
+    unique = list({w.lower() for w in words})
 
     result = {
         "word_count": len(words),
         "char_count": len(text),
         "unique_words": len(unique),
-        "invocation_count": count,
-        "input": req
     }
 
-    ctx.logger.info("analyze complete", result)
+    logger.info("analyze complete", result)
     return ApiResponse(statusCode=200, body=result)
+
+
+define_function(
+    description="Analyzes text and returns word statistics",
+    triggers=[http("GET", "/analyze")],
+    handler=handler,
+)
 
