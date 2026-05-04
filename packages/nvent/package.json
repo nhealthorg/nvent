@@ -1,6 +1,6 @@
 {
   "name": "nvent",
-  "version": "1.0.0-alpha.2",
+  "version": "1.0.0-alpha.3",
   "description": "Event-driven workflows for Nuxt",
   "repository": "DevJoghurt/nvent",
   "license": "MIT",
