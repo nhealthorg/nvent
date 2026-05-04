@@ -212,18 +212,18 @@ export class PythonWorkersOrchestrator {
     const affectsShared = !changedFn?.standalone
 
     if (affectsShared) {
+      const existing = this.workers.get('__shared__')
       if (sharedFns.length > 0) {
-        const existing = this.workers.get('__shared__')
-        if (existing) { await existing.restart() }
-        else {
-          const worker = this._makeWorker('__shared__', sharedFns)
-          await worker.start()
-          this.workers.set('__shared__', worker)
-        }
-      }
-      else {
-        const existing = this.workers.get('__shared__')
+        // Always replace the shared worker so the new function list is reflected.
+        // Calling restart() would re-use the stale this.fns from construction time.
         if (existing) { await existing.stop(); this.workers.delete('__shared__') }
+        const worker = this._makeWorker('__shared__', sharedFns)
+        await worker.start()
+        this.workers.set('__shared__', worker)
+      }
+      else if (existing) {
+        await existing.stop()
+        this.workers.delete('__shared__')
       }
     }
 
@@ -265,10 +265,11 @@ export class PythonWorkersOrchestrator {
   }
 
   private _makeWorker(name: string, fns: PyFnInfo[]): PythonWorkerManager {
+    const workerName = name === '__shared__' ? `nvent-python-${process.pid}` : `nvent-python-${name}`
     return new PythonWorkerManager(
       this.runtimeScript,
       this.wsUrl,
-      `nvent-python-${name}`,
+      workerName,
       fns,
       this.pythonBin,
       this.logLevel,
