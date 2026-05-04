@@ -1,3 +1,4 @@
 {
-  "eslint.experimental.useFlatConfig": true
+  "eslint.experimental.useFlatConfig": true,
+  "python.defaultInterpreterPath": "${workspaceFolder}/playground/.venv/bin/python"
 }

@@ -10,7 +10,59 @@
 
 import { writeFileSync, existsSync } from 'node:fs'
 import { execFileSync, spawn } from 'node:child_process'
-import { join } from 'node:path'
+import { join, dirname, basename, relative } from 'node:path'
+
+/**
+ * Write (or overwrite) a `pyrightconfig.json` at the Nuxt project root so that
+ * pyright / Pylance resolves imports from the configured venv automatically.
+ *
+ * Works for any editor that respects `pyrightconfig.json` (VS Code + Pylance,
+ * neovim with pyright LSP, PyCharm with pyright plugin, etc.).
+ *
+ * `devPath` must be the value of `functions.python.devPath` — a path relative
+ * to `rootDir`, e.g. `.venv/bin/python3` or `playground/.venv/bin/python3`.
+ * The venvPath / venv pair are derived from this path automatically.
+ *
+ * `includePaths` is a list of absolute paths that pyright should check;
+ * only paths that are inside `rootDir` are included (external paths are skipped).
+ *
+ * Best-effort: silently skips on any error.
+ */
+export function writePyrightConfig(options: {
+  rootDir: string
+  devPath: string
+  includePaths: string[]
+}): void {
+  try {
+    const { rootDir, devPath, includePaths } = options
+
+    // Derive venvPath + venv from devPath.
+    // e.g. ".venv/bin/python3"         → venvPath=".",         venv=".venv"
+    // e.g. "playground/.venv/bin/python3" → venvPath="playground", venv=".venv"
+    const binDir = dirname(devPath)      // ".venv/bin"
+    const venvDir = dirname(binDir)      // ".venv"
+    const venv = basename(venvDir)       // ".venv"
+    const venvPath = dirname(venvDir) || '.'  // "." or "playground"
+
+    // Convert absolute includePaths to paths relative to rootDir.
+    // Skip paths outside rootDir (e.g. paths from sibling monorepo packages).
+    const include = includePaths
+      .map(p => relative(rootDir, p))
+      .filter(p => !p.startsWith('..'))
+
+    const config: Record<string, unknown> = { venvPath, venv }
+    if (include.length > 0) config.include = include
+
+    writeFileSync(
+      join(rootDir, 'pyrightconfig.json'),
+      JSON.stringify(config, null, 2) + '\n',
+      'utf-8',
+    )
+  }
+  catch {
+    // IDE integration — never block dev startup on a file write failure.
+  }
+}
 
 /**
  * Install Python dependencies from a requirements.txt file.

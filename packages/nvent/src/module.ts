@@ -15,7 +15,7 @@
  * 8. Watches function files for changes (dev HMR)
  */
 
-import { join, basename, relative } from 'node:path'
+import { join, basename, relative, parse as parsePath } from 'node:path'
 import {
   defineNuxtModule,
   createResolver,
@@ -23,11 +23,14 @@ import {
   addServerHandler,
   addServerImports,
   addImports,
+  addPlugin,
   addTemplate,
   updateTemplates,
   hasNuxtModule,
+  extendViteConfig
 } from '@nuxt/kit'
-import { readFileSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { ensureIiiEngine } from './iii/install'
 import { ensureIiiConsole } from './iii/console'
 import {
@@ -36,8 +39,8 @@ import {
   buildEngineConfig,
 } from './iii/config'
 import type { NventIiiOptions } from './iii/options'
-import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite } from './iii/registry'
-import { installNventPyToSitePackages, installPythonRequirements } from './iii/python'
+import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
+import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
 import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
 import { createEngineManager } from './runtime/nitro/utils/engine'
 import { ConsoleManager } from './runtime/nitro/utils/console'
@@ -67,6 +70,12 @@ export default defineNuxtModule<NventIiiOptions>({
     const { resolve } = createResolver(import.meta.url)
     const PYTHON_RUNTIME_SRC = resolve('./runtime/python/worker_runtime.py')
     const PYTHON_NVENT_HELPER_SRC = resolve('./runtime/python/nvent.py')
+
+    extendViteConfig((config) => {
+      config.optimizeDeps ||= {}
+      config.optimizeDeps.include ||= []
+      config.optimizeDeps.include.push('iii-browser-sdk')
+    })
 
     // -------------------------------------------------------------------------
     // Options
@@ -126,11 +135,20 @@ export default defineNuxtModule<NventIiiOptions>({
         httpHost: iiiOpts.httpHost ?? 'localhost',
         wsPort: engineCfg.wsPort,
         streamPort: engineCfg.streamPort,
+        browserPort: engineCfg.workerManagerRbac?.port ?? iiiOpts.workerManager?.rbac?.port ?? 49135,
         managed,
         mode,
         version,
         modules: engineCfg.modules,
         logLevel,
+        browserAuthFunctionId: iiiOpts.workerManager?.rbac?.authFunctionId ?? 'nvent::browser::auth',
+        browserAuth: {
+          // Signed, short-lived token is minted by /_iii/browser and validated by nvent::browser::auth.
+          secret: process.env.NVENT_BROWSER_AUTH_SECRET ?? randomUUID(),
+          tokenTtlSeconds: iiiOpts.workerManager?.rbac?.tokenTtlSeconds ?? 120,
+          allowAnonymous: iiiOpts.workerManager?.rbac?.allowAnonymous ?? true,
+          authResolverPath: iiiOpts.workerManager?.rbac?.authResolverPath,
+        },
         // YAML config embedded at build time so the production lifecycle plugin can
         // write iii-config.yaml without needing confbox or rebuilding from options.
         engineConfigYaml,
@@ -152,9 +170,37 @@ export default defineNuxtModule<NventIiiOptions>({
     // -------------------------------------------------------------------------
     // Function registry
     // -------------------------------------------------------------------------
-    const layerInfos = nuxt.options._layers.map(l => ({
+
+    /**
+     * Derive the function ID prefix for a layer.
+     * Priority: nvent.prefix → $meta.name → package.json name (last segment) → dir name
+     * The root project (index 0 in nuxt.options._layers) is always un-prefixed.
+     */
+    function resolveLayerPrefix(layer: typeof nuxt.options._layers[number], isRoot: boolean): string | undefined {
+      if (isRoot) return undefined
+      const layerCfg = layer.config as any
+      // 1. Explicit nvent.functions.prefix
+      const explicit = layerCfg?.nvent?.functions?.prefix
+      if (typeof explicit === 'string') return explicit || undefined
+      // 2. $meta.name (standard Nuxt layer name)
+      const metaName = layerCfg?.$meta?.name
+      if (metaName) return metaName
+      // 3. package.json name — last segment of @scope/name
+      const pkgPath = join(layer.config.rootDir, 'package.json')
+      if (existsSync(pkgPath)) {
+        try {
+          const pkgName: string = JSON.parse(readFileSync(pkgPath, 'utf-8')).name ?? ''
+          if (pkgName) return pkgName.split('/').pop()!.replace(/^nuxt-/, '')
+        } catch { /* ignore */ }
+      }
+      // 4. Directory name
+      return parsePath(layer.config.rootDir).name
+    }
+
+    const layerInfos: LayerInfo[] = nuxt.options._layers.map((l, i) => ({
       rootDir: l.config.rootDir,
       serverDir: l.config?.serverDir ?? join(l.config.rootDir, 'server'),
+      prefix: resolveLayerPrefix(l, i === 0),
     }))
 
     let lastScanned: ScannedRegistry = await scanFunctions({ layerInfos, functionsDir })
@@ -204,27 +250,42 @@ export default defineNuxtModule<NventIiiOptions>({
     // WebSocket support for the stream-proxy route handler.
     nitroOpts.experimental ??= {}
     nitroOpts.experimental.websocket = true
-    addServerHandler({ route: '/stream/**', handler: resolve('./runtime/nitro/routes/stream-proxy') })
+    addServerHandler({ route: '/_iii/stream/**', handler: resolve('./runtime/nitro/routes/stream-proxy') })
+    addServerHandler({ route: '/_iii/browser', handler: resolve('./runtime/nitro/routes/browser-proxy') })
 
     // Server auto-imports
     addServerImports([
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIii' },
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIiiHealth' },
-      { from: resolve('./runtime/nitro/utils/useIii'), name: 'getContext' },
       { from: resolve('./runtime/nitro/utils/defineFunction'), name: 'defineFunction' },
-      { from: resolve('./runtime/nitro/utils/defineFunction'), name: 'FunctionContext' },
     ])
+
+    // #nvent/server virtual module — single import for defineFunction, useIii, Logger, etc.
+    nuxt.options.alias['#nvent/server'] = resolve('./runtime/nitro/server')
 
     // Client-side composables
     addImports([
-      { from: resolve('./runtime/app/composables/useFunctionCall'), name: 'useFunctionCall' },
-      { from: resolve('./runtime/app/composables/useNventStream'), name: 'useNventStream' },
+      { from: resolve('./runtime/app/composables/useIiiStream'), name: 'useIiiStream' },
+      { from: resolve('./runtime/app/composables/useIii'), name: 'useIii' },
     ])
+
+    // Client-side plugin (connects iii-browser-sdk)
+    addPlugin({ src: resolve('./runtime/app/plugins/iii.client'), mode: 'client' })
 
     // -------------------------------------------------------------------------
     // Dev mode
     // -------------------------------------------------------------------------
     if (nuxt.options.dev) {
+      // Write pyrightconfig.json so any pyright-aware editor (VS Code/Pylance,
+      // neovim, etc.) auto-resolves the venv and function paths without manual setup.
+      if (!skipPython && opts.functions?.python?.devPath) {
+        writePyrightConfig({
+          rootDir: nuxt.options.rootDir,
+          devPath: opts.functions.python.devPath,
+          includePaths: layerInfos.map(l => join(l.serverDir, functionsDir)),
+        })
+      }
+
       const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
       const binDir = join(nventDir, 'bin')
 
