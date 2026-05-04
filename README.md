@@ -211,37 +211,6 @@ When `functions.python.devPath` is set, nvent automatically:
 - Installs `nvent.py` into your venv's `site-packages` for `from nvent import ...` resolution
 - Writes `pyrightconfig.json` in your project root so Pylance and pyright resolve types without manual configuration
 
-## Flows
-
-Functions that share a `flows` name are grouped into a flow and visualized together in the UI. A flow is defined implicitly: there is no separate flow declaration file.
-
-```ts
-// server/functions/checkout/validate.ts
-import { defineFunction, useIii } from '#nvent/server'
-
-export default defineFunction({
-  flows: ['checkout'],
-  triggers: [{ type: 'durable:subscriber', config: { topic: 'checkout.started' } }],
-  enqueues: ['checkout.validated'],
-  handler: async (input) => {
-    await validate(input)
-    const iii = useIii()
-    await iii.trigger({ function_id: 'iii::durable::publish', payload: { topic: 'checkout.validated', data: input } })
-  },
-})
-
-// server/functions/checkout/charge.ts
-export default defineFunction({
-  flows: ['checkout'],
-  triggers: [{ type: 'durable:subscriber', config: { topic: 'checkout.validated' } }],
-  handler: async (input) => {
-    await charge(input)
-  },
-})
-```
-
-The `enqueues` field is metadata only — it tells the UI which topics a function produces so the flow graph can be rendered without running any code.
-
 ## Configuration
 
 ```ts
