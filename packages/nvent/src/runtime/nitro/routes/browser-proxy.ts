@@ -1,5 +1,5 @@
-import { defineWebSocketHandler } from 'h3'
 import { createBrowserAuthToken } from '../utils/browserAuthToken'
+import { useRuntimeConfig, defineWebSocketHandler } from '#imports'
 
 /**
  * WebSocket proxy for the iii RBAC browser worker port.

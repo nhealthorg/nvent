@@ -1,4 +1,4 @@
-import { defineWebSocketHandler } from 'h3'
+import { useRuntimeConfig, defineWebSocketHandler } from '#imports'
 
 /**
  * WebSocket proxy for the iii Stream module.
