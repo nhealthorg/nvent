@@ -19,7 +19,7 @@ import type { NventIiiOptions } from './options'
 export interface KvStoreAdapterConfig {
   /** 'file_based' persists to disk, 'in_memory' is ephemeral. Default: 'file_based' */
   store_method?: 'file_based' | 'in_memory'
-  /** Path for file_based storage. Default: './data/<module>_store' */
+  /** Path for file_based storage. Default: './.data/<module>_store' */
   file_path?: string
   /** How often (ms) to flush dirty data to disk. Default: 5000 */
   save_interval_ms?: number
@@ -302,23 +302,29 @@ export function defaultIiiEngineConfig(): IiiEngineConfig {
 function defaultStateAdapter(stateDir?: string): StateAdapter {
   return {
     name: 'kv',
-    config: { store_method: 'file_based', file_path: stateDir ?? './data/state_store' },
+    config: { store_method: 'file_based', file_path: stateDir ?? './.data/state_store' },
   }
 }
 
 function defaultQueueAdapter(queueDir?: string): QueueAdapter {
   return {
     name: 'builtin',
-    config: { store_method: 'file_based', file_path: queueDir ?? './data/queue_store' },
+    config: { store_method: 'file_based', file_path: queueDir ?? './.data/queue_store' },
   }
 }
 
 function defaultCronAdapter(): CronAdapter {
-  return { name: 'kv' }
+  return {
+    name: 'kv',
+    config: { store_method: 'file_based', file_path: './.data/cron_store' },
+  }
 }
 
 function defaultStreamAdapter(): StreamAdapter {
-  return { name: 'kv' }
+  return {
+    name: 'kv',
+    config: { store_method: 'file_based', file_path: './.data/stream_store' },
+  }
 }
 
 // ---------------------------------------------------------------------------
