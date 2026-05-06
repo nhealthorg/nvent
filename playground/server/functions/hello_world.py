@@ -10,6 +10,6 @@ async def handler(req: ApiRequest) -> ApiResponse:
 
 define_function(
     description="A simple function that greets the user by name",
-    triggers=[http("GET", "/hello-python")],
+    triggers=[http("GET", "/hello/python")],
     handler=handler,
 )
