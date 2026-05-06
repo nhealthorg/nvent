@@ -31,6 +31,7 @@ import {
 } from '@nuxt/kit'
 import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { addCustomTab } from '@nuxt/devtools-kit'
 import { ensureIiiEngine } from './iii/install'
 import { ensureIiiConsole } from './iii/console'
 import {
@@ -311,9 +312,10 @@ export default defineNuxtModule<NventIiiOptions>({
 
         // Start the console UI if configured.
         if (consoleBinaryPath) {
+          const consolePort = consoleCfg.port ?? 3113
           const consoleManager = new ConsoleManager({
             binaryPath: consoleBinaryPath,
-            port: consoleCfg.port ?? 3113,
+            port: consolePort,
             enginePort: engineCfg.httpPort,
             bridgePort: engineCfg.wsPort,
             flow: consoleCfg.flow ?? true,
@@ -321,6 +323,17 @@ export default defineNuxtModule<NventIiiOptions>({
           })
           await consoleManager.start()
           nuxt.hook('close', async () => { await consoleManager.stop() })
+
+          // Register the console as a Nuxt DevTools tab (iframe).
+          addCustomTab({
+            name: 'nvent-console',
+            title: 'nvent',
+            icon: 'carbon:flow',
+            view: {
+              type: 'iframe',
+              src: `http://localhost:${consolePort}`,
+            },
+          })
         }
       }
 

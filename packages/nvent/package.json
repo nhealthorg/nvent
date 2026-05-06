@@ -2,7 +2,7 @@
   "name": "nvent",
   "version": "1.0.0-alpha.5",
   "description": "Event-driven workflows for Nuxt",
-  "repository": "DevJoghurt/nvent",
+  "repository": "nhealthorg/nvent",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -22,12 +22,13 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
+    "@nuxt/devtools-kit": "^3.2.4",
     "@nuxt/kit": "4.4.4",
     "chokidar": "^5.0.0",
     "confbox": "^0.2.4",
     "globby": "16.2.0",
-    "iii-browser-sdk": "^0.11.5",
-    "iii-sdk": "^0.11.5",
+    "iii-browser-sdk": "^0.11.6",
+    "iii-sdk": "^0.11.6",
     "knitwork": "^1.3.0",
     "nuxt": "4.4.4",
     "pathe": "^2.0.3",
