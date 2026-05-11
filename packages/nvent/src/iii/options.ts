@@ -69,8 +69,18 @@ export interface NventIiiOptions {
       queueConfigs?: Record<string, {
         type?: 'standard' | 'fifo'
         concurrency?: number
+        /** Alias of maxRetries */
+        retries?: number
         maxRetries?: number
+        /** Alias of backoffMs */
+        backoff?: number
         backoffMs?: number
+        /** Optional visibility timeout / lease timeout if supported by the engine */
+        visibilityTimeoutMs?: number
+        leaseTimeoutMs?: number
+        /** Optional dead-letter / fallback queue names if supported by the engine */
+        deadLetterQueue?: string
+        fallbackQueue?: string
         /** FIFO only: field in the payload used to group messages */
         messageGroupField?: string
       }>

@@ -40,6 +40,7 @@ import {
   buildEngineConfig,
 } from './iii/config'
 import { resolveExtendedFunctionAbsPath } from './iii/extendedFunctionPath'
+import { mergeExtendedQueueConfigs, type NventExtendedQueueDefinition } from './iii/extendedQueues'
 import type { NventIiiOptions } from './iii/options'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
 import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
@@ -49,6 +50,8 @@ import { ConsoleManager } from './runtime/nitro/utils/console'
 
 import chokidar from 'chokidar'
 import { debounce } from 'perfect-debounce'
+
+export type { NventExtendedQueueDefinition, NventQueueConfig } from './iii/extendedQueues'
 
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'))
 
@@ -91,6 +94,13 @@ export interface NventExtendFunctionsHookPayload {
   functionsDir: string
 }
 
+export interface NventExtendQueuesHookPayload {
+  /** Push extra named queues to register in iii engine config. */
+  queues: NventExtendedQueueDefinition[]
+  /** Nuxt project root */
+  rootDir: string
+}
+
 declare module '@nuxt/schema' {
   interface NuxtHooks {
     /**
@@ -98,6 +108,11 @@ declare module '@nuxt/schema' {
      * Useful for Nuxt modules that ship their own iii handlers.
      */
     'nvent:functions:extend': (payload: NventExtendFunctionsHookPayload) => void | Promise<void>
+    /**
+     * Extend iii named queue definitions so module-owned workflows can enqueue safely.
+     * Duplicate policy: first queue definition wins; later duplicates are ignored with a warning.
+     */
+    'nvent:queues:extend': (payload: NventExtendQueuesHookPayload) => void | Promise<void>
   }
 }
 
@@ -163,7 +178,22 @@ export default defineNuxtModule<NventIiiOptions>({
     // -------------------------------------------------------------------------
     // Engine config + runtimeConfig
     // -------------------------------------------------------------------------
-    const engineCfg = buildEngineConfig(iiiOpts)
+    const queuePayload: NventExtendQueuesHookPayload = {
+      queues: [],
+      rootDir: nuxt.options.rootDir,
+    }
+    await nuxt.callHook('nvent:queues:extend', queuePayload)
+
+    const mergedQueues = mergeExtendedQueueConfigs(iiiOpts.queue?.queueConfigs, queuePayload.queues)
+    const mergedQueueNames = Object.keys(mergedQueues.queueConfigs)
+    for (const duplicateName of mergedQueues.duplicates) {
+      console.warn(`[nvent] duplicate queue definition ignored (first wins): '${duplicateName}'`)
+    }
+    if (logLevel === 'info') {
+      console.info(`[nvent] registered queues (${mergedQueueNames.length}): ${mergedQueueNames.join(', ') || '(none)'}`)
+    }
+
+    const engineCfg = buildEngineConfig(iiiOpts, mergedQueues.queueConfigs)
     const engineConfigYaml = generateIiiConfigYaml(engineCfg)
 
     // Write iii-config.yaml into .nuxt/ so the dev-mode Nitro server can read it.

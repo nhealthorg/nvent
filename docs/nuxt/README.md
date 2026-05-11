@@ -142,6 +142,65 @@ Notes:
 - IDs must be unique across discovered and injected functions.
 - Use `standalone: true` for Python functions that should run in their own worker.
 
+## Extending named queues from another Nuxt module
+
+If your module enqueues jobs to a named queue (for example via
+`TriggerAction.Enqueue({ queue: 'fhir-terminology-import' })`), register that
+queue with nvent through `nvent:queues:extend`.
+
+```ts
+// modules/fhir-terminology.ts
+import { defineNuxtModule } from '@nuxt/kit'
+
+export default defineNuxtModule({
+  meta: { name: 'fhir-terminology' },
+  setup(_options, nuxt) {
+    nuxt.hook('nvent:queues:extend', (payload) => {
+      payload.queues.push({
+        name: 'fhir-terminology-import',
+        concurrency: 1,
+        maxRetries: 5,
+        backoffMs: 1000,
+      })
+    })
+  },
+})
+```
+
+Workflow usage:
+
+```ts
+TriggerAction.Enqueue({ queue: 'fhir-terminology-import' })
+```
+
+Hook payload shape:
+
+```ts
+interface NventExtendQueuesHookPayload {
+  queues: Array<{
+    name: string
+    type?: 'standard' | 'fifo'
+    concurrency?: number
+    retries?: number
+    maxRetries?: number
+    backoff?: number
+    backoffMs?: number
+    visibilityTimeoutMs?: number
+    leaseTimeoutMs?: number
+    deadLetterQueue?: string
+    fallbackQueue?: string
+    messageGroupField?: string
+  }>
+  rootDir: string
+}
+```
+
+Duplicate policy:
+
+- Deterministic merge order: app config queues first, then module extensions in hook order.
+- First definition wins.
+- Later queues with the same name are ignored with a warning.
+
 ## Auto-registered Nitro routes
 
 nvent adds three Nitro routes automatically:

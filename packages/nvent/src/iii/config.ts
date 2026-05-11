@@ -67,6 +67,10 @@ export interface NamedQueueConfig {
   concurrency?: number
   max_retries?: number
   backoff_ms?: number
+  visibility_timeout_ms?: number
+  lease_timeout_ms?: number
+  dead_letter_queue?: string
+  fallback_queue?: string
   /** FIFO only: field in the payload used to group messages */
   message_group_field?: string
 }
@@ -465,8 +469,13 @@ export function writeIiiConfig(outputPath: string, cfg: IiiEngineConfig): void {
 // Module options → engine config (camelCase → snake_case)
 // ---------------------------------------------------------------------------
 
-export function buildEngineConfig(iiiOpts: NonNullable<NventIiiOptions['iii']>): IiiEngineConfig {
-  const queueConfigs = iiiOpts.queue?.queueConfigs
+type UserQueueConfigs = NonNullable<NonNullable<NonNullable<NventIiiOptions['iii']>['queue']>['queueConfigs']>
+
+export function buildEngineConfig(
+  iiiOpts: NonNullable<NventIiiOptions['iii']>,
+  queueConfigsOverride?: UserQueueConfigs,
+): IiiEngineConfig {
+  const queueConfigs = queueConfigsOverride ?? iiiOpts.queue?.queueConfigs
   const hasQueueConfigs = queueConfigs != null && Object.keys(queueConfigs).length > 0
 
   return {
@@ -476,13 +485,23 @@ export function buildEngineConfig(iiiOpts: NonNullable<NventIiiOptions['iii']>):
     streamPort: iiiOpts.streamPort ?? 3112,
     modules: { state: true, queue: true, cron: true, observability: true, stream: true, pubsub: false, httpFunctions: false, exec: false, telemetry: false, ...iiiOpts.modules },
     state: iiiOpts.state ? { adapter: mapStateAdapter(iiiOpts.state) } : undefined,
-    queue: iiiOpts.queue ? {
+    queue: (iiiOpts.queue || hasQueueConfigs) ? {
       adapter: mapQueueAdapter(iiiOpts.queue?.adapter),
       queue_configs: hasQueueConfigs
         ? Object.fromEntries(
             Object.entries(queueConfigs!).map(([name, cfg]) => [
               name,
-              { type: cfg.type, concurrency: cfg.concurrency, max_retries: cfg.maxRetries, backoff_ms: cfg.backoffMs, message_group_field: cfg.messageGroupField },
+              {
+                type: cfg.type,
+                concurrency: cfg.concurrency,
+                max_retries: cfg.maxRetries ?? cfg.retries,
+                backoff_ms: cfg.backoffMs ?? cfg.backoff,
+                visibility_timeout_ms: cfg.visibilityTimeoutMs,
+                lease_timeout_ms: cfg.leaseTimeoutMs,
+                dead_letter_queue: cfg.deadLetterQueue,
+                fallback_queue: cfg.fallbackQueue,
+                message_group_field: cfg.messageGroupField,
+              },
             ]),
           )
         : undefined,
@@ -590,7 +609,7 @@ function mapStateAdapter(a: NonNullable<NventIiiOptions['iii']>['state']): State
   }
 }
 
-function mapQueueAdapter(a: NonNullable<NonNullable<NventIiiOptions['iii']>['queue']>['adapter']): QueueAdapter | undefined {
+function mapQueueAdapter(a?: NonNullable<NonNullable<NventIiiOptions['iii']>['queue']>['adapter']): QueueAdapter | undefined {
   if (!a) return undefined
   if (a.type === 'redis') return { name: 'redis', config: { redis_url: a.redisUrl } }
   if (a.type === 'rabbitmq') return { name: 'rabbitmq', config: { amqp_url: a.amqpUrl, max_attempts: a.maxAttempts, prefetch_count: a.prefetchCount, queue_mode: a.queueMode } }
