@@ -39,6 +39,7 @@ import {
   generateIiiConfigYaml,
   buildEngineConfig,
 } from './iii/config'
+import { resolveExtendedFunctionAbsPath } from './iii/extendedFunctionPath'
 import type { NventIiiOptions } from './iii/options'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
 import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
@@ -266,11 +267,15 @@ export default defineNuxtModule<NventIiiOptions>({
           console.warn(`[nvent] skipping extended TS function '${fn.id}' (duplicate id)`)
           continue
         }
-        const absPath = normalizePath(fn.absPath)
+        const requestedPath = normalizePath(fn.absPath)
+        const resolvedPath = resolveExtendedFunctionAbsPath(requestedPath)
+        if (resolvedPath.rewrittenFrom) {
+          console.warn(`[nvent] extended TS function path rewritten for '${fn.id}': ${resolvedPath.rewrittenFrom} -> ${resolvedPath.absPath}`)
+        }
         scanned.functions.push({
           id: fn.id,
-          absPath,
-          relativePath: basename(absPath),
+          absPath: resolvedPath.absPath,
+          relativePath: basename(resolvedPath.absPath),
           description: fn.description,
         })
         seenTs.add(fn.id)
