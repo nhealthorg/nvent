@@ -1,6 +1,6 @@
 {
   "name": "nvent-monorepo",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-alpha.9",
   "description": "Event-driven workflows for Nuxt - Monorepo",
   "repository": "DevJoghurt/nvent",
   "license": "MIT",
