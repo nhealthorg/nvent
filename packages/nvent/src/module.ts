@@ -15,7 +15,7 @@
  * 8. Watches function files for changes (dev HMR)
  */
 
-import { join, basename, relative, parse as parsePath } from 'node:path'
+import { join, basename, relative, parse as parsePath, isAbsolute } from 'node:path'
 import {
   defineNuxtModule,
   createResolver,
@@ -58,6 +58,47 @@ const meta = {
 }
 
 const III_REGISTRY_TEMPLATE = 'iii-registry.mjs'
+
+export interface NventExtendedFunction {
+  /** iii function ID (e.g. `fhir::terminology::lookup`) */
+  id: string
+  /** Absolute file path, or root-relative path, to a TS/JS function module */
+  absPath: string
+  /** Optional human-readable description */
+  description?: string
+}
+
+export interface NventExtendedPythonFunction {
+  /** iii function ID (e.g. `fhir::terminology::expand`) */
+  id: string
+  /** Absolute file path, or root-relative path, to a .py file */
+  absPath: string
+  /** When true, start this function in a dedicated worker process */
+  standalone?: boolean
+}
+
+export interface NventExtendFunctionsHookPayload {
+  /** Push extra TS/JS function files to register */
+  functions: NventExtendedFunction[]
+  /** Push extra Python function files to register */
+  pythonFunctions: NventExtendedPythonFunction[]
+  /** Nuxt project root */
+  rootDir: string
+  /** Layer scan context (same as nvent internal scan) */
+  layerInfos: LayerInfo[]
+  /** Configured functions dir relative to each layer's server dir */
+  functionsDir: string
+}
+
+declare module '@nuxt/schema' {
+  interface NuxtHooks {
+    /**
+     * Extend nvent function discovery with additional TS/JS or Python function files.
+     * Useful for Nuxt modules that ship their own iii handlers.
+     */
+    'nvent:functions:extend': (payload: NventExtendFunctionsHookPayload) => void | Promise<void>
+  }
+}
 
 export default defineNuxtModule<NventIiiOptions>({
   meta,
@@ -204,7 +245,58 @@ export default defineNuxtModule<NventIiiOptions>({
       prefix: resolveLayerPrefix(l, i === 0),
     }))
 
-    let lastScanned: ScannedRegistry = await scanFunctions({ layerInfos, functionsDir })
+    async function scanFunctionsWithExtensions(): Promise<ScannedRegistry> {
+      const scanned = await scanFunctions({ layerInfos, functionsDir })
+
+      const payload: NventExtendFunctionsHookPayload = {
+        functions: [],
+        pythonFunctions: [],
+        rootDir: nuxt.options.rootDir,
+        layerInfos,
+        functionsDir,
+      }
+      await nuxt.callHook('nvent:functions:extend', payload)
+
+      const normalizePath = (path: string) => (isAbsolute(path) ? path : join(nuxt.options.rootDir, path))
+
+      const seenTs = new Set(scanned.functions.map(f => f.id))
+      for (const fn of payload.functions) {
+        if (!fn?.id || !fn?.absPath) continue
+        if (seenTs.has(fn.id)) {
+          console.warn(`[nvent] skipping extended TS function '${fn.id}' (duplicate id)`)
+          continue
+        }
+        const absPath = normalizePath(fn.absPath)
+        scanned.functions.push({
+          id: fn.id,
+          absPath,
+          relativePath: basename(absPath),
+          description: fn.description,
+        })
+        seenTs.add(fn.id)
+      }
+
+      const seenPy = new Set(scanned.pythonFunctions.map(f => f.id))
+      for (const fn of payload.pythonFunctions) {
+        if (!fn?.id || !fn?.absPath) continue
+        if (seenPy.has(fn.id)) {
+          console.warn(`[nvent] skipping extended Python function '${fn.id}' (duplicate id)`)
+          continue
+        }
+        const absPath = normalizePath(fn.absPath)
+        scanned.pythonFunctions.push({
+          id: fn.id,
+          absPath,
+          relativePath: basename(absPath),
+          standalone: !!fn.standalone,
+        })
+        seenPy.add(fn.id)
+      }
+
+      return scanned
+    }
+
+    let lastScanned: ScannedRegistry = await scanFunctionsWithExtensions()
 
     // In production, Python absPath values are rewritten to paths relative to
     // .output/nvent/functions/ (e.g. 'analyze.py') so the worker plugin can
@@ -219,6 +311,10 @@ export default defineNuxtModule<NventIiiOptions>({
             pythonPathRewrite.set(fn.absPath, relative(fnDir, fn.absPath))
             break
           }
+        }
+        if (!pythonPathRewrite.has(fn.absPath)) {
+          const rel = `${fn.id.replace(/::/g, '/')}.py`.replace(/[^a-zA-Z0-9/_\-.]/g, '_')
+          pythonPathRewrite.set(fn.absPath, rel)
         }
       }
     }
@@ -369,7 +465,7 @@ export default defineNuxtModule<NventIiiOptions>({
         join(l.serverDir ?? join(l.rootDir, 'server'), functionsDir),
       )
       const refresh = debounce(async (changedPath?: string) => {
-        lastScanned = await scanFunctions({ layerInfos, functionsDir })
+        lastScanned = await scanFunctionsWithExtensions()
         await updateTemplates({ filter: t => t.filename === III_REGISTRY_TEMPLATE })
         console.log(`[nvent] registry refreshed${changedPath ? ` (${changedPath})` : ''}`)
         if (!skipPython && changedPath?.endsWith('.py')) {
@@ -418,15 +514,18 @@ export default defineNuxtModule<NventIiiOptions>({
           copyFileSync(PYTHON_NVENT_HELPER_SRC, join(workersDir, 'nvent.py'))
 
           for (const fn of lastScanned.pythonFunctions) {
+            let relativeDest: string | undefined
             for (const layer of layerInfos) {
               const fnDir = join(layer.serverDir, functionsDir)
               if (fn.absPath.startsWith(fnDir)) {
-                const dest = join(outputNventDir, 'functions', relative(fnDir, fn.absPath))
-                mkdirSync(join(dest, '..'), { recursive: true })
-                copyFileSync(fn.absPath, dest)
+                relativeDest = relative(fnDir, fn.absPath)
                 break
               }
             }
+            relativeDest ||= pythonPathRewrite?.get(fn.absPath) ?? `${fn.id.replace(/::/g, '/')}.py`
+            const dest = join(outputNventDir, 'functions', relativeDest)
+            mkdirSync(join(dest, '..'), { recursive: true })
+            copyFileSync(fn.absPath, dest)
           }
           console.log('[nvent] Python worker files copied to .output/nvent/')
         })
