@@ -30,6 +30,7 @@ declare module '#nvent/server' {
     HttpRequest,
   } from '../nitro/utils/defineFunction'
   export { useIii, useIiiHealth } from '../nitro/utils/useIii'
-  export { Logger, registerWorker, TriggerAction } from 'iii-sdk'
-  export type { ISdk, InitOptions } from 'iii-sdk'
+  export { registerWorker, TriggerAction } from 'iii-sdk'
+  export { Logger } from '@iii-dev/helpers/observability'
+  export type { IIIClient, InitOptions} from 'iii-sdk'
 }

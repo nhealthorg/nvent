@@ -1,6 +1,6 @@
-import { Logger } from 'iii-sdk'
+import { Logger } from '#nvent/server'
 
-const logger = new Logger()
+const logger: Logger = new Logger()
 
 export default defineFunction({
   description: 'Returns a greeting message. Optionally takes a name as input.',
@@ -9,11 +9,15 @@ export default defineFunction({
   ],
   handler: async (req) => {
     const name = (req as any).query_params?.name ?? 'world'
-    logger.info('greet called', { name })
+    const iii = useIii()
+    const {
+      old_value: previousName,
+    } = await iii.trigger({ function_id: 'state::set', payload: { scope: 'greet', key: 'lastGreeted1', value: name } })
+    logger.info('greet called', { name, previousName, bla: 'bla' })
     return {
       status: 200,
       body: {
-        message: `Hello, ${name}!`,
+        message: `Hello, ${name}! Last greeted: ${previousName ?? 'none'}`,
         name,
       },
     }

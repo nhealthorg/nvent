@@ -10,7 +10,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { stringifyYAML } from 'confbox'
-import type { NventIiiOptions } from './options'
+import type { NventIiiOptions } from '../types'
 
 // ---------------------------------------------------------------------------
 // Adapter configs

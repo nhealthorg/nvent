@@ -36,7 +36,8 @@ export default defineNuxtConfig({
 
   nvent: {
     iii: {
-      version: 'latest',
+      version: 'iii/v0.21.3',
+      failOnInstallFailure: true,
       mode: 'local',
       console: true,
       logLevel: 'warn',
@@ -48,6 +49,15 @@ export default defineNuxtConfig({
           ],
         },
       },
+      queue: {
+        
+      },
+      state: {
+        adapter: {
+          type: 'redis',
+          redisUrl: 'redis://localhost:6379',
+        },
+      }
     },
     functions: {
       dir: 'functions',

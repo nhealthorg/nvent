@@ -35,11 +35,13 @@ def cron(expression: str) -> dict:
 
 
 # ── Request / Response ─────────────────────────────────────────────────────
+# Stubs for Pylance. Runtime imports real types from iii_helpers.http via _runtime.py.
 
-class ApiRequest:
+class HttpRequest:
     """HTTP request input for http-triggered Python functions.
 
-    The iii SDK uses snake_case field names:
+    The iii SDK 0.21.3+ uses HttpRequest from iii_helpers.http.
+    Fields use snake_case:
       req.headers       — dict[str, str]
       req.method        — 'GET' | 'POST' | ...
       req.path_params   — dict[str, str]
@@ -53,21 +55,49 @@ class ApiRequest:
     body: Optional[Any]
 
 
-class ApiResponse:
+class HttpResponse:
     """HTTP response returned from an http-triggered handler.
+
+    The iii SDK 0.21.3+ uses HttpResponse from iii_helpers.http.
 
     Example::
 
-        return ApiResponse(statusCode=200, body={"ok": True})
-        return ApiResponse(statusCode=201, body=result, headers={"x-request-id": rid})
+        return HttpResponse(status_code=200, body={"ok": True})
+        return HttpResponse(status_code=201, body=result, headers={"x-request-id": rid})
     """
     def __init__(
         self,
         *,
-        statusCode: int = 200,
+        status_code: int = 200,
         body: Any = None,
         headers: dict[str, str] = None,
     ) -> None: ...
+
+
+# Backward compatibility aliases
+ApiRequest = HttpRequest
+ApiResponse = HttpResponse
+
+
+# ── Logger ─────────────────────────────────────────────────────────────────
+# Stub for Pylance. Runtime imports real Logger from iii_helpers.observability.
+
+class Logger:
+    """Structured logger from iii_helpers.observability.
+    
+    Emits logs as OpenTelemetry LogRecords with automatic trace/span correlation.
+    
+    Usage::
+    
+        logger = Logger("my-function")
+        logger.info("Processing order", {"orderId": order_id})
+        logger.error("Validation failed", {"field": "email"})
+    """
+    def __init__(self, name: str = "nvent"): ...
+    def debug(self, message: str, attributes: dict[str, Any] | None = None) -> None: ...
+    def info(self, message: str, attributes: dict[str, Any] | None = None) -> None: ...
+    def warn(self, message: str, attributes: dict[str, Any] | None = None) -> None: ...
+    def error(self, message: str, attributes: dict[str, Any] | None = None) -> None: ...
 
 
 # ── Stream ─────────────────────────────────────────────────────────────────
@@ -314,8 +344,10 @@ try:
         cron,
         define_function,
         FlowContext,
+        ApiRequest,
+        ApiResponse,
     )
-    from iii import ApiRequest, ApiResponse, Logger  # type: ignore[no-redef]  # noqa: F401, E402
+    from iii_helpers.observability import Logger  # type: ignore[no-redef]  # noqa: F401, E402
 except ImportError:
     pass
 

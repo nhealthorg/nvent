@@ -22,8 +22,10 @@ import logging as _logging
 
 try:
     import iii as _iii_sdk
+    from iii_helpers.http import HttpRequest as _HttpRequest, HttpResponse as _HttpResponse
+    from iii_helpers.observability import Logger
 except ImportError:
-    print("[nvent] iii package not found — install it: pip install iii-sdk[otel]", flush=True)
+    print("[nvent] iii package not found — install it: pip install iii-sdk[otel] iii-helpers", flush=True)
     sys.exit(1)
 
 # Direct Python logging to stdout so nvent captures it alongside other output.
@@ -101,6 +103,15 @@ def set_span_ok(span) -> None:
 
 # Internal key used to propagate the stream channel through queue messages.
 _NVENT_STREAM_KEY = '__nventStream'
+
+
+# ---------------------------------------------------------------------------
+# HTTP Request/Response wrappers — convenience aliases for iii_helpers.http
+# ---------------------------------------------------------------------------
+
+# Expose iii_helpers.http types as ApiRequest/ApiResponse for backward compatibility
+ApiRequest = _HttpRequest
+ApiResponse = _HttpResponse
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +414,7 @@ class FlowContext:
         self._input = input_data
         self._stream_name = stream_name or fn_id.split("::")[0]
         self._stream_group_id = inherited_group_id
-        self.logger = _iii_sdk.Logger(fn_id)
+        self.logger = Logger(fn_id)
         self.state = _State(client, fn_id)
         self.stream = _Stream(client, self._stream_name, self._get_or_create_group_id)
 
@@ -621,7 +632,8 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
 
         def _make_wrapper_thin(_h, _is_http):
             async def _wrapped(data):
-                input_data = _iii_sdk.ApiRequest(**data) if (_is_http and isinstance(data, dict)) else data
+                # Wrap dict in HttpRequest for HTTP triggers
+                input_data = ApiRequest(**data) if (_is_http and isinstance(data, dict)) else data
                 return await _h(input_data)
             return _wrapped
 
@@ -702,7 +714,8 @@ def _register_legacy(client, mod, default_id: str) -> None:
                         inherited_group = nvent_stream.get('groupId')
                         effective_stream = nvent_stream.get('name') or _stream_name
                     clean_data = {k: v for k, v in data.items() if k != _NVENT_STREAM_KEY}
-                input_data = _iii_sdk.ApiRequest(**clean_data) if (_is_http and isinstance(clean_data, dict)) else clean_data
+                # Wrap dict in HttpRequest for HTTP triggers
+                input_data = ApiRequest(**clean_data) if (_is_http and isinstance(clean_data, dict)) else clean_data
                 if not _hc:
                     return await _h(input_data)
                 ctx = FlowContext(client, _fn_id, _t_type, input_data, effective_stream, inherited_group)

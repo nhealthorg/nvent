@@ -27,5 +27,6 @@ export type {
 export { useIii, useIiiHealth } from './utils/useIii'
 
 // Re-export the full iii SDK surface so users only need one import
-export { Logger, registerWorker, TriggerAction } from 'iii-sdk'
-export type { ISdk, InitOptions, TriggerConfig as IiiTriggerConfig } from 'iii-sdk'
+export { registerWorker, TriggerAction } from 'iii-sdk'
+export { Logger } from '@iii-dev/helpers/observability'
+export type { IIIClient, InitOptions } from 'iii-sdk'

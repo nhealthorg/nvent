@@ -41,7 +41,7 @@ import {
 } from './iii/config'
 import { resolveExtendedFunctionAbsPath } from './iii/extendedFunctionPath'
 import { mergeExtendedQueueConfigs, type NventExtendedQueueDefinition } from './iii/extendedQueues'
-import type { NventIiiOptions } from './iii/options'
+import type { NventIiiOptions } from './types'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
 import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
 import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
@@ -154,6 +154,7 @@ export default defineNuxtModule<NventIiiOptions>({
     const managed = iiiOpts.managed ?? (mode === 'local')
     const version = iiiOpts.version ?? 'latest'
     const logLevel = iiiOpts.logLevel ?? 'warn'
+    const failOnInstallFailure = iiiOpts.failOnInstallFailure ?? false
     const consoleCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
 
     // -------------------------------------------------------------------------
@@ -423,48 +424,82 @@ export default defineNuxtModule<NventIiiOptions>({
 
       if (managed && mode === 'local') {
         // Download binaries (idempotent — skipped when already at the right version).
-        const binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
-        const consoleBinaryPath = iiiOpts.console
-          ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
-          : undefined
+        let binaryPath: string | undefined
+        let consoleBinaryPath: string | undefined
+        try {
+          binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+          consoleBinaryPath = iiiOpts.console
+            ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
+            : undefined
+        }
+        catch (err: any) {
+          console.error('[nvent] III engine installation failed — skipping engine start. Error:')
+          if (err && err.stack) console.error(err.stack)
+          else console.error(JSON.stringify(err, Object.getOwnPropertyNames(err)))
+          if (failOnInstallFailure) {
+            console.error('[nvent] failOnInstallFailure enabled — aborting startup.')
+            process.exit(1)
+          }
+          // Do not throw — continue Nuxt startup without engine.
+        }
 
-        // Start the engine in the Nuxt process so it survives Nitro hot-reloads.
-        const nventConfigPath = join(nventDir, 'iii-config.yaml')
-        writeIiiConfig(nventConfigPath, engineCfg)
-        const engine = createEngineManager({
-          binaryPath,
-          configPath: nventConfigPath,
-          httpPort: engineCfg.httpPort,
-          wsPort: engineCfg.wsPort,
-          logLevel,
-        })
-        await engine.start()
-        nuxt.hook('close', async () => { await engine.stop() })
-
-        // Start the console UI if configured.
-        if (consoleBinaryPath) {
-          const consolePort = consoleCfg.port ?? 3113
-          const consoleManager = new ConsoleManager({
-            binaryPath: consoleBinaryPath,
-            port: consolePort,
-            enginePort: engineCfg.httpPort,
-            bridgePort: engineCfg.wsPort,
-            flow: consoleCfg.flow ?? true,
+        if (binaryPath) {
+          // Start the engine in the Nuxt process so it survives Nitro hot-reloads.
+          const nventConfigPath = join(nventDir, 'iii-config.yaml')
+          writeIiiConfig(nventConfigPath, engineCfg)
+          const engine = createEngineManager({
+            binaryPath,
+            configPath: nventConfigPath,
+            httpPort: engineCfg.httpPort,
+            wsPort: engineCfg.wsPort,
+            workingDir: nventDir,
             logLevel,
           })
-          await consoleManager.start()
-          nuxt.hook('close', async () => { await consoleManager.stop() })
+          try {
+            await engine.start()
+            nuxt.hook('close', async () => { await engine.stop() })
+          }
+          catch (err: any) {
+            console.error('[nvent] Failed to start iii engine — continuing without engine. Error:')
+            if (err && err.stack) console.error(err.stack)
+            else console.error(JSON.stringify(err, Object.getOwnPropertyNames(err)))
+            if (failOnInstallFailure) {
+              console.error('[nvent] failOnInstallFailure enabled — aborting startup.')
+              process.exit(1)
+            }
+          }
 
-          // Register the console as a Nuxt DevTools tab (iframe).
-          addCustomTab({
-            name: 'nvent-console',
-            title: 'nvent',
-            icon: 'carbon:flow',
-            view: {
-              type: 'iframe',
-              src: `http://localhost:${consolePort}`,
-            },
-          })
+          // Start the console UI if configured.
+          if (consoleBinaryPath) {
+            const consolePort = consoleCfg.port ?? 3113
+            const consoleManager = new ConsoleManager({
+              binaryPath: consoleBinaryPath,
+              port: consolePort,
+              enginePort: engineCfg.httpPort,
+              bridgePort: engineCfg.wsPort,
+              flow: consoleCfg.flow ?? true,
+              logLevel,
+            })
+            try {
+              await consoleManager.start()
+              nuxt.hook('close', async () => { await consoleManager.stop() })
+
+              // Register the console as a Nuxt DevTools tab (iframe).
+              addCustomTab({
+                name: 'nvent-console',
+                title: 'nvent',
+                icon: 'carbon:flow',
+                view: {
+                  type: 'iframe',
+                  src: `http://localhost:${consolePort}`,
+                },
+              })
+            }
+            catch (err: any) {
+              console.error('[nvent] Failed to start iii console UI — continuing. Error:')
+              console.error(err && err.message ? err.message : err)
+            }
+          }
         }
       }
 
@@ -524,20 +559,30 @@ export default defineNuxtModule<NventIiiOptions>({
       if (managed && mode === 'local') {
         // Download binaries at build time so they can be embedded in the image.
         const binDir = join(nuxt.options.rootDir, 'node_modules', '.nvent', 'bin')
-        const binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
-        const consoleBinaryPath = iiiOpts.console
-          ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
-          : undefined
+        let binaryPath: string | undefined
+        let consoleBinaryPath: string | undefined
+        try {
+          binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+          consoleBinaryPath = iiiOpts.console
+            ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
+            : undefined
+        }
+        catch (err: any) {
+          console.warn('[nvent] Could not download iii engine for build embedding — skipping binary copy. Error:')
+          console.warn(err && err.message ? err.message : err)
+        }
 
-        ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
-          const outputNventDir = join(nitro.options.output.dir, 'nvent')
-          const outputBinDir = join(outputNventDir, 'bin')
-          mkdirSync(outputBinDir, { recursive: true })
-          copyFileSync(binaryPath, join(outputBinDir, basename(binaryPath)))
-          if (consoleBinaryPath) copyFileSync(consoleBinaryPath, join(outputBinDir, basename(consoleBinaryPath)))
-          writeFileSync(join(outputNventDir, 'iii-config.yaml'), engineConfigYaml, 'utf-8')
-          console.log('[nvent] Engine binaries + config copied to .output/nvent/')
-        })
+        if (binaryPath) {
+          ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
+            const outputNventDir = join(nitro.options.output.dir, 'nvent')
+            const outputBinDir = join(outputNventDir, 'bin')
+            mkdirSync(outputBinDir, { recursive: true })
+            copyFileSync(binaryPath, join(outputBinDir, basename(binaryPath)))
+            if (consoleBinaryPath) copyFileSync(consoleBinaryPath, join(outputBinDir, basename(consoleBinaryPath)))
+            writeFileSync(join(outputNventDir, 'iii-config.yaml'), engineConfigYaml, 'utf-8')
+            console.log('[nvent] Engine binaries + config copied to .output/nvent/')
+          })
+        }
       }
 
       if (!skipPython) {

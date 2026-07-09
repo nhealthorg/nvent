@@ -29,7 +29,7 @@ async def handler(req: ApiRequest) -> ApiResponse:
     }
 
     logger.info("analyze complete", result)
-    return ApiResponse(statusCode=200, body=result)
+    return ApiResponse(status_code=200, body=result)
 
 
 define_function(

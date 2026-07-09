@@ -1,6 +1,6 @@
-import { Logger } from 'iii-sdk'
+import { Logger } from '#nvent/server'
 
-const logger = new Logger()
+const logger: Logger = new Logger()
 
 export default defineFunction({
   description: 'Process a placed order and notify downstream',

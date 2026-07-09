@@ -1,6 +1,6 @@
-import { Logger } from 'iii-sdk'
+import { Logger } from '#nvent/server'
 
-const logger = new Logger()
+const logger: Logger = new Logger()
 
 export default defineFunction({
   description: 'Heartbeat that fires every minute',
@@ -8,7 +8,7 @@ export default defineFunction({
     { type: 'cron', config: { expression: '0 0 */2 * * * *' } },
   ],
   handler: async () => {
-    logger.debug('Heartbeat', { tick: new Date().toISOString() })
+    logger?.debug('Heartbeat', { tick: new Date().toISOString() })
     return { tick: new Date().toISOString() }
   },
 })

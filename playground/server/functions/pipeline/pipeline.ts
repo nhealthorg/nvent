@@ -1,6 +1,6 @@
-import { Logger  } from '#nvent/server'
+import { Logger, TriggerAction } from '#nvent/server'
 
-const logger = new Logger()
+const logger: Logger = new Logger()
 
 export default defineFunction({
   description: 'Start the text analysis pipeline',
@@ -23,6 +23,13 @@ export default defineFunction({
 
     // Enqueue the heavy analysis
     const iii = useIii()
+
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: 'pipeline', key: `pipeline:${groupId}`, value: { text, streamName, groupId } },
+      action: TriggerAction.Void(),
+    })
+
     await iii.trigger({
       function_id: 'iii::durable::publish',
       payload: { topic: 'pipeline.analyze', data: { text, streamName, groupId } },

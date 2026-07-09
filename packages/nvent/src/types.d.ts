@@ -24,6 +24,8 @@ export interface NventIiiOptions {
     streamPort?: number
     /** Whether nvent manages engine lifecycle. Default: true in dev, false in prod */
     managed?: boolean
+    /** Exit with non-zero code if engine installation fails. Default: false */
+    failOnInstallFailure?: boolean
     modules?: {
       state?: boolean
       queue?: boolean

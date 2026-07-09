@@ -49,6 +49,8 @@ export interface EngineManagerOptions {
   configPath: string
   httpPort?: number
   wsPort?: number
+  /** Working directory for the engine process. Defaults to process.cwd() */
+  workingDir?: string
   /** Minimum log level for engine output. Default: 'warn' */
   logLevel?: 'none' | 'error' | 'warn' | 'info'
 }
@@ -90,7 +92,13 @@ export class EngineManager {
   private pendingTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(opts: EngineManagerOptions) {
-    this.opts = { httpPort: 3111, wsPort: 49134, logLevel: 'warn', ...opts }
+    this.opts = { 
+      httpPort: 3111, 
+      wsPort: 49134, 
+      logLevel: 'warn', 
+      workingDir: process.cwd(),
+      ...opts 
+    }
   }
 
   isRunning(): boolean {
@@ -185,6 +193,7 @@ export class EngineManager {
     this.process = spawn(binaryPath, ['--config', configPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
+      cwd: this.opts.workingDir,
     })
 
     this.process.stdout?.on('data', (chunk: Buffer) => {

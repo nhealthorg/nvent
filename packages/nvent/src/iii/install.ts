@@ -179,7 +179,123 @@ export async function ensureIiiEngine(options: InstallOptions): Promise<string> 
   }
 
   const asset = getPlatformAsset(version)
-  await downloadAndExtract(asset.url, asset.ext, binDir, logLevel)
+  // Try direct download first; if that fails (404/etc), try alternative
+  // tag forms (namespaced `iii/...`) and finally query the GitHub API
+  // for the release assets to pick a matching binary.
+  const tried: string[] = []
+  async function tryDownloadForVersion(ver: string): Promise<boolean> {
+    try {
+      const a = getPlatformAsset(ver)
+      tried.push(a.url)
+      await downloadAndExtract(a.url, a.ext, binDir, logLevel)
+      return true
+    }
+    catch (err) {
+      // bubble up to try other variants
+      if (logLevel === 'info') logger.info(`Download for ${ver} failed: ${String(err)}`)
+      return false
+    }
+  }
+
+  let downloaded = false
+  // First try the exact form we computed above
+  downloaded = await tryDownloadForVersion(version)
+
+  // If not found and version was not namespaced, try common variants
+  if (!downloaded && !version.includes('/')) {
+    const releaseTag = toReleaseTag(version)
+    const variants = [
+      `iii/${releaseTag}`,
+      releaseTag,
+      semverFromTag(releaseTag),
+      `iii/${semverFromTag(releaseTag)}`,
+    ]
+    for (const v of variants) {
+      if (downloaded) break
+      if (v === version) continue
+      downloaded = await tryDownloadForVersion(v)
+    }
+  }
+
+  // Fallback: query GitHub Releases API for the given tag(s) and pick an asset
+  if (!downloaded) {
+    const candidateTags = [version]
+    if (!version.includes('/')) candidateTags.push(toReleaseTag(version), `iii/${toReleaseTag(version)}`)
+    for (const tag of candidateTags) {
+      try {
+        const apiUrl = `https://api.github.com/repos/iii-hq/iii/releases/tags/${encodeURIComponent(tag)}`
+        if (logLevel === 'info') logger.info(`Querying GitHub Release: ${apiUrl}`)
+        const res = await fetch(apiUrl, { headers: { 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } })
+        if (!res.ok) {
+          if (logLevel === 'info') logger.info(`GitHub API responded ${res.status} ${res.statusText} for tag ${tag}`)
+          continue
+        }
+        const data = await res.json() as any
+        const assets = Array.isArray(data.assets) ? data.assets : []
+        // Prefer assets matching our platform/arch substring
+        const platformCandidates = [
+          'x86_64-unknown-linux-gnu',
+          'aarch64-unknown-linux-gnu',
+          'x86_64-apple-darwin',
+          'aarch64-apple-darwin',
+          'x86_64-pc-windows-msvc',
+          'aarch64-pc-windows-msvc',
+        ]
+        const match = assets.find((a: any) => platformCandidates.some(p => a.name.includes(p)))
+        if (match && match.browser_download_url) {
+          if (logLevel === 'info') logger.info(`Found asset via GitHub API: ${match.name}`)
+          await downloadAndExtract(match.browser_download_url, match.name.endsWith('.zip') ? 'zip' : 'tar.gz', binDir, logLevel)
+          downloaded = true
+          break
+        }
+      }
+      catch (err) {
+        if (logLevel === 'info') logger.info(`GitHub API lookup failed for tag ${tag}: ${String(err)}`)
+        continue
+      }
+    }
+  }
+
+  if (!downloaded) {
+    // Attempt to list available release tags to provide a helpful error.
+    try {
+      const releasesRes = await fetch('https://api.github.com/repos/iii-hq/iii/releases?per_page=50', {
+        headers: { 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      })
+      let tags: string[] = []
+      if (releasesRes.ok) {
+        const releases = await releasesRes.json() as Array<{ tag_name?: string }>
+        tags = releases.map(r => r.tag_name).filter(Boolean) as string[]
+      }
+      else {
+        // Fallback to /tags if /releases is not accessible or empty
+        try {
+          const tagsRes = await fetch('https://api.github.com/repos/iii-hq/iii/tags?per_page=50', {
+            headers: { 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+          })
+          if (tagsRes.ok) {
+            const tagsData = await tagsRes.json() as Array<{ name?: string }>
+            tags = tagsData.map(t => t.name).filter(Boolean) as string[]
+          }
+        }
+        catch {
+          // ignore fallback failure
+        }
+      }
+
+      const shown = tags.slice(0, 20)
+      const tagPart = shown.length ? ` Available release tags (first ${shown.length}): ${shown.join(', ')}.` : ''
+      throw new Error(
+        `Failed to download iii engine from tried URLs: ${tried.join(', ')}.`
+        + tagPart
+        + ` Set a matching 'nvent.iii.version' in your nuxt config (e.g. 'iii/v0.22.1' or 'v0.22.1').`,
+      )
+    }
+    catch (err) {
+      // If anything here fails, fall back to the generic message but include tried URLs.
+      throw new Error(`Failed to download iii engine from tried URLs: ${tried.join(', ')}. (${String(err)})`)
+    }
+  }
 
   // Make binary executable on Unix
   if (process.platform !== 'win32') {
