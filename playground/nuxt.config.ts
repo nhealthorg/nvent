@@ -50,13 +50,10 @@ export default defineNuxtConfig({
         },
       },
       queue: {
-        
+        queueConfigs: {
+        }
       },
       state: {
-        adapter: {
-          type: 'redis',
-          redisUrl: 'redis://localhost:6379',
-        },
       }
     },
     functions: {

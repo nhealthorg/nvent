@@ -6,7 +6,7 @@
  *
  * What this module does:
  * 1. Installs the iii engine binary locally if missing
- * 2. Generates iii-config.yaml from nvent options
+ * 2. Generates config.yaml from nvent options
  * 3. Starts/stops the iii engine process in dev mode
  * 4. Scans server/functions/ and generates #nvent/iii-registry template
  * 5. Registers the Nitro worker plugin (connects, registers functions/triggers)
@@ -30,6 +30,7 @@ import {
   extendViteConfig
 } from '@nuxt/kit'
 import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { addCustomTab } from '@nuxt/devtools-kit'
 import { ensureIiiEngine } from './iii/install'
@@ -197,8 +198,21 @@ export default defineNuxtModule<NventIiiOptions>({
     const engineCfg = buildEngineConfig(iiiOpts, mergedQueues.queueConfigs)
     const engineConfigYaml = generateIiiConfigYaml(engineCfg)
 
-    // Write iii-config.yaml into .nuxt/ so the dev-mode Nitro server can read it.
-    writeIiiConfig(join(nuxt.options.buildDir, 'iii-config.yaml'), engineCfg)
+    // Write iii config.yaml into node_modules/.nvent so external tooling or
+    // engine instances that inspect .nvent can find the generated config.
+    const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
+    // Ensure old per-service config directory is removed before writing
+    // the new `config.yaml` so stale configs don't persist across restarts.
+    const configDir = join(nventDir, 'config')
+    if (existsSync(configDir)) {
+      try {
+        rmSync(configDir, { recursive: true, force: true })
+        console.log('[nvent] removed existing .nvent/config')
+      } catch (err: any) {
+        console.warn('[nvent] failed to remove .nvent/config', err && err.message ? err.message : err)
+      }
+    }
+    writeIiiConfig(join(nventDir, 'config.yaml'), engineCfg)
 
     const rc = nuxt.options.runtimeConfig as any
     rc.nvent = {
@@ -224,7 +238,7 @@ export default defineNuxtModule<NventIiiOptions>({
           authResolverPath: iiiOpts.workerManager?.rbac?.authResolverPath,
         },
         // YAML config embedded at build time so the production lifecycle plugin can
-        // write iii-config.yaml without needing confbox or rebuilding from options.
+        // write iii config.yaml without needing confbox or rebuilding from options.
         engineConfigYaml,
       },
       python: {
@@ -419,7 +433,6 @@ export default defineNuxtModule<NventIiiOptions>({
         })
       }
 
-      const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
       const binDir = join(nventDir, 'bin')
 
       if (managed && mode === 'local') {
@@ -445,7 +458,7 @@ export default defineNuxtModule<NventIiiOptions>({
 
         if (binaryPath) {
           // Start the engine in the Nuxt process so it survives Nitro hot-reloads.
-          const nventConfigPath = join(nventDir, 'iii-config.yaml')
+          const nventConfigPath = join(nventDir, 'config.yaml')
           writeIiiConfig(nventConfigPath, engineCfg)
           const engine = createEngineManager({
             binaryPath,
@@ -504,7 +517,7 @@ export default defineNuxtModule<NventIiiOptions>({
       }
 
       if (!skipPython) {
-        const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
+        
 
         // Install Python requirements on dev startup.
         for (const reqPath of [
@@ -513,6 +526,7 @@ export default defineNuxtModule<NventIiiOptions>({
         ]) {
           await installPythonRequirements(reqPath, pythonBin, logLevel)
         }
+        
 
         // Start Python workers in the Nuxt process so they survive Nitro hot-reloads
         // and can be restarted directly on .py file changes.
@@ -579,7 +593,7 @@ export default defineNuxtModule<NventIiiOptions>({
             mkdirSync(outputBinDir, { recursive: true })
             copyFileSync(binaryPath, join(outputBinDir, basename(binaryPath)))
             if (consoleBinaryPath) copyFileSync(consoleBinaryPath, join(outputBinDir, basename(consoleBinaryPath)))
-            writeFileSync(join(outputNventDir, 'iii-config.yaml'), engineConfigYaml, 'utf-8')
+            writeFileSync(join(outputNventDir, 'config.yaml'), engineConfigYaml, 'utf-8')
             console.log('[nvent] Engine binaries + config copied to .output/nvent/')
           })
         }
