@@ -46,6 +46,7 @@ import type { NventIiiOptions } from './types'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
 import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
 import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
+import { WorkflowWorkerManager } from './runtime/nitro/utils/workers/workflow'
 import { createEngineManager } from './runtime/nitro/utils/engine'
 import { ConsoleManager } from './runtime/nitro/utils/console'
 
@@ -87,12 +88,16 @@ export interface NventExtendFunctionsHookPayload {
   functions: NventExtendedFunction[]
   /** Push extra Python function files to register */
   pythonFunctions: NventExtendedPythonFunction[]
+  /** Push extra Workflow files to register */
+  workflows: NventExtendedFunction[]
   /** Nuxt project root */
   rootDir: string
   /** Layer scan context (same as nvent internal scan) */
   layerInfos: LayerInfo[]
   /** Configured functions dir relative to each layer's server dir */
   functionsDir: string
+  /** Configured workflows dir relative to each layer's server dir */
+  workflowsDir: string
 }
 
 export interface NventExtendQueuesHookPayload {
@@ -144,6 +149,7 @@ export default defineNuxtModule<NventIiiOptions>({
     const iiiOpts = opts.iii ?? {}
 
     const functionsDir = opts.functions?.dir ?? 'functions'
+    const workflowsDir = opts.workflows?.dir ?? 'workflows'
     const pythonBin = opts.functions?.python?.devPath
       ? join(nuxt.options.rootDir, opts.functions.python.devPath)
       : 'python3'
@@ -157,6 +163,13 @@ export default defineNuxtModule<NventIiiOptions>({
     const logLevel = iiiOpts.logLevel ?? 'warn'
     const failOnInstallFailure = iiiOpts.failOnInstallFailure ?? false
     const consoleCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
+
+    // Instantiate the WorkflowWorkerManager to allow iii config generation to use it.
+    // The actual process is managed by the iii-exec worker in the engine.
+    new WorkflowWorkerManager(
+      wsUrl,
+      resolve(nuxt.options.rootDir, '../packages/workflow-worker')
+    )
 
     // -------------------------------------------------------------------------
     // IDE integration: install nvent.py into the venv site-packages so
@@ -292,15 +305,17 @@ export default defineNuxtModule<NventIiiOptions>({
     }))
 
     async function scanFunctionsWithExtensions(): Promise<ScannedRegistry> {
-      const scanned = await scanFunctions({ layerInfos, functionsDir })
+      const scanned = await scanFunctions({ layerInfos, functionsDir, workflowsDir })
 
       const payload: NventExtendFunctionsHookPayload = {
         functions: [],
         pythonFunctions: [],
+        workflows: [],
         rootDir: nuxt.options.rootDir,
         layerInfos,
         functionsDir,
-      }
+        workflowsDir,
+      } as any
       await nuxt.callHook('nvent:functions:extend', payload)
 
       const normalizePath = (path: string) => (isAbsolute(path) ? path : join(nuxt.options.rootDir, path))
@@ -341,6 +356,23 @@ export default defineNuxtModule<NventIiiOptions>({
           standalone: !!fn.standalone,
         })
         seenPy.add(fn.id)
+      }
+
+      const seenWf = new Set(scanned.workflows.map(f => f.id))
+      for (const wf of payload.workflows) {
+        if (!wf?.id || !wf?.absPath) continue
+        if (seenWf.has(wf.id)) {
+          console.warn(`[nvent] skipping extended Workflow '${wf.id}' (duplicate id)`)
+          continue
+        }
+        const absPath = normalizePath(wf.absPath)
+        scanned.workflows.push({
+          id: wf.id,
+          absPath,
+          relativePath: basename(absPath),
+          description: wf.description,
+        })
+        seenWf.add(wf.id)
       }
 
       return scanned
@@ -405,6 +437,7 @@ export default defineNuxtModule<NventIiiOptions>({
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIii' },
       { from: resolve('./runtime/nitro/utils/useIii'), name: 'useIiiHealth' },
       { from: resolve('./runtime/nitro/utils/defineFunction'), name: 'defineFunction' },
+      { from: resolve('./runtime/nitro/utils/defineWorkflow'), name: 'defineWorkflow' },
     ])
 
     // #nvent/server virtual module — single import for defineFunction, useIii, Logger, etc.

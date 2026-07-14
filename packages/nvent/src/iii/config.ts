@@ -10,6 +10,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { stringifyYAML } from 'confbox'
+import { WorkflowWorkerManager } from '../runtime/nitro/utils/workers/workflow'
 import type { NventIiiOptions } from '../types'
 
 // ---------------------------------------------------------------------------
@@ -442,6 +443,19 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
   // iii-exec (one entry per configured exec worker)
   for (const execCfg of cfg.exec ?? []) {
     workers.push({ name: 'iii-exec', config: execCfg })
+  }
+
+  // Auto-inject the workflow worker if it was registered during module setup.
+  // The iii engine's exec worker will manage its lifecycle.
+  const workerManager = WorkflowWorkerManager.getInstance()
+  if (workerManager) {
+    const { command, args } = workerManager.getCommandArgs()
+    workers.push({
+      name: 'iii-exec',
+      config: {
+        exec: [`${command} ${args.join(' ')}`]
+      }
+    })
   }
 
   // Second iii-worker-manager for RBAC (browser workers)

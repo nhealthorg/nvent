@@ -86,7 +86,8 @@ export class PythonWorkerManager {
 
     // _runtime.py <ws_url> <worker_name> <path1> <id1> [<path2> <id2> ...]
     const fnArgs = this.fns.flatMap(fn => [fn.absPath, fn.id])
-    this.process = spawn(this.python, [this.runtimeScript, this.wsUrl, this.workerName, ...fnArgs], {
+    // Use -u flag for unbuffered output so logs appear immediately
+    this.process = spawn(this.python, ['-u', this.runtimeScript, this.wsUrl, this.workerName, ...fnArgs], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
     })
@@ -101,7 +102,9 @@ export class PythonWorkerManager {
         const parsed = parsePythonLineLevel(line)
         if (parsed) lastLevel = parsed
         const level = parsed ?? lastLevel
-        if (!shouldShow(level, this.logLevel)) continue
+        // Always show [nvent] registration logs regardless of logLevel
+        const isNventLog = line.includes('[nvent] registered')
+        if (!isNventLog && !shouldShow(level, this.logLevel)) continue
         if (level === 'error') logger.error(`[python] ${line}`)
         else if (level === 'warn') logger.warn(`[python] ${line}`)
         else logger.info(`[python] ${line}`)

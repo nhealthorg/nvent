@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm prepare && pnpm --filter \"./packages/**\" prepack",
     "build:stub": "pnpm prepare",
+    "build:worker": "cargo build --manifest-path packages/workflow-worker/Cargo.toml",
     "prepare": "pnpm --filter \"./packages/**\" run build --stub && nuxi prepare playground",
     "dev": "nuxi dev playground",
     "dev:iii": "playground/node_modules/.nvent/bin/iii -c playground/.nuxt/iii-config.yaml",

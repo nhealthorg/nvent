@@ -45,6 +45,7 @@ export interface PythonFunctionMeta {
 export interface ScannedRegistry {
   functions: FunctionMeta[]
   pythonFunctions: PythonFunctionMeta[]
+  workflows: FunctionMeta[]
 }
 
 /**
@@ -88,49 +89,67 @@ export interface ScanOptions {
   layerInfos: Array<LayerInfo>
   /** Functions directory relative to serverDir (default: 'functions') */
   functionsDir?: string
+  /** Workflows directory relative to serverDir (default: 'workflows') */
+  workflowsDir?: string
 }
 
 /**
- * Scans all configured function directories and returns metadata
- * for each discovered function file.
+ * Scans all configured function and workflow directories and returns metadata
+ * for each discovered function/workflow file.
  */
 export async function scanFunctions(opts: ScanOptions): Promise<ScannedRegistry> {
-  const { layerInfos, functionsDir = 'functions' } = opts
+  const { layerInfos, functionsDir = 'functions', workflowsDir = 'workflows' } = opts
   const functions: FunctionMeta[] = []
   const pythonFunctions: PythonFunctionMeta[] = []
+  const workflows: FunctionMeta[] = []
 
   for (const layer of layerInfos) {
     const serverDir = layer.serverDir || join(layer.rootDir, 'server')
     const fnDir = join(serverDir, functionsDir)
+    const workflowDir = join(serverDir, workflowsDir)
     const prefix = layer.prefix ? `${layer.prefix}::` : ''
 
-    if (!existsSync(fnDir)) continue
+    // Scan standard functions (TS/JS + Python)
+    if (existsSync(fnDir)) {
+      const [jsFiles, pyFiles] = await Promise.all([
+        globby(['**/*.{ts,js,mts,mjs}'], {
+          cwd: fnDir,
+          absolute: false,
+          ignore: ['**/*.d.ts', '**/*.test.*', '**/*.spec.*'],
+        }),
+        globby(['**/*.py'], {
+          cwd: fnDir,
+          absolute: false,
+          ignore: ['**/__pycache__/**', '**/*.pyc'],
+        }),
+      ])
 
-    const [jsFiles, pyFiles] = await Promise.all([
-      globby(['**/*.{ts,js,mts,mjs}'], {
-        cwd: fnDir,
-        absolute: false,
-        ignore: ['**/*.d.ts', '**/*.test.*', '**/*.spec.*'],
-      }),
-      globby(['**/*.py'], {
-        cwd: fnDir,
-        absolute: false,
-        ignore: ['**/__pycache__/**', '**/*.pyc'],
-      }),
-    ])
+      for (const file of jsFiles) {
+        functions.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath: join(fnDir, file), relativePath: file })
+      }
 
-    for (const file of jsFiles) {
-      functions.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath: join(fnDir, file), relativePath: file })
+      for (const file of pyFiles) {
+        const absPath = join(fnDir, file)
+        const standalone = detectPythonStandalone(absPath)
+        pythonFunctions.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath, relativePath: file, standalone })
+      }
     }
 
-    for (const file of pyFiles) {
-      const absPath = join(fnDir, file)
-      const standalone = detectPythonStandalone(absPath)
-      pythonFunctions.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath, relativePath: file, standalone })
+    // Scan workflows (TS/JS)
+    if (existsSync(workflowDir)) {
+      const jsFiles = await globby(['**/*.{ts,js,mts,mjs}'], {
+        cwd: workflowDir,
+        absolute: false,
+        ignore: ['**/*.d.ts', '**/*.test.*', '**/*.spec.*', '**/README.*'],
+      })
+
+      for (const file of jsFiles) {
+        workflows.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath: join(workflowDir, file), relativePath: file })
+      }
     }
   }
 
-  return { functions, pythonFunctions }
+  return { functions, pythonFunctions, workflows }
 }
 
 /**
@@ -154,19 +173,26 @@ export function generateIiiRegistryTemplate(scanned: ScannedRegistry, pythonPath
   // back to individual modules (avoids "not exported" warnings).
   lines.push(`function _entry(ns, id, absPath) {`)
   lines.push(`  const fn = ns.default`)
-  lines.push(`  return { id, description: fn.description, handler: fn.handler, triggers: (fn.triggers ?? []).map(t => ({ ...t, function_id: id })), request_format: fn.request_format, response_format: fn.response_format, filePath: absPath }`)
+  lines.push(`  return { id, description: fn.description, handler: fn.handler, triggers: (fn.triggers ?? []).map(t => ({ ...t, function_id: id })), request_format: fn.request_format, response_format: fn.response_format, filePath: absPath, $workflow: !!fn.$workflow }`)
   lines.push(`}`)
   lines.push('')
 
-  const entries = scanned.functions.map((fn, i) => {
+  const functionEntries = scanned.functions.map((fn, i) => {
     const ns = `fn${i}`
     lines.push(`import * as ${ns} from ${genString(fn.absPath)}`)
     return `_entry(${ns}, ${genString(fn.id)}, ${genString(fn.absPath)})`
   })
 
+  const workflowEntries = scanned.workflows.map((wf, i) => {
+    const ns = `wf${i}`
+    lines.push(`import * as ${ns} from ${genString(wf.absPath)}`)
+    return `_entry(${ns}, ${genString(wf.id)}, ${genString(wf.absPath)})`
+  })
+
   lines.push('')
   lines.push(`export const registry = {`)
-  lines.push(`  functions: [${entries.join(', ')}],`)
+  lines.push(`  functions: [${[...functionEntries, ...workflowEntries].join(', ')}],`)
+  lines.push(`  workflows: [${workflowEntries.join(', ')}],`)
   lines.push(`  get triggers() { return this.functions.flatMap(f => f.triggers ?? []) },`)
   lines.push(`}`)
   lines.push('')

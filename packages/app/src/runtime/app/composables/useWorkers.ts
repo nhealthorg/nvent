@@ -1,4 +1,4 @@
-import { ref, useFetch, onUnmounted, type Ref } from '#imports'
+import { ref, useFetch, onUnmounted, onMounted, watch, type Ref } from '#imports'
 import type { FetchError } from 'ofetch'
 
 export interface WorkerInfo {
@@ -13,8 +13,10 @@ export interface WorkerInfo {
   connected_at_ms: number
   active_invocations: number
   function_count: number
-  functions: string[]
+  functions?: string[]
   latest_metrics: WorkerMetrics | null
+  isolation?: 'in-process' | 'sidecar' | 'plugin' | string
+  description?: string | null
 }
 
 export interface WorkerMetrics {
@@ -62,40 +64,36 @@ export function useWorkers(pollIntervalMs = 5000): {
   engineOnline: Ref<boolean>
 } {
   const refreshCounter = ref(0)
+  const engineOnline = ref(false)
 
   const { data, refresh: _refresh, status, error } = useFetch<WorkersData>(
     () => `/api/_workers?_t=${refreshCounter.value}`,
     {
-      immediate: false,
       watch: false,
-      server: false,
     },
   )
+
+  const checkOnline = () => {
+    engineOnline.value = !!data.value?.health && !data.value?.healthError
+  }
+
+  // Keep engineOnline in sync
+  watch(data, checkOnline, { immediate: true })
 
   const refresh = async () => {
     refreshCounter.value++
     await _refresh()
   }
 
-  const engineOnline = ref(false)
-
-  const checkOnline = () => {
-    engineOnline.value = !!data.value?.health && !data.value?.healthError
-  }
-
   let timer: ReturnType<typeof setInterval> | undefined
 
-  const stopPolling = () => {
-    if (timer !== undefined) { clearInterval(timer); timer = undefined }
-  }
-
   if (import.meta.client) {
-    refresh().then(checkOnline)
-    timer = setInterval(async () => {
-      await refresh()
-      checkOnline()
-    }, pollIntervalMs)
-    onUnmounted(stopPolling)
+    onMounted(() => {
+      timer = setInterval(refresh, pollIntervalMs)
+    })
+    onUnmounted(() => {
+      if (timer) clearInterval(timer)
+    })
   }
 
   return {

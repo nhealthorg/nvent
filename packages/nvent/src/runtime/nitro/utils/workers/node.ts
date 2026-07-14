@@ -18,12 +18,70 @@ export interface NodeFnInfo {
 /**
  * Registers all Node.js (TypeScript) functions and their triggers with the iii client.
  * Each trigger is registered independently with the function ID as the target.
+ * 
+ * Auto-wraps handlers to emit workflow::node-completed events when _workflow metadata
+ * is present in the input (workflow orchestration).
  */
 export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
   for (const fn of fns) {
+    // Wrap handler to auto-emit workflow completion events
+    const wrappedHandler = async (input: unknown) => {
+      // Detect workflow orchestration metadata
+      const isWorkflow = input && typeof input === 'object' && '_workflow' in input
+      const workflow = isWorkflow ? (input as any)._workflow : null
+      const hasWorkflowMeta = workflow?.run_id && workflow?.node_uid
+      
+      if (hasWorkflowMeta) {
+        console.log(`[nvent/workflow] executing node ${workflow.node_uid} in run ${workflow.run_id} via function ${fn.id}`)
+      }
+      
+      // Extract actual input (unwrap from workflow envelope)
+      const actualInput = hasWorkflowMeta && 'input' in (input as any)
+        ? (input as any).input
+        : input
+      
+      // Execute handler with unwrapped input
+      const result = await fn.handler(actualInput)
+      
+      // Auto-emit workflow completion if this is a workflow node execution
+      if (hasWorkflowMeta) {
+        try {
+          console.log(`[nvent/workflow] node ${workflow.node_uid} completed, writing result and emitting event`)
+          
+          // Write result to state
+          await iii.trigger({
+            function_id: 'state::set',
+            payload: {
+              scope: 'workflow_node_result',
+              key: `${workflow.run_id}/${workflow.node_uid}`,
+              value: result,
+            },
+          })
+          
+          console.log(`[nvent/workflow] result written to state for ${workflow.node_uid}`)
+          
+          // Emit completion event (fast-path tick wake)
+          await iii.trigger({
+            function_id: 'workflow::node-completed',
+            payload: {
+              run_id: workflow.run_id,
+              node_uid: workflow.node_uid,
+            },
+          })
+          
+          console.log(`[nvent/workflow] completion event emitted for ${workflow.node_uid}`)
+        } catch (err) {
+          // Log but don't throw - result is still returned
+          console.error(`[nvent/workflow] completion failed for ${workflow.node_uid}:`, err)
+        }
+      }
+      
+      return result
+    }
+
     iii.registerFunction(
       fn.id,
-      fn.handler as (input: unknown) => Promise<unknown>,
+      wrappedHandler,
       {
         description: fn.description,
         request_format: fn.request_format,
@@ -31,9 +89,21 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
       },
     )
 
+    // Register all declared triggers
     for (const trigger of fn.triggers ?? []) {
       const cfg = trigger.config ?? {}
       iii.registerTrigger({ type: trigger.type, function_id: fn.id, config: cfg })
+    }
+
+    // Auto-register triggerless functions as subscribers to "default" queue
+    // so they can be called asynchronously by the workflow orchestrator
+    if (!fn.triggers || fn.triggers.length === 0) {
+      console.log(`[nvent/workflow] auto-subscribing triggerless function ${fn.id} to default queue`)
+      iii.registerTrigger({
+        type: 'durable:subscriber',
+        function_id: fn.id,
+        config: { queue: 'default' },
+      })
     }
   }
 }

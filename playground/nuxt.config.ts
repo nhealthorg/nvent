@@ -36,7 +36,7 @@ export default defineNuxtConfig({
 
   nvent: {
     iii: {
-      version: 'iii/v0.21.3',
+      version: 'iii/v0.21.4',
       failOnInstallFailure: true,
       mode: 'local',
       console: true,

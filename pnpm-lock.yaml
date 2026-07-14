@@ -124,8 +124,8 @@ importers:
   packages/nvent:
     dependencies:
       '@iii-dev/helpers':
-        specifier: 0.21.3
-        version: 0.21.3
+        specifier: 0.21.5
+        version: 0.21.5
       '@nuxt/devtools-kit':
         specifier: ^3.2.4
         version: 3.2.4(magicast@0.5.3)(vite@7.3.6(@types/node@26.1.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
@@ -142,11 +142,11 @@ importers:
         specifier: 16.2.1
         version: 16.2.1
       iii-browser-sdk:
-        specifier: 0.21.3
-        version: 0.21.3
+        specifier: 0.21.5
+        version: 0.21.5
       iii-sdk:
-        specifier: 0.21.3
-        version: 0.21.3
+        specifier: 0.21.5
+        version: 0.21.5
       knitwork:
         specifier: ^1.3.0
         version: 1.3.0
@@ -1023,8 +1023,8 @@ packages:
     peerDependencies:
       vue: '>=3.0.0'
 
-  '@iii-dev/helpers@0.21.3':
-    resolution: {integrity: sha512-Xv3zBXvagl1mK/wRPxrBpa2JpQMsazPh3i+15P30spFqJ/meP4XKrX4/g6PlnxlvmWZGl6m4xhvWD+bMHQumdw==}
+  '@iii-dev/helpers@0.21.5':
+    resolution: {integrity: sha512-gjuGLUxRSseY+9DynoAF8M7/AnomQo3joX0aapHvoGLJS7kczhFSrxjA29AjT3r0MIGF7rcG4ejeoDPxRgeRGQ==}
 
   '@internationalized/date@3.12.2':
     resolution: {integrity: sha512-FY1Y+H64NDs+HAF6omlnWxm3mEpfgaCSWtL5l551ZZfImA+kGjPFgrnJrGjH6lfmLL0g8Z/mBu1R3kufeCp6Jw==}
@@ -4286,11 +4286,11 @@ packages:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
     engines: {node: '>= 4'}
 
-  iii-browser-sdk@0.21.3:
-    resolution: {integrity: sha512-0JNPhRH5n+yJFGUPpGtv6JEdTdhaxaaDBSAIOtjCgqDhmS1qcog/jwpPM0dFTQQwDNFEOhxA9gI19kJfoYkDfw==}
+  iii-browser-sdk@0.21.5:
+    resolution: {integrity: sha512-o2BOWUjtGYA+EE+ozwtS0C9GAsGBalGhteIY9mSVc7p5uEoqQb3Y22RMlJn0nHOdOQI07/Jr2h7gAlJBF1sxhw==}
 
-  iii-sdk@0.21.3:
-    resolution: {integrity: sha512-o8ec/t6tv6KyAcbbYF1Kd1Q8GJAXp9h5OBPc78aNex8l2uc8icLyPIIC5iIz8AauLl7lheeddl70so/gsKpmtg==}
+  iii-sdk@0.21.5:
+    resolution: {integrity: sha512-1Y6qTOjREZQgkwKr88V3NrRmp1p7BKfcMdxKvgcxj5OOOUHjSUcYBc1BKrRLpJBqNEqF5DkQgfkCioteoYKnaQ==}
 
   image-meta@0.2.2:
     resolution: {integrity: sha512-3MOLanc3sb3LNGWQl1RlQlNWURE5g32aUphrDyFeCsxBTk08iE3VNe4CwsUZ0Qs1X+EfX0+r29Sxdpza4B+yRA==}
@@ -7287,7 +7287,7 @@ snapshots:
       '@iconify/types': 2.0.0
       vue: 3.5.39(typescript@5.9.3)
 
-  '@iii-dev/helpers@0.21.3':
+  '@iii-dev/helpers@0.21.5':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.57.2
@@ -11011,11 +11011,11 @@ snapshots:
 
   ignore@7.0.5: {}
 
-  iii-browser-sdk@0.21.3: {}
+  iii-browser-sdk@0.21.5: {}
 
-  iii-sdk@0.21.3:
+  iii-sdk@0.21.5:
     dependencies:
-      '@iii-dev/helpers': 0.21.3
+      '@iii-dev/helpers': 0.21.5
       '@opentelemetry/api': 1.9.1
       ws: 8.21.0
     transitivePeerDependencies:

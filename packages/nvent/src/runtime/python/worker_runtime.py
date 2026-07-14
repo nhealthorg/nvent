@@ -619,6 +619,71 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
         "filePath": file_path,
         "triggers": [_normalize_trigger_meta(t) for t in triggers],
     }
+
+    # If no triggers, register the function directly so it can be called by workflows
+    if len(triggers) == 0:
+        def _make_wrapper_no_trigger(_h, _client, _fn_id):
+            async def _wrapped(data):
+                # Detect workflow orchestration metadata and unwrap input
+                is_workflow = isinstance(data, dict) and '_workflow' in data
+                wf = data.get('_workflow') if is_workflow else None
+                has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
+                
+                if has_workflow_meta:
+                    print(f"[nvent/workflow] executing node {wf['node_uid']} in run {wf['run_id']} via {_fn_id}", flush=True)
+                
+                # Extract actual input (unwrap from workflow envelope)
+                actual_input = data.get('input') if has_workflow_meta else data
+                
+                # Execute handler with unwrapped input
+                result = await _h(actual_input)
+                
+                # Auto-emit workflow completion if _workflow metadata is present
+                if has_workflow_meta:
+                    try:
+                        print(f"[nvent/workflow] node {wf['node_uid']} completed, writing result", flush=True)
+                        
+                        # Write result to state
+                        await _client.trigger_async({
+                            'function_id': 'state::set',
+                            'payload': {
+                                'scope': 'workflow_node_result',
+                                'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                'value': result,
+                            },
+                        })
+                        
+                        print(f"[nvent/workflow] result written, emitting completion event for {wf['node_uid']}", flush=True)
+                        
+                        # Emit completion event
+                        await _client.trigger_async({
+                            'function_id': 'workflow::node-completed',
+                            'payload': {
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                            },
+                        })
+                        
+                        print(f"[nvent/workflow] completion event emitted for {wf['node_uid']}", flush=True)
+                    except Exception as e:
+                        print(f"[nvent/workflow] completion failed: {e}", flush=True)
+                
+                return result
+            return _wrapped
+
+        wrapped = _make_wrapper_no_trigger(handler_fn, client, fn_id)
+        client.register_function(fn_id, wrapped, metadata=metadata)
+        
+        # Auto-register as subscriber to "default" queue for workflow orchestration
+        print(f"[nvent/workflow] auto-subscribing {fn_id!r} to default queue", flush=True)
+        client.register_trigger({
+            "type": "durable:subscriber",
+            "function_id": fn_id,
+            "config": {"queue": "default"}
+        })
+        print(f"[nvent] registered {fn_id!r} (0 trigger(s), auto-subscribed to default queue)", flush=True)
+        return
+
     seen_suffixes: set = set()
     for i, trigger in enumerate(triggers):
         t_type = trigger.get("type", "")
@@ -630,14 +695,48 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
         iii_cfg = _trigger_to_iii_cfg(trigger)
         is_http = t_type == "http"
 
-        def _make_wrapper_thin(_h, _is_http):
+        def _make_wrapper_thin(_h, _is_http, _client):
             async def _wrapped(data):
+                # Detect workflow orchestration metadata and unwrap input
+                is_workflow = isinstance(data, dict) and '_workflow' in data
+                wf = data.get('_workflow') if is_workflow else None
+                has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
+                
+                # Extract actual input (unwrap from workflow envelope)
+                actual_input = data.get('input') if has_workflow_meta else data
+                
                 # Wrap dict in HttpRequest for HTTP triggers
-                input_data = ApiRequest(**data) if (_is_http and isinstance(data, dict)) else data
-                return await _h(input_data)
+                input_data = ApiRequest(**actual_input) if (_is_http and isinstance(actual_input, dict)) else actual_input
+                result = await _h(input_data)
+                
+                # Auto-emit workflow completion if _workflow metadata is present
+                if has_workflow_meta:
+                    try:
+                        # Write result to state
+                        await _client.trigger_async({
+                            'function_id': 'state::set',
+                            'payload': {
+                                'scope': 'workflow_node_result',
+                                'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                'value': result,
+                            },
+                        })
+                        
+                        # Emit completion event
+                        await _client.trigger_async({
+                            'function_id': 'workflow::node-completed',
+                            'payload': {
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                            },
+                        })
+                    except Exception as e:
+                        print(f"[nvent] workflow completion failed: {e}", flush=True)
+                
+                return result
             return _wrapped
 
-        wrapped = _make_wrapper_thin(handler_fn, is_http)
+        wrapped = _make_wrapper_thin(handler_fn, is_http, client)
         iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
         client.register_function(function_id, wrapped, metadata=metadata)
         client.register_trigger({"type": iii_trigger_type, "function_id": function_id, "config": iii_cfg})
@@ -691,6 +790,64 @@ def _register_legacy(client, mod, default_id: str) -> None:
         "enqueues": enqueues,
     }
 
+    # If no triggers, register the function directly so it can be called by workflows
+    if len(triggers) == 0:
+        def _make_wrapper_no_trigger(_h, _fn_id, _hc, _stream_name, _client):
+            async def _wrapped(data):
+                # Detect workflow orchestration metadata and unwrap input
+                is_workflow = isinstance(data, dict) and '_workflow' in data
+                wf = data.get('_workflow') if is_workflow else None
+                has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
+                
+                # Extract actual input (unwrap from workflow envelope)
+                actual_input = data.get('input') if has_workflow_meta else data
+                
+                # Execute handler
+                if not _hc:
+                    result = await _h(actual_input)
+                else:
+                    ctx = FlowContext(_client, _fn_id, "invoke", actual_input, _stream_name, None)
+                    result = await _h(actual_input, ctx)
+                
+                # Auto-emit workflow completion if _workflow metadata is present
+                if has_workflow_meta:
+                    try:
+                        # Write result to state
+                        await _client.trigger_async({
+                            'function_id': 'state::set',
+                            'payload': {
+                                'scope': 'workflow_node_result',
+                                'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                'value': result,
+                            },
+                        })
+                        
+                        # Emit completion event
+                        await _client.trigger_async({
+                            'function_id': 'workflow::node-completed',
+                            'payload': {
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                            },
+                        })
+                    except Exception as e:
+                        print(f"[nvent] workflow completion failed: {e}", flush=True)
+                
+                return result
+            return _wrapped
+
+        wrapped = _make_wrapper_no_trigger(handler_fn, fn_id, has_ctx, stream_name, client)
+        client.register_function(fn_id, wrapped, metadata=metadata)
+        
+        # Auto-register as subscriber to "default" queue for workflow orchestration
+        client.register_trigger({
+            "type": "durable:subscriber",
+            "function_id": fn_id,
+            "config": {"queue": "default"}
+        })
+        print(f"[nvent] registered {fn_id!r} (0 trigger(s), auto-subscribed to default queue)", flush=True)
+        return
+
     seen_suffixes: set = set()
     for i, trigger in enumerate(triggers):
         t_type = trigger.get("type", "")
@@ -703,26 +860,63 @@ def _register_legacy(client, mod, default_id: str) -> None:
         iii_cfg = _trigger_to_iii_cfg(trigger)
         is_http = t_type == "http"
 
-        def _make_wrapper(_h, _is_http, _t_type, _fn_id, _hc, _stream_name):
+        def _make_wrapper(_h, _is_http, _t_type, _fn_id, _hc, _stream_name, _client):
             async def _wrapped(data):
+                # Detect workflow orchestration metadata BEFORE stream processing
+                is_workflow = isinstance(data, dict) and '_workflow' in data
+                wf = data.get('_workflow') if is_workflow else None
+                has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
+                
+                # Extract actual input (unwrap from workflow envelope)
+                working_data = data.get('input') if has_workflow_meta else data
+                
+                # Process stream metadata
                 inherited_group = None
                 effective_stream = _stream_name
-                clean_data = data
-                if isinstance(data, dict) and _NVENT_STREAM_KEY in data:
-                    nvent_stream = data[_NVENT_STREAM_KEY]
+                clean_data = working_data
+                if isinstance(working_data, dict) and _NVENT_STREAM_KEY in working_data:
+                    nvent_stream = working_data[_NVENT_STREAM_KEY]
                     if isinstance(nvent_stream, dict):
                         inherited_group = nvent_stream.get('groupId')
                         effective_stream = nvent_stream.get('name') or _stream_name
-                    clean_data = {k: v for k, v in data.items() if k != _NVENT_STREAM_KEY}
+                    clean_data = {k: v for k, v in working_data.items() if k != _NVENT_STREAM_KEY}
+                
                 # Wrap dict in HttpRequest for HTTP triggers
                 input_data = ApiRequest(**clean_data) if (_is_http and isinstance(clean_data, dict)) else clean_data
                 if not _hc:
-                    return await _h(input_data)
-                ctx = FlowContext(client, _fn_id, _t_type, input_data, effective_stream, inherited_group)
-                return await _h(input_data, ctx)
+                    result = await _h(input_data)
+                else:
+                    ctx = FlowContext(_client, _fn_id, _t_type, input_data, effective_stream, inherited_group)
+                    result = await _h(input_data, ctx)
+                
+                # Auto-emit workflow completion if _workflow metadata is present
+                if has_workflow_meta:
+                    try:
+                        # Write result to state
+                        await _client.trigger_async({
+                            'function_id': 'state::set',
+                            'payload': {
+                                'scope': 'workflow_node_result',
+                                'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                'value': result,
+                            },
+                        })
+                        
+                        # Emit completion event
+                        await _client.trigger_async({
+                            'function_id': 'workflow::node-completed',
+                            'payload': {
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                            },
+                        })
+                    except Exception as e:
+                        print(f"[nvent] workflow completion failed: {e}", flush=True)
+                
+                return result
             return _wrapped
 
-        wrapped = _make_wrapper(handler_fn, is_http, t_type, fn_id, has_ctx, stream_name)
+        wrapped = _make_wrapper(handler_fn, is_http, t_type, fn_id, has_ctx, stream_name, client)
         iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
         client.register_function(
             function_id,
