@@ -104,10 +104,31 @@ export default defineNuxtModule<ModuleOptions>({
         })
       })
     }
-
-    // add libs to vite optimize -> for esm support
-    nuxt.options.vite.optimizeDeps = defu(nuxt.options.vite.optimizeDeps, {
-      include: ['vanilla-jsoneditor', '@vue-flow/core', '@vue-flow/controls', '@vue-flow/minimap', '@vue-flow/background'],
+    nuxt.hook('vite:extendConfig', (config, { isClient, isServer }) => {
+      config.optimizeDeps = {
+        include: [
+          '@vue/devtools-core',
+          '@vue/devtools-kit',
+          'vanilla-jsoneditor', 
+          '@vue-flow/core', 
+          '@vue-flow/controls', 
+          '@vue-flow/minimap', 
+          '@vue-flow/background',
+          'tailwind-merge',
+          'tailwind-variants',
+          'iii-browser-sdk',
+          'vue-router',
+        ],
+        exclude: [
+          'vue-demi',
+        ],
+        resolve: {
+          alias: {
+            'vue-demi': 'vue-demi/lib/v3/index.mjs',
+          },
+          dedupe: ['vue'],
+        },
+      };
     })
   },
 })

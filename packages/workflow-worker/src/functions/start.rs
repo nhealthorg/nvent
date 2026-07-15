@@ -74,10 +74,10 @@ const SHAPE_HINT: &str = "Expected shape: \
     Each node is {agent, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
     run_input). Full field docs are inline in this function's request schema.";
 
-const ALLOWED_DEF_KEYS: &[&str] = &["version", "nodes", "output", "default_functions"];
+const ALLOWED_DEF_KEYS: &[&str] = &["version", "nodes", "output", "default_functions", "metadata"];
 const ALLOWED_NODE_KEYS: &[&str] = &["agent", "function", "input", "depends_on", "fanout"];
 const ALLOWED_AGENT_KEYS: &[&str] = &["model", "provider", "system_prompt", "functions", "output"];
-const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms"];
+const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "runtime"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
 // structural problem (plus the canonical shape), instead of serde's fail-fast
@@ -620,7 +620,7 @@ fn proven_nonarray_type(schema: &Value) -> Option<String> {
 /// None whenever the type can't be proven — missing node/schema, a non-JSON
 /// output, an undeclared segment, a dynamic schema, or an array leaf — so the
 /// run proceeds and the runtime guard decides.
-fn fanout_over_proven_nonarray(def: &WorkflowDef, over: &str) -> Option<String> {
+fn fanout_over_proven_nonarray(_def: &WorkflowDef, _over: &str) -> Option<String> {
     // Functions don't declare output schemas, so we can't statically validate fanout paths.
     // Runtime validation in dag::resolve_over_path remains the guard.
     None

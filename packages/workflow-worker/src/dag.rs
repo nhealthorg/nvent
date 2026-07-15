@@ -31,6 +31,8 @@ fn pending_checkpoint() -> NodeCheckpoint {
         pending_at: None,
         pending_timeout_ms: None,
         retries: 0,
+        completed_at: None,
+        worker_name: None,
     }
 }
 

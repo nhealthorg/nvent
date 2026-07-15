@@ -135,10 +135,13 @@ export default defineNuxtModule<NventIiiOptions>({
     const PYTHON_RUNTIME_SRC = resolve('./runtime/python/worker_runtime.py')
     const PYTHON_NVENT_HELPER_SRC = resolve('./runtime/python/nvent.py')
 
-    extendViteConfig((config) => {
-      config.optimizeDeps ||= {}
-      config.optimizeDeps.include ||= []
-      config.optimizeDeps.include.push('iii-browser-sdk')
+    nuxt.hook('vite:extendConfig', (config, { isClient, isServer }) => {
+      config.optimizeDeps = {
+        include: [
+          '@vue/devtools-core',
+          '@vue/devtools-kit',
+        ]
+      };
     })
 
     // -------------------------------------------------------------------------

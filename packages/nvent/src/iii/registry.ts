@@ -25,6 +25,8 @@ export interface FunctionMeta {
   relativePath: string
   /** Optional human-readable description */
   description?: string
+  /** Runtime environment (nodejs, python, rust, unknown) */
+  runtime: 'nodejs' | 'python' | 'rust' | 'unknown'
 }
 
 export interface PythonFunctionMeta {
@@ -56,6 +58,16 @@ export function filePathToFunctionId(relPath: string): string {
   // Strip any file extension (.ts, .js, .py, etc.)
   const noExt = relPath.replace(/\.[a-zA-Z]+$/, '')
   return noExt.split(/[\\/]/).join('::')
+}
+
+/**
+ * Detects runtime from file extension.
+ */
+function detectRuntimeFromPath(filePath: string): 'nodejs' | 'python' | 'rust' | 'unknown' {
+  if (filePath.endsWith('.py')) return 'python'
+  if (filePath.endsWith('.ts') || filePath.endsWith('.js') || filePath.endsWith('.mts') || filePath.endsWith('.mjs')) return 'nodejs'
+  if (filePath.endsWith('.rs')) return 'rust'
+  return 'unknown'
 }
 
 /**
@@ -125,7 +137,12 @@ export async function scanFunctions(opts: ScanOptions): Promise<ScannedRegistry>
       ])
 
       for (const file of jsFiles) {
-        functions.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath: join(fnDir, file), relativePath: file })
+        functions.push({ 
+          id: `${prefix}${filePathToFunctionId(file)}`, 
+          absPath: join(fnDir, file), 
+          relativePath: file,
+          runtime: detectRuntimeFromPath(file)
+        })
       }
 
       for (const file of pyFiles) {
@@ -144,7 +161,12 @@ export async function scanFunctions(opts: ScanOptions): Promise<ScannedRegistry>
       })
 
       for (const file of jsFiles) {
-        workflows.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath: join(workflowDir, file), relativePath: file })
+        workflows.push({ 
+          id: `${prefix}${filePathToFunctionId(file)}`, 
+          absPath: join(workflowDir, file), 
+          relativePath: file,
+          runtime: detectRuntimeFromPath(file)
+        })
       }
     }
   }
@@ -171,22 +193,22 @@ export function generateIiiRegistryTemplate(scanned: ScannedRegistry, pythonPath
   // The file-path-derived ID is always authoritative — no name override from the module.
   // Takes the whole namespace object so Rollup can't statically trace member accesses
   // back to individual modules (avoids "not exported" warnings).
-  lines.push(`function _entry(ns, id, absPath) {`)
+  lines.push(`function _entry(ns, id, absPath, runtime) {`)
   lines.push(`  const fn = ns.default`)
-  lines.push(`  return { id, description: fn.description, handler: fn.handler, triggers: (fn.triggers ?? []).map(t => ({ ...t, function_id: id })), request_format: fn.request_format, response_format: fn.response_format, filePath: absPath, $workflow: !!fn.$workflow }`)
+  lines.push(`  return { id, description: fn.description, handler: fn.handler, triggers: (fn.triggers ?? []).map(t => ({ ...t, function_id: id })), request_format: fn.request_format, response_format: fn.response_format, filePath: absPath, runtime, $workflow: !!fn.$workflow }`)
   lines.push(`}`)
   lines.push('')
 
   const functionEntries = scanned.functions.map((fn, i) => {
     const ns = `fn${i}`
     lines.push(`import * as ${ns} from ${genString(fn.absPath)}`)
-    return `_entry(${ns}, ${genString(fn.id)}, ${genString(fn.absPath)})`
+    return `_entry(${ns}, ${genString(fn.id)}, ${genString(fn.absPath)}, ${genString(fn.runtime)})`
   })
 
   const workflowEntries = scanned.workflows.map((wf, i) => {
     const ns = `wf${i}`
     lines.push(`import * as ${ns} from ${genString(wf.absPath)}`)
-    return `_entry(${ns}, ${genString(wf.id)}, ${genString(wf.absPath)})`
+    return `_entry(${ns}, ${genString(wf.id)}, ${genString(wf.absPath)}, ${genString(wf.runtime)})`
   })
 
   lines.push('')

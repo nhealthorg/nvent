@@ -168,6 +168,10 @@ type StepNodeData = {
   runtime?: 'nodejs' | 'python'
   runtype?: 'inprocess' | 'task'
   emits?: string[]
+  stepTimeout?: number
+  worker_name?: string
+  pending_at?: number
+  completed_at?: number
 }
 
 type AwaitNodeData = {
@@ -226,6 +230,9 @@ const nodes = computed<FlowNode[]>(() => {
         awaitBefore: f.entry.awaitBefore,
         awaitAfter: f.entry.awaitAfter,
         stepTimeout: entryStepTimeout,
+        worker_name: entryState?.worker_name,
+        pending_at: entryState?.pending_at,
+        completed_at: entryState?.completed_at,
       },
       type: 'flow-entry',
       style: { minWidth: `${nodeWidth}px` },
@@ -343,6 +350,9 @@ const nodes = computed<FlowNode[]>(() => {
             awaitBefore: step?.awaitBefore,
             awaitAfter: step?.awaitAfter,
             stepTimeout: stepStepTimeout,
+            worker_name: stepState?.worker_name,
+            pending_at: stepState?.pending_at,
+            completed_at: stepState?.completed_at,
           },
           type: 'flow-step',
           style: { minWidth: `${nodeWidth}px` },
@@ -433,6 +443,9 @@ const nodes = computed<FlowNode[]>(() => {
           runtype: step?.runtype,
           emits: step?.emits,
           stepTimeout: stepStepTimeout,
+          worker_name: stepState?.worker_name,
+          pending_at: stepState?.pending_at,
+          completed_at: stepState?.completed_at,
         },
         type: 'flow-step',
         style: { minWidth: `${nodeWidth}px` },

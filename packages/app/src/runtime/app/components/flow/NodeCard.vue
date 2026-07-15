@@ -71,6 +71,61 @@
         >{{ data?.workerId || '-' }}</span>
       </div>
       <div
+        v-if="data?.worker_name"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-server-20-solid"
+            class="size-3"
+          />
+          Orchestrator
+        </span>
+        <span
+          class="truncate ml-2 font-mono text-xs"
+          :title="data.worker_name"
+        >{{ data.worker_name }}</span>
+      </div>
+      <div
+        v-if="data?.pending_at"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-play-circle-20-solid"
+            class="size-3"
+          />
+          Started
+        </span>
+        <span class="truncate ml-2 text-xs">{{ formatTimestamp(data.pending_at) }}</span>
+      </div>
+      <div
+        v-if="data?.completed_at"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-check-circle-20-solid"
+            class="size-3"
+          />
+          Completed
+        </span>
+        <span class="truncate ml-2 text-xs">{{ formatTimestamp(data.completed_at) }}</span>
+      </div>
+      <div
+        v-if="data?.pending_at && data?.completed_at"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-clock-20-solid"
+            class="size-3"
+          />
+          Duration
+        </span>
+        <span class="truncate ml-2 text-xs font-medium">{{ formatDuration(data.completed_at - data.pending_at) }}</span>
+      </div>
+      <div
         v-if="data?.runtype"
         class="flex items-center justify-between"
       >
@@ -217,6 +272,9 @@ const props = defineProps<{
     awaitBefore?: AwaitConfig
     awaitAfter?: AwaitConfig
     stepTimeout?: number
+    worker_name?: string
+    pending_at?: number
+    completed_at?: number
   }
   kind?: 'entry' | 'step'
 }>()
@@ -268,6 +326,35 @@ function formatStepTimeout(ms: number): string {
     return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`
   }
   return `${seconds}s`
+}
+
+function formatTimestamp(timestamp: number): string {
+  if (!timestamp) return '-'
+  const date = new Date(timestamp)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+  const seconds = Math.floor(diff / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+
+  if (days > 0) return `${days}d ago`
+  if (hours > 0) return `${hours}h ago`
+  if (minutes > 0) return `${minutes}m ago`
+  if (seconds > 10) return `${seconds}s ago`
+  return 'just now'
+}
+
+function formatDuration(ms: number): string {
+  if (!ms || ms <= 0) return '-'
+  const seconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+
+  if (hours > 0) return `${hours}h ${minutes % 60}m`
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`
+  if (seconds > 0) return `${seconds}s`
+  return `${ms}ms`
 }
 </script>
 

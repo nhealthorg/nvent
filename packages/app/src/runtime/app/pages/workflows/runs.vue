@@ -1,10 +1,22 @@
 <script setup lang="ts">
-import { computed, useFetch, useComponentRouter } from '#imports'
+import { computed, useFetch, useComponentRouter, onMounted, onUnmounted } from '#imports'
 
 const { data, refresh, pending } = useFetch('/api/_workflows/runs')
 const { push } = useComponentRouter()
 
 const runs = computed(() => data.value?.runs || [])
+
+// Auto-refresh every 5 seconds to show live updates
+let refreshInterval: any = null
+onMounted(() => {
+  refreshInterval = setInterval(() => {
+    refresh()
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (refreshInterval) clearInterval(refreshInterval)
+})
 
 function getStatusColor(status: string) {
   switch (status) {

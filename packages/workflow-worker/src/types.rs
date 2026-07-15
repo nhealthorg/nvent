@@ -34,6 +34,16 @@ pub enum NodeState {
     Cancelled,
 }
 
+/// Runtime environment for a function.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FunctionRuntime {
+    NodeJS,
+    Python,
+    Rust,
+    Unknown,
+}
+
 // ---------------------------------------------------------------------------
 // Workflow definition types
 // ---------------------------------------------------------------------------
@@ -68,10 +78,32 @@ pub struct WorkflowDef {
     /// narrow individual nodes further with their own `agent.functions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_functions: Option<Value>,
+    /// Optional metadata about this workflow (name, description, tags, etc.).
+    /// Used by the UI for display and categorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<WorkflowMetadata>,
 }
 
 fn default_def_version() -> u32 {
     1
+}
+
+/// Workflow metadata for UI display and categorization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowMetadata {
+    /// Worker that created this workflow (e.g. "nvent-python-12345").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_worker: Option<String>,
+    /// User-friendly workflow name (e.g. "AI Content Pipeline").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional description of what this workflow does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Tags for categorization and filtering.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Selects the node whose result becomes the run's `result`.
@@ -108,6 +140,10 @@ pub struct FunctionSpec {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Runtime environment (nodejs, python, rust, unknown). Used by UI to
+    /// display runtime-specific info and badges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<FunctionRuntime>,
 }
 
 /// Where a node's input value comes from. Either a single source, or — for a
@@ -252,6 +288,12 @@ pub struct NodeCheckpoint {
     pub pending_timeout_ms: Option<u64>,
     #[serde(default)]
     pub retries: u32,
+    /// Timestamp when this node completed execution (Done/Failed state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+    /// Name of the worker that executed this node (e.g. "nvent-nodejs-12345").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

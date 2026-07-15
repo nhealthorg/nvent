@@ -151,6 +151,8 @@ pub(crate) async fn fire_node(
             pending_at: Some(deps.now_ms()),
             pending_timeout_ms: prior_timeout,
             retries: attempt,
+            completed_at: None,
+            worker_name: None,
         },
     );
 

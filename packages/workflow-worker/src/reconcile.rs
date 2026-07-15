@@ -123,6 +123,7 @@ pub async fn reconcile_function_nodes(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_ref = Some(result_key);
                     cp.state = NodeState::Done;
+                    cp.completed_at = Some(now);  // Track completion time
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -150,6 +151,7 @@ pub async fn reconcile_function_nodes(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_error = Some(format!("state read error: {}", e));
                     cp.state = NodeState::Failed;
+                    cp.completed_at = Some(now);  // Track completion time (failure)
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -251,6 +253,7 @@ pub async fn reconcile_run(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_ref = Some(node_result_key(&record.run_id, &uid));
                     cp.state = NodeState::Done;
+                    cp.completed_at = Some(now);  // Track completion time
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -262,6 +265,7 @@ pub async fn reconcile_run(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_error = Some(err);
                     cp.state = NodeState::Failed;
+                    cp.completed_at = Some(now);  // Track completion time (failure)
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -272,6 +276,7 @@ pub async fn reconcile_run(
             NodeOutcome::Cancelled => {
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.state = NodeState::Cancelled;
+                    cp.completed_at = Some(now);  // Track completion time (cancellation)
                 }
             }
         }

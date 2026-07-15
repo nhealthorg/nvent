@@ -21,17 +21,11 @@ export default defineWorkflow({
   description: 'Multi-step text processing and analysis workflow',
   handler: async (ctx, input: { text: string }) => {
     // Step 1: Process the text
-    const processed = await ctx.node('process', {
-      function: 'process-text',
-      input: input
-    })
+    const processed = await ctx.call('process-text', input)
     
     // Step 2: Analyze the processed text
     // This node depends on the 'process' node and will receive its output
-    const analysis = await ctx.node('analyze', {
-      function: 'analyze-text',
-      input: processed  // This gets translated to { from: 'node:process' }
-    })
+    const analysis = await ctx.call('analyze-text', processed)
     
     // Return the final analysis
     return analysis

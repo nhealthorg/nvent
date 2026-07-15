@@ -55,6 +55,7 @@ const flowMeta = computed(() => {
     steps[id] = {
       name: id,
       workerId: node.function?.id,
+      runtime: node.function?.runtime,
       dependsOn: node.depends_on || []
     }
   })
@@ -98,17 +99,22 @@ const flowMeta = computed(() => {
 const stepStates = computed(() => {
   if (!status.value?.nodes) return {}
   const out: Record<string, any> = {}
-  Object.entries(status.value.nodes).forEach(([id, nodeStatus]) => {
-    // Map engine status to UI status
-    let uiStatus = nodeStatus as string
-    if (uiStatus === 'done') uiStatus = 'completed'
-    else if (uiStatus === 'error') uiStatus = 'failed'
-    else if (uiStatus === 'active' || uiStatus === 'queued') uiStatus = 'running'
+  Object.entries(status.value.nodes).forEach(([id, nodeStatus]: [string, any]) => {
+    // NodeCheckpoint object from workflow_runs state
+    let uiStatus = nodeStatus.state || nodeStatus
+    if (typeof uiStatus === 'string') {
+      if (uiStatus === 'done') uiStatus = 'completed'
+      else if (uiStatus === 'error' || uiStatus === 'failed') uiStatus = 'failed'
+      else if (uiStatus === 'active' || uiStatus === 'queued' || uiStatus === 'running') uiStatus = 'running'
+    }
 
     out[id] = {
       status: uiStatus,
-      error: status.value.node_errors?.[id],
-      result: status.value.node_results?.[id]
+      error: nodeStatus.result_error,
+      result: nodeStatus.result_ref,
+      pending_at: nodeStatus.pending_at,
+      completed_at: nodeStatus.completed_at,
+      worker_name: nodeStatus.worker_name
     }
   })
   return out

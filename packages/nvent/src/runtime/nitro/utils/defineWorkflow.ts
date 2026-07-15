@@ -1,4 +1,71 @@
 import { useIii } from '#imports'
+
+/**
+ * Lazy-loaded registry cache to avoid circular dependencies.
+ * Registry is loaded on first access.
+ */
+let registryCache: any = null
+
+async function getRegistry() {
+  if (!registryCache) {
+    try {
+      // Dynamically import registry to avoid build-time issues
+      const mod = await import('#nvent/iii-registry')
+      registryCache = mod.default || mod.registry
+    } catch (e) {
+      console.warn('[nvent/workflow] Failed to load function registry:', e)
+      registryCache = { functions: [] }
+    }
+  }
+  return registryCache
+}
+
+/**
+ * Get runtime from function registry.
+ * Falls back to heuristics if registry is not available.
+ */
+async function getRuntimeFromRegistry(functionId: string): Promise<'nodejs' | 'python' | 'rust' | 'unknown'> {
+  try {
+    const registry = await getRegistry()
+    
+    if (registry?.functions) {
+      const fn = registry.functions.find((f: any) => f.id === functionId)
+      if (fn?.runtime) {
+        return fn.runtime
+      }
+    }
+  } catch (e) {
+    // Registry not available, fall back to heuristics
+  }
+  
+  return detectFunctionRuntime(functionId)
+}
+
+/**
+ * Detect function runtime from ID pattern.
+ * Heuristics:
+ * - Ends with '.py' or contains 'python' → python
+ * - Contains '::' (Rust convention for module paths) → rust
+ * - Otherwise → nodejs (default, since defineWorkflow runs in Node.js context)
+ */
+function detectFunctionRuntime(functionId: string): 'nodejs' | 'python' | 'rust' | 'unknown' {
+  const lower = functionId.toLowerCase()
+  
+  // Python detection
+  if (functionId.endsWith('.py') || lower.includes('python')) {
+    return 'python'
+  }
+  
+  // Rust detection (module path syntax like "module::function")
+  if (functionId.includes('::')) {
+    return 'rust'
+  }
+  
+  // Default to nodejs since we're in a Node.js context
+  // Most functions registered via defineFunction are Node.js
+  return 'nodejs'
+}
+
 /**
  * Normalizes various input formats into the InputSpec format expected by the workflow worker.
  * 
@@ -47,7 +114,43 @@ function normalizeInput(input: any, deps: string[]): { from: string | string[], 
   return { from: 'run_input' }
 }
 export interface WorkflowContext {
+  /**
+   * Low-level node definition (full control over spec)
+   */
   node: <T = any>(id: string, spec: any) => Promise<T>
+  
+  /**
+   * High-level helper: call a function with automatic input mapping.
+   * 
+   * @param nodeIdOrFunctionId - If only one arg, used as both node ID and function ID
+   * @param functionIdOrInput - Function ID if 2 args, or input if 1 arg
+   * @param input - Input data (optional, defaults to previous node or run_input)
+   * 
+   * @example
+   * // Simple call with auto-generated node ID
+   * await ctx.call('process-text', input)
+   * 
+   * // Call with explicit node ID
+   * await ctx.call('step1', 'process-text', input)
+   * 
+   * // Call referencing previous node
+   * const result1 = await ctx.call('process', input)
+   * const result2 = await ctx.call('analyze', result1)
+   */
+  call: <T = any>(...args: any[]) => Promise<T>
+  
+  /**
+   * Fanout helper: run a function for each item in an array.
+   * 
+   * @param nodeId - Node ID for the fanout group
+   * @param items - Array reference (e.g., previous node result)
+   * @param functionId - Function to run for each item
+   * 
+   * @example
+   * const items = await ctx.call('fetch-items')
+   * await ctx.foreach('process-items', items, 'process-single-item')
+   */
+  foreach: <T = any>(nodeId: string, items: any, functionId: string) => Promise<T>
 }
 
 export type WorkflowHandler<TInput = any, TOutput = any> = (
@@ -86,7 +189,15 @@ export function defineWorkflow<TInput = any, TOutput = any>(
       return iii.trigger({
         function_id: 'workflow::start',
         payload: {
-          definition: plan,
+          definition: {
+            ...plan,
+            // Add workflow metadata for UI display
+            metadata: {
+              name: options.name,
+              description: options.description,
+              created_by_worker: `nvent-nodejs-${process.pid}`,
+            },
+          },
           input
         }
       })
@@ -94,6 +205,7 @@ export function defineWorkflow<TInput = any, TOutput = any>(
     async compile(input: TInput = {} as any) {
       const nodes: Record<string, any> = {}
       const nodeOrder: string[] = []
+      let autoNodeCounter = 0
 
       const ctx: WorkflowContext = {
         node: async (id, spec) => {
@@ -123,7 +235,14 @@ export function defineWorkflow<TInput = any, TOutput = any>(
           if (spec.agent) {
             nodeDef.agent = typeof spec.agent === 'string' ? { model: spec.agent } : spec.agent
           } else if (spec.function) {
-            nodeDef.function = typeof spec.function === 'string' ? { id: spec.function } : spec.function
+            const fnSpec = typeof spec.function === 'string' ? { id: spec.function } : spec.function
+            
+            // Get runtime from registry instead of guessing
+            if (!fnSpec.runtime) {
+              fnSpec.runtime = await getRuntimeFromRegistry(fnSpec.id)
+            }
+            
+            nodeDef.function = fnSpec
           } else if (spec.executor) {
             // Passthrough for raw executor structure
             Object.assign(nodeDef, spec.executor)
@@ -132,6 +251,65 @@ export function defineWorkflow<TInput = any, TOutput = any>(
           nodes[id] = nodeDef
           nodeOrder.push(id)
           return { $ref: `node:${id}` } as any
+        },
+        
+        call: async (...args: any[]) => {
+          // Parse arguments: call(functionId, input) OR call(nodeId, functionId, input)
+          let nodeId: string
+          let functionId: string
+          let input: any
+          
+          if (args.length === 1) {
+            // call(functionId) - auto-generate node ID, use run_input
+            functionId = args[0]
+            nodeId = functionId.replace(/::/g, '_')
+            input = 'run_input'
+          } else if (args.length === 2) {
+            if (typeof args[0] === 'string' && typeof args[1] === 'string') {
+              // call(nodeId, functionId) - explicit IDs, use run_input
+              nodeId = args[0]
+              functionId = args[1]
+              input = 'run_input'
+            } else {
+              // call(functionId, input) - auto-generate node ID
+              functionId = args[0]
+              nodeId = functionId.replace(/::/g, '_')
+              input = args[1]
+            }
+          } else {
+            // call(nodeId, functionId, input) - all explicit
+            nodeId = args[0]
+            functionId = args[1]
+            input = args[2]
+          }
+          
+          // If nodeId collision, append counter
+          if (nodes[nodeId]) {
+            nodeId = `${nodeId}_${++autoNodeCounter}`
+          }
+          
+          return ctx.node(nodeId, {
+            function: functionId,
+            input
+          })
+        },
+        
+        foreach: async (nodeId: string, items: any, functionId: string) => {
+          // Extract the 'from' reference from items if it's a node reference
+          let fanoutOver: string
+          if (items && typeof items === 'object' && items.$ref) {
+            fanoutOver = items.$ref
+          } else if (typeof items === 'string') {
+            fanoutOver = items
+          } else {
+            throw new Error(`foreach requires a node reference or string path, got: ${typeof items}`)
+          }
+          
+          return ctx.node(nodeId, {
+            function: functionId,
+            input: 'fanout_item',
+            fanout: { over: fanoutOver }
+          })
         }
       }
 
