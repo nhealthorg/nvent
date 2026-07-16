@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     error::WorkflowError,
     state,
-    types::{NodeState, RunStatus},
+    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef},
 };
 
 use super::Deps;
@@ -31,12 +31,14 @@ pub struct StatusResponse {
     pub run_id: String,
     pub status: RunStatus,
     /// Per-node state keyed by node uid.
-    pub nodes: BTreeMap<String, NodeState>,
+    pub nodes: BTreeMap<String, NodeCheckpoint>,
     /// Errors for nodes that failed, keyed by node uid — e.g. "no provider
     /// registered for model …". Present so a caller can diagnose a `failed` run
     /// without digging into stored state. Omitted when no node carries an error.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub node_errors: BTreeMap<String, String>,
+    /// The authored workflow definition (for UI visualization).
+    pub definition: WorkflowDef,
     /// Nodes that have a stored result: node uid → result_ref (its key in state).
     /// Fetch the value with `workflow::node-result { run_id, node_uid }`. Lets a
     /// caller recover partial work from a run that failed partway (the run-level
@@ -48,6 +50,8 @@ pub struct StatusResponse {
     /// Run-level failure summary (set when `status == failed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,46 +62,53 @@ pub async fn handle(
     deps: &Deps,
     req: StatusRequest,
 ) -> Result<Option<StatusResponse>, WorkflowError> {
-    match state::get_run(&deps.iii, &req.run_id).await? {
-        None => Ok(None),
-        Some(record) => {
-            let nodes: BTreeMap<String, NodeState> = record
-                .nodes
-                .iter()
-                .map(|(node_uid, cp)| (node_uid.clone(), cp.state))
-                .collect();
+    let record = match state::get_run(&deps.iii, &req.run_id).await? {
+        None => return Ok(None),
+        Some(r) => r,
+    };
 
-            let node_errors: BTreeMap<String, String> = record
-                .nodes
-                .iter()
-                .filter_map(|(node_uid, cp)| {
-                    cp.result_error
-                        .as_ref()
-                        .map(|e| (node_uid.clone(), e.clone()))
-                })
-                .collect();
-
-            let node_results: BTreeMap<String, String> = record
-                .nodes
-                .iter()
-                .filter_map(|(node_uid, cp)| {
-                    cp.result_ref
-                        .as_ref()
-                        .map(|r| (node_uid.clone(), r.clone()))
-                })
-                .collect();
-
-            Ok(Some(StatusResponse {
-                run_id: record.run_id,
-                status: record.status,
-                nodes,
-                node_errors,
-                node_results,
-                result: record.result,
-                result_error: record.result_error,
-            }))
+    let definition = match state::get_def(&deps.iii, &req.run_id).await? {
+        None => {
+            return Err(WorkflowError::State(format!(
+                "Definition for run {} not found",
+                req.run_id
+            )))
         }
-    }
+        Some(d) => d,
+    };
+
+    let node_errors: BTreeMap<String, String> = record
+        .nodes
+        .iter()
+        .filter_map(|(node_uid, cp)| {
+            cp.result_error
+                .as_ref()
+                .map(|e| (node_uid.clone(), e.clone()))
+        })
+        .collect();
+
+    let node_results: BTreeMap<String, String> = record
+        .nodes
+        .iter()
+        .filter_map(|(node_uid, cp)| {
+            cp.result_ref
+                .as_ref()
+                .map(|r| (node_uid.clone(), r.clone()))
+        })
+        .collect();
+
+    Ok(Some(StatusResponse {
+        run_id: record.run_id,
+        status: record.status,
+        nodes: record.nodes,
+        node_errors,
+        definition,
+        node_results,
+        result: record.result,
+        result_error: record.result_error,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -112,8 +123,21 @@ mod tests {
     #[test]
     fn status_response_serde_round_trip() {
         let mut nodes = BTreeMap::new();
-        nodes.insert("plan".to_string(), NodeState::Done);
-        nodes.insert("read".to_string(), NodeState::Running);
+        nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("workflow_node_result/r_abc123/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
 
         let mut node_errors = BTreeMap::new();
         node_errors.insert("read".to_string(), "boom".to_string());
@@ -129,9 +153,20 @@ mod tests {
             status: RunStatus::AwaitingNodes,
             nodes,
             node_errors,
+            definition: WorkflowDef {
+                version: 1,
+                metadata: None,
+                default_functions: None,
+                nodes: BTreeMap::new(),
+                output: crate::types::OutputRef {
+                    from: "node:plan".to_string(),
+                },
+            },
             node_results,
             result: Some(json!({"summary": "hello"})),
             result_error: Some("node 'read': boom".to_string()),
+            created_at: 12345,
+            updated_at: 67890,
         };
 
         let serialized = serde_json::to_string(&resp).expect("serialize StatusResponse");
@@ -145,6 +180,8 @@ mod tests {
         assert_eq!(decoded.node_results, resp.node_results);
         assert_eq!(decoded.result, resp.result);
         assert_eq!(decoded.result_error, resp.result_error);
+        assert_eq!(decoded.created_at, resp.created_at);
+        assert_eq!(decoded.updated_at, resp.updated_at);
     }
 
     #[test]
@@ -154,9 +191,20 @@ mod tests {
             status: RunStatus::Running,
             nodes: BTreeMap::new(),
             node_errors: BTreeMap::new(),
+            definition: WorkflowDef {
+                version: 1,
+                metadata: None,
+                default_functions: None,
+                nodes: BTreeMap::new(),
+                output: crate::types::OutputRef {
+                    from: "node:x".to_string(),
+                },
+            },
             node_results: BTreeMap::new(),
             result: None,
             result_error: None,
+            created_at: 0,
+            updated_at: 0,
         };
 
         let serialized = serde_json::to_value(&resp).expect("serialize");

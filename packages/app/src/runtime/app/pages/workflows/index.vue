@@ -22,8 +22,9 @@ function startTrigger(workflow: any) {
 }
 
 function onTriggered(event: { workflowId: string, runId: string }) {
+  console.log('Workflow triggered:', event.workflowId, event.runId)
   // Navigate to the run details
-  push(`/workflows/${event.runId}`)
+  push(`/workflows/runs/${event.runId}`)
 }
 </script>
 

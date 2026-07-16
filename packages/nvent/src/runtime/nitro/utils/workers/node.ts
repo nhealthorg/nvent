@@ -41,7 +41,39 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
         : input
       
       // Execute handler with unwrapped input
-      const result = await fn.handler(actualInput)
+      let result: any
+      try {
+        result = await fn.handler(actualInput)
+      } catch (err: any) {
+        const errorMessage = err?.message || String(err)
+        console.error(`[nvent/workflow] node ${workflow.node_uid} in run ${workflow.run_id} failed:`, errorMessage)
+
+        if (hasWorkflowMeta) {
+          try {
+            // Write error to state so orchestrator can catch it
+            await iii.trigger({
+              function_id: 'state::set',
+              payload: {
+                scope: 'workflow_node_result',
+                key: `${workflow.run_id}/${workflow.node_uid}`,
+                value: { __workflow_error__: errorMessage },
+              },
+            })
+
+            // Emit completion event to wake the orchestrator
+            await iii.trigger({
+              function_id: 'workflow::node-completed',
+              payload: {
+                run_id: workflow.run_id,
+                node_uid: workflow.node_uid,
+              },
+            })
+          } catch (reportErr) {
+            console.error(`[nvent/workflow] failed to report node failure for ${workflow.node_uid}:`, reportErr)
+          }
+        }
+        throw err
+      }
       
       // Auto-emit workflow completion if this is a workflow node execution
       if (hasWorkflowMeta) {

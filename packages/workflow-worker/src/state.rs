@@ -263,6 +263,15 @@ pub async fn get_node_result(
     }
 }
 
+pub async fn delete_node_result(
+    iii: &IIIClient,
+    run_id: &str,
+    node_uid: &str,
+) -> Result<(), WorkflowError> {
+    let key = node_result_key(run_id, node_uid);
+    state_delete(iii, SCOPE_RESULT, &key).await
+}
+
 /// For each `NodeState::Done` checkpoint that has a `result_ref`, fetch the
 /// stored result and collect into a `node_uid → result` map.
 pub async fn load_done_results(

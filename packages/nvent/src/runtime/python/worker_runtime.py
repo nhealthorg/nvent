@@ -635,8 +635,33 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
                 
-                # Execute handler with unwrapped input
-                result = await _h(actual_input)
+                try:
+                    # Execute handler with unwrapped input
+                    result = await _h(actual_input)
+                except Exception as e:
+                    # Signal failure to workflow orchestrator if meta is present
+                    if has_workflow_meta:
+                        try:
+                            # Write error sentinel to state store so orchestrator can detect it
+                            await _client.trigger_async({
+                                'function_id': 'state::set',
+                                'payload': {
+                                    'scope': 'workflow_node_result',
+                                    'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                    'value': {"__workflow_error__": str(e)},
+                                },
+                            })
+                            # Wake orchestrator
+                            await _client.trigger_async({
+                                'function_id': 'workflow::node-completed',
+                                'payload': {
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                },
+                            })
+                        except Exception as e2:
+                            print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
+                    raise e
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
@@ -707,7 +732,33 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 
                 # Wrap dict in HttpRequest for HTTP triggers
                 input_data = ApiRequest(**actual_input) if (_is_http and isinstance(actual_input, dict)) else actual_input
-                result = await _h(input_data)
+                
+                try:
+                    result = await _h(input_data)
+                except Exception as e:
+                    # Signal failure to workflow orchestrator if meta is present
+                    if has_workflow_meta:
+                        try:
+                            # Write error sentinel to state store
+                            await _client.trigger_async({
+                                'function_id': 'state::set',
+                                'payload': {
+                                    'scope': 'workflow_node_result',
+                                    'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                    'value': {"__workflow_error__": str(e)},
+                                },
+                            })
+                            # Wake orchestrator
+                            await _client.trigger_async({
+                                'function_id': 'workflow::node-completed',
+                                'payload': {
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                },
+                            })
+                        except Exception as e2:
+                            print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
+                    raise e
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
@@ -802,12 +853,37 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
                 
-                # Execute handler
-                if not _hc:
-                    result = await _h(actual_input)
-                else:
-                    ctx = FlowContext(_client, _fn_id, "invoke", actual_input, _stream_name, None)
-                    result = await _h(actual_input, ctx)
+                try:
+                    # Execute handler
+                    if not _hc:
+                        result = await _h(actual_input)
+                    else:
+                        ctx = FlowContext(_client, _fn_id, "invoke", actual_input, _stream_name, None)
+                        result = await _h(actual_input, ctx)
+                except Exception as e:
+                    # Signal failure to workflow orchestrator if meta is present
+                    if has_workflow_meta:
+                        try:
+                            # Write error sentinel to state store
+                            await _client.trigger_async({
+                                'function_id': 'state::set',
+                                'payload': {
+                                    'scope': 'workflow_node_result',
+                                    'key': f"{wf['run_id']}/{wf['node_uid']}",
+                                    'value': {"__workflow_error__": str(e)},
+                                },
+                            })
+                            # Wake orchestrator
+                            await _client.trigger_async({
+                                'function_id': 'workflow::node-completed',
+                                'payload': {
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                },
+                            })
+                        except Exception as e2:
+                            print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
+                    raise e
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:

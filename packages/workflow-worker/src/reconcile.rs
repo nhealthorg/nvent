@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use crate::{
     error::WorkflowError,
     ids::node_result_key,
     state,
-    types::{NodeState, WorkflowRunRecord},
+    types::{NodeState, WorkflowDef, WorkflowRunRecord},
 };
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,12 @@ pub enum NodeOutcome {
     Done(Value),
     Failed(String),
     Cancelled,
+}
+
+#[derive(Debug, PartialEq)]
+enum FunctionFailureAction {
+    Retry { attempt: u32 },
+    Fail { result_error: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +85,88 @@ pub fn classify_terminal(
     }
 }
 
+fn function_failure_action(
+    retries: u32,
+    max_retries: u32,
+    error: &str,
+) -> FunctionFailureAction {
+    if retries < max_retries {
+        return FunctionFailureAction::Retry {
+            attempt: retries + 1,
+        };
+    }
+
+    let result_error = if retries == 0 {
+        error.to_string()
+    } else {
+        format!(
+            "{error} (retry budget exhausted after {retries} retr{})",
+            if retries == 1 { "y" } else { "ies" }
+        )
+    };
+
+    FunctionFailureAction::Fail { result_error }
+}
+
+async fn retry_or_fail_function_node(
+    deps: &crate::functions::Deps,
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    uid: &str,
+    error: &str,
+    now: i64,
+    max_retries: u32,
+    results_cache: &mut Option<BTreeMap<String, Value>>,
+) -> Result<(), WorkflowError> {
+    let retries = record.nodes.get(uid).map(|cp| cp.retries).unwrap_or(0);
+
+    match function_failure_action(retries, max_retries, error) {
+        FunctionFailureAction::Retry { attempt } => {
+            tracing::info!(
+                run_id = %record.run_id,
+                node_uid = %uid,
+                attempt,
+                max_retries,
+                error = %error,
+                "retrying function node after reported failure"
+            );
+
+            state::delete_node_result(&deps.iii, &record.run_id, uid).await?;
+
+            if let Some(cp) = record.nodes.get_mut(uid) {
+                cp.retries = attempt;
+            }
+
+            if results_cache.is_none() {
+                *results_cache = Some(state::load_done_results(&deps.iii, record).await?);
+            }
+
+            crate::functions::tick::fire_node(
+                deps,
+                record,
+                def,
+                uid,
+                results_cache.as_ref().expect("results cache initialized"),
+            )
+            .await?;
+        }
+        FunctionFailureAction::Fail { result_error } => {
+            if let Some(cp) = record.nodes.get_mut(uid) {
+                cp.state = NodeState::Failed;
+                cp.result_error = Some(result_error);
+                cp.completed_at = Some(now);
+                let dur = cp
+                    .pending_at
+                    .map(|p| (now - p).max(0) as f64)
+                    .unwrap_or(0.0);
+                crate::telemetry::record_node_terminal(false, dur);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // reconcile_function_nodes
 // ---------------------------------------------------------------------------
@@ -87,6 +177,7 @@ pub fn classify_terminal(
 /// slow path: the sweep calls it periodically for eventual completion detection.
 pub async fn reconcile_function_nodes(
     deps: &crate::functions::Deps,
+    def: &WorkflowDef,
     record: &mut WorkflowRunRecord,
 ) -> Result<(), WorkflowError> {
     // Find Running nodes without session_id (function-based execution)
@@ -106,13 +197,38 @@ pub async fn reconcile_function_nodes(
     }
 
     let now = deps.now_ms();
+    let max_retries = deps.cfg().await.max_node_retries;
+    let mut results_cache: Option<BTreeMap<String, Value>> = None;
 
     for uid in running_functions {
         let result_key = node_result_key(&record.run_id, &uid);
         
         // Try to read the result from state
         match state::get_node_result(&deps.iii, &record.run_id, &uid).await {
-            Ok(Some(_)) => {
+            Ok(Some(v)) => {
+                // Detected a reported error from the worker
+                if let Some(err_val) = v.get("__workflow_error__").and_then(|e| e.as_str()) {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        node_uid = %uid,
+                        error = %err_val,
+                        "function node failed - error reported in state"
+                    );
+
+                    retry_or_fail_function_node(
+                        deps,
+                        def,
+                        record,
+                        &uid,
+                        err_val,
+                        now,
+                        max_retries,
+                        &mut results_cache,
+                    )
+                    .await?;
+                    continue;
+                }
+
                 tracing::info!(
                     run_id = %record.run_id,
                     node_uid = %uid,
@@ -372,5 +488,33 @@ mod tests {
     fn completed_modest_result_unaffected_by_cap() {
         let outcome = classify_terminal("completed", Some(json!({"k": "v"})), None);
         assert_eq!(outcome, NodeOutcome::Done(json!({"k": "v"})));
+    }
+
+    #[test]
+    fn function_failure_retries_while_budget_remains() {
+        assert_eq!(
+            function_failure_action(0, 3, "boom"),
+            FunctionFailureAction::Retry { attempt: 1 }
+        );
+        assert_eq!(
+            function_failure_action(2, 3, "boom"),
+            FunctionFailureAction::Retry { attempt: 3 }
+        );
+    }
+
+    #[test]
+    fn function_failure_surfaces_retry_exhaustion() {
+        assert_eq!(
+            function_failure_action(0, 0, "boom"),
+            FunctionFailureAction::Fail {
+                result_error: "boom".into()
+            }
+        );
+        assert_eq!(
+            function_failure_action(3, 3, "boom"),
+            FunctionFailureAction::Fail {
+                result_error: "boom (retry budget exhausted after 3 retries)".into()
+            }
+        );
     }
 }

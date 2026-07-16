@@ -20,8 +20,9 @@ pub struct WorkerConfig {
     #[serde(default = "default_dispatch_timeout_ms")]
     pub dispatch_timeout_ms: u64,
 
-    /// Maximum number of retry attempts per node before the sweep marks it
-    /// failed. Hot-applies via config-cell swap (not structural).
+    /// Maximum number of retry attempts per node before it is marked failed
+    /// after a timeout or a reported function error. Hot-applies via
+    /// config-cell swap (not structural).
     #[serde(default = "default_max_node_retries")]
     pub max_node_retries: u32,
 }
@@ -36,7 +37,7 @@ fn default_dispatch_timeout_ms() -> u64 {
     30_000
 }
 fn default_max_node_retries() -> u32 {
-    1
+    3
 }
 
 impl Default for WorkerConfig {
@@ -88,5 +89,6 @@ mod tests {
         assert_eq!(cfg.default_pending_timeout_ms, 1_800_000);
         assert_eq!(cfg.sweep_expression, "0 * * * * *");
         assert_eq!(cfg.dispatch_timeout_ms, 30_000);
+        assert_eq!(cfg.max_node_retries, 3);
     }
 }

@@ -35,6 +35,14 @@
             <span>{{ formatStepTimeout(data.stepTimeout) }}</span>
           </span>
           <UBadge
+            v-if="data?.retries && data.retries > 0"
+            :label="`${data.retries}x Retry`"
+            size="xs"
+            color="amber"
+            variant="soft"
+            icon="i-heroicons-arrow-path-20-solid"
+          />
+          <UBadge
             :label="(data?.status || 'idle').toUpperCase()"
             size="xs"
             :color="statusColor(data?.status)"
@@ -60,10 +68,10 @@
       <div class="flex items-center justify-between">
         <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
           <UIcon
-            name="i-heroicons-cpu-chip-20-solid"
+            name="i-heroicons-variable-20-solid"
             class="size-3"
           />
-          Worker
+          Function
         </span>
         <span
           class="truncate ml-2 font-mono"
@@ -79,7 +87,7 @@
             name="i-heroicons-server-20-solid"
             class="size-3"
           />
-          Orchestrator
+          Worker
         </span>
         <span
           class="truncate ml-2 font-mono text-xs"
@@ -129,7 +137,13 @@
         v-if="data?.runtype"
         class="flex items-center justify-between"
       >
-        <span class="text-gray-500 dark:text-gray-400">Mode</span>
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-adjustments-horizontal-20-solid"
+            class="size-3"
+          />
+          Mode
+        </span>
         <UBadge
           :label="data.runtype"
           size="xs"
@@ -218,12 +232,18 @@
         />
       </div>
       <div
-        v-if="data?.attempt && data.attempt > 1"
+        v-if="data?.retries && data.retries > 0"
         class="flex items-center justify-between"
       >
-        <span class="text-gray-500 dark:text-gray-400">Attempts</span>
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-arrow-path-20-solid"
+            class="size-3"
+          />
+          Retries
+        </span>
         <span class="ml-2 font-medium text-amber-600 dark:text-amber-400">
-          {{ data.attempt }}
+          {{ data.retries }}
         </span>
       </div>
       <div

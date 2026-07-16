@@ -106,7 +106,7 @@ async fn sweep_one_run(
 
     // Poll running nodes for completion.
     reconcile::reconcile_run(deps, &mut record).await?;
-    reconcile::reconcile_function_nodes(deps, &mut record).await?;
+    reconcile::reconcile_function_nodes(deps, &def, &mut record).await?;
 
     // Timeout sweep: apply timeout_action to each Running checkpoint.
     let results = state::load_done_results(&deps.iii, &mut record).await?;

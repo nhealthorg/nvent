@@ -318,7 +318,7 @@ pub async fn handle(
 
     // 5. Reconcile running nodes.
     crate::reconcile::reconcile_run(deps, &mut record).await?;
-    crate::reconcile::reconcile_function_nodes(deps, &mut record).await?;
+    crate::reconcile::reconcile_function_nodes(deps, &def, &mut record).await?;
 
     // 6. Load done results.
     let results = state::load_done_results(&deps.iii, &mut record).await?;

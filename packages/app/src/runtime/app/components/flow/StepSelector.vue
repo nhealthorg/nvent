@@ -66,8 +66,15 @@
           >
             {{ item.step.status || 'pending' }}
           </span>
-          <span v-if="item.step.attempt && item.step.attempt > 1">
-            Attempt {{ item.step.attempt }}
+          <span
+            v-if="item.step.retries && item.step.retries > 0"
+            class="flex items-center gap-1 text-amber-500"
+          >
+            <UIcon
+              name="i-lucide-rotate-ccw"
+              class="w-3 h-3"
+            />
+            <span>{{ item.step.retries }} {{ item.step.retries === 1 ? 'retry' : 'retries' }}</span>
           </span>
           <!-- Await Position Badge -->
           <UBadge

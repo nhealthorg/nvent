@@ -13,6 +13,8 @@ export default defineFunction({
 
     // wait for 5 seconds to simulate a long-running process
     await new Promise(resolve => setTimeout(resolve, 5000))
+
+    throw new Error('Simulated error for testing purposes')
     
     return {
       original: text,

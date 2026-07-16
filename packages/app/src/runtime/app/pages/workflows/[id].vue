@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useFetch, computed, useComponentRouter, onMounted, onUnmounted } from '#imports'
+import { useWorkflowAnalysis } from '../../composables/useWorkflowAnalysis'
 
-
+const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis()
 const { push, route } = useComponentRouter()
 // In component router mode, params might be different, but let's assume we can get it from query or a passed prop
 const props = defineProps<{
@@ -10,10 +11,12 @@ const props = defineProps<{
 
 const runId = computed(() => props.runId || (route.value.params.id as string))
 
-const { data: status, pending: statusPending, error: statusError, refresh } = useFetch('/api/_workflows/status', {
+const { data: status, pending, error, refresh } = useFetch('/api/_workflows/status', {
   params: { run_id: runId },
   watch: [runId]
 })
+
+const definition = computed(() => status.value?.definition)
 
 // Auto-refresh while running
 let refreshInterval: any = null
@@ -30,13 +33,6 @@ onUnmounted(() => {
   if (refreshInterval) clearInterval(refreshInterval)
 })
 
-const { data: definition, pending: defPending } = useFetch('/api/_workflows/definition', {
-  params: { run_id: runId },
-  watch: [runId]
-})
-
-const pending = computed(() => statusPending.value || defPending.value)
-const error = computed(() => statusError.value)
 
 const normalizedStatus = computed(() => {
   const s = status.value?.status
@@ -49,51 +45,42 @@ const normalizedStatus = computed(() => {
 const flowMeta = computed(() => {
   if (!definition.value?.nodes) return null
   
+  const analyzed = analyzeWorkflow(definition.value.nodes)
   const steps: Record<string, any> = {}
-  const nodes = definition.value.nodes
   
-  Object.entries(nodes).forEach(([id, node]: [string, any]) => {
+  Object.entries(definition.value.nodes).forEach(([id, node]: [string, any]) => {
     steps[id] = {
       name: id,
       workerId: node.function?.id,
       runtime: node.function?.runtime,
-      dependsOn: node.depends_on || []
+      dependsOn: node.depends_on || [],
+      // Standardize properties for Diagram component
+      queue: (node as any).queue || 'default',
+      runtype: (node as any).runtype || 'task',
+      emits: (node as any).emits || []
     }
   })
 
-  // Simple leveling for layout
-  const levels: string[][] = [[]] // Level 0 (unused)
-  const placed = new Set<string>()
-  const analyzedSteps: Record<string, any> = {}
-  
-  while (placed.size < Object.keys(steps).length) {
-    const currentLevel = []
-    for (const id in steps) {
-      if (placed.has(id)) continue
-      const deps = steps[id].dependsOn
-      if (deps.length === 0 || deps.every((d: string) => placed.has(d))) {
-        currentLevel.push(id)
-      }
+  // Try to determine a single entry point for centered rendering in Diagram
+  let entry = undefined
+  if (analyzed.levels[0]?.length === 1) {
+    const entryId = analyzed.levels[0][0]
+    const node = definition.value.nodes[entryId]
+    entry = {
+      step: entryId,
+      queue: (node as any).queue || 'default',
+      workerId: node.function.id,
+      runtime: node.function.runtime as 'nodejs' | 'python',
+      runtype: (node as any).runtype || 'task',
+      emits: (node as any).emits || []
     }
-    if (currentLevel.length === 0) break
-    levels.push(currentLevel)
-    currentLevel.forEach(id => {
-      placed.add(id)
-      analyzedSteps[id] = {
-        name: id,
-        dependsOn: steps[id].dependsOn,
-        level: levels.length - 1
-      }
-    })
   }
 
   return {
     id: runId.value,
+    entry,
     steps,
-    analyzed: {
-      levels,
-      steps: analyzedSteps
-    }
+    analyzed
   }
 })
 
@@ -115,7 +102,8 @@ const stepStates = computed(() => {
       result: nodeStatus.result_ref,
       pending_at: nodeStatus.pending_at,
       completed_at: nodeStatus.completed_at,
-      worker_name: nodeStatus.worker_name
+      worker_name: nodeStatus.worker_name,
+      retries: nodeStatus.retries
     }
   })
   return out
@@ -124,14 +112,18 @@ const stepStates = computed(() => {
 const stepList = computed(() => {
   if (!definition.value?.nodes) return []
   
+  // Get sorted keys based on execution levels
+  const sortedKeys = sortNodesByLevel(definition.value.nodes)
+  
   // Create a list based on definition to show ALL steps in the sidebar
-  return Object.keys(definition.value.nodes).map(id => {
+  return sortedKeys.map(id => {
     const state = stepStates.value[id]
     return {
       key: id,
       status: state?.status || 'idle',
       error: state?.error,
-      result: state?.result
+      result: state?.result,
+      retries: state?.retries
     }
   })
 })

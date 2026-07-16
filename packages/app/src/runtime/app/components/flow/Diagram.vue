@@ -164,6 +164,7 @@ type StepNodeData = {
   workerId?: string
   status?: 'idle' | 'running' | 'error' | 'done' | 'canceled'
   attempt?: number
+  retries?: number
   error?: string
   runtime?: 'nodejs' | 'python'
   runtype?: 'inprocess' | 'task'
@@ -223,6 +224,7 @@ const nodes = computed<FlowNode[]>(() => {
         workerId: f.entry.workerId,
         status,
         attempt: entryState?.attempt,
+        retries: entryState?.retries,
         error: entryState?.error,
         runtime: f.entry.runtime,
         runtype: f.entry.runtype,
@@ -268,8 +270,9 @@ const nodes = computed<FlowNode[]>(() => {
 
   if (f.analyzed?.levels && f.analyzed.levels.length > 0) {
     // Use analyzed levels for better layout
-    // Skip level 0 (entry step is already rendered above)
-    const levels = f.analyzed.levels.slice(1).filter(level => level.length > 0) // Skip empty levels
+    // Skip level 0 only if entry step is already rendered above
+    const startLevel = f.entry ? 1 : 0
+    const levels = f.analyzed.levels.slice(startLevel).filter(level => level.length > 0) // Skip empty levels
 
     levels.forEach((levelSteps) => {
       if (levelSteps.length === 0) return
@@ -342,6 +345,7 @@ const nodes = computed<FlowNode[]>(() => {
             workerId: step?.workerId,
             status,
             attempt: stepState?.attempt,
+            retries: stepState?.retries,
             error: stepState?.error,
             runtime: step?.runtime,
             runtype: step?.runtype,
@@ -438,6 +442,7 @@ const nodes = computed<FlowNode[]>(() => {
           workerId: step?.workerId,
           status,
           attempt: stepState?.attempt,
+          retries: stepState?.retries,
           error: stepState?.error,
           runtime: step?.runtime,
           runtype: step?.runtype,
