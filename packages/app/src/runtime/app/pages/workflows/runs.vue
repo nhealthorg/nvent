@@ -45,9 +45,12 @@ function formatDate(timestamp: number) {
     <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
       <div class="flex items-center justify-between max-w-7xl mx-auto w-full">
         <div class="flex items-center gap-4">
-          <NuxtLink @click="push(`/workflows`)" class="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-900 rounded-lg transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-          </NuxtLink>
+          <UButton
+            icon="i-heroicons-chevron-left"
+            color="gray"
+            variant="ghost"
+            @click="push(`/workflows`)"
+          />
           <div>
             <h1 class="text-xl font-bold text-zinc-900 dark:text-white">
               Workflow Runs
@@ -55,13 +58,13 @@ function formatDate(timestamp: number) {
             <p class="text-xs text-zinc-500 dark:text-zinc-400">History of all executed pipelines</p>
           </div>
         </div>
-        <button 
-          @click="refresh" 
-          class="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-900 rounded-lg transition-colors text-zinc-500"
-          :class="{ 'animate-spin': pending }"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-        </button>
+        <UButton
+          icon="i-heroicons-arrow-path"
+          color="gray"
+          variant="ghost"
+          :loading="pending"
+          @click="refresh"
+        />
       </div>
     </div>
 
@@ -95,12 +98,12 @@ function formatDate(timestamp: number) {
                   </div>
                 </td>
                 <td class="px-6 py-4">
-                  <span 
-                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border"
-                    :class="getStatusColor(run.status)"
-                  >
-                    {{ run.status }}
-                  </span>
+                  <UBadge
+                    :label="run.status.toUpperCase()"
+                    size="xs"
+                    :color="run.status === 'completed' || run.status === 'done' ? 'success' : run.status === 'failed' || run.status === 'error' ? 'error' : run.status === 'running' || run.status === 'active' ? 'blue' : 'neutral'"
+                    variant="soft"
+                  />
                 </td>
                 <td class="px-6 py-4 text-xs text-zinc-600 dark:text-zinc-400">
                   {{ formatDate(run.created_at) }}

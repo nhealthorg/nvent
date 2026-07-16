@@ -101,6 +101,9 @@ importers:
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
+      vue-demi:
+        specifier: ^0.14.10
+        version: 0.14.10(vue@3.5.39(typescript@5.9.3))
       zod:
         specifier: ^4.4.3
         version: 4.4.3

@@ -312,7 +312,7 @@ pub async fn handle(
     record.step = req.step + 1;
 
     // 4. Load the workflow definition.
-    let def = state::get_def(&deps.iii, &req.run_id)
+    let def = state::get_runtime_def(&deps.iii, &req.run_id)
         .await?
         .ok_or_else(|| WorkflowError::State("def missing".into()))?;
 
@@ -399,6 +399,7 @@ mod tests {
                 function: FunctionSpec {
                     id: "plan_function".to_string(),
                     timeout_ms: None,
+                    runtime: None,
                 },
                 input: InputSpec {
                     from: "run_input".into(),
@@ -415,6 +416,7 @@ mod tests {
                 function: FunctionSpec {
                     id: "read_function".to_string(),
                     timeout_ms: None,
+                    runtime: None,
                 },
                 input: InputSpec {
                     from: "fanout_item".into(),
@@ -433,6 +435,7 @@ mod tests {
                 function: FunctionSpec {
                     id: "synthesize_function".to_string(),
                     timeout_ms: None,
+                    runtime: None,
                 },
                 input: InputSpec {
                     from: "node:read".into(),
@@ -450,6 +453,7 @@ mod tests {
                 from: "node:synthesize".into(),
             },
             default_functions: None,
+            metadata: None,
         }
     }
 
@@ -482,6 +486,8 @@ mod tests {
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         }
     }
 
@@ -554,6 +560,8 @@ mod tests {
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
+                completed_at: None,
+                worker_name: None,
             },
         );
 
@@ -622,6 +630,8 @@ mod tests {
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         }
     }
 

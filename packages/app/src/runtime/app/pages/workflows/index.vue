@@ -39,17 +39,18 @@ function onTriggered(event: { workflowId: string, runId: string }) {
           <p class="text-xs text-zinc-500 dark:text-zinc-400">Manage and monitor orchestration pipelines</p>
         </div>
         <div class="flex items-center gap-3">
-          <button 
+          <UButton
+            icon="i-heroicons-clock"
+            color="neutral"
+            variant="outline"
+            label="Workflow Runs"
             @click="push('/workflows/runs')"
-            class="px-3 py-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 rounded-lg text-xs font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors flex items-center gap-2"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-            Workflow Runs
-          </button>
-          <button class="px-3 py-1.5 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg text-xs font-semibold hover:opacity-90 transition-opacity flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-            New Workflow
-          </button>
+          />
+          <UButton
+            icon="i-heroicons-plus"
+            color="green"
+            label="New Workflow"
+          />
         </div>
       </div>
     </div>

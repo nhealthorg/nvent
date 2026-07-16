@@ -16,6 +16,7 @@ use crate::{
 
 pub const SCOPE_RUN: &str = "workflow_run";
 pub const SCOPE_DEF: &str = "workflow_def";
+pub const SCOPE_DEF_RUNTIME: &str = "workflow_def_runtime";
 pub const SCOPE_RESULT: &str = "workflow_node_result";
 pub const SCOPE_INDEX: &str = "workflow_session_index";
 pub const SCOPE_IDEM: &str = "workflow_idem";
@@ -183,6 +184,7 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
         }
     }
     state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
+    state_delete(iii, SCOPE_DEF_RUNTIME, &def_key(&record.run_id)).await?;
     state_delete(iii, SCOPE_RUN, &record.run_id).await
 }
 
@@ -200,9 +202,32 @@ pub async fn put_def(
     state_set(iii, SCOPE_DEF, &key, v).await
 }
 
+pub async fn put_runtime_def(
+    iii: &IIIClient,
+    run_id: &str,
+    def: &WorkflowDef,
+) -> Result<(), WorkflowError> {
+    let key = def_key(run_id);
+    let v = serde_json::to_value(def)?;
+    state_set(iii, SCOPE_DEF_RUNTIME, &key, v).await
+}
+
 pub async fn get_def(iii: &IIIClient, run_id: &str) -> Result<Option<WorkflowDef>, WorkflowError> {
     let key = def_key(run_id);
     let v = state_get(iii, SCOPE_DEF, &key).await?;
+    if v.is_null() {
+        Ok(None)
+    } else {
+        Ok(Some(from_value(v)?))
+    }
+}
+
+pub async fn get_runtime_def(
+    iii: &IIIClient,
+    run_id: &str,
+) -> Result<Option<WorkflowDef>, WorkflowError> {
+    let key = def_key(run_id);
+    let v = state_get(iii, SCOPE_DEF_RUNTIME, &key).await?;
     if v.is_null() {
         Ok(None)
     } else {

@@ -19,7 +19,8 @@ const { data: status, pending: statusPending, error: statusError, refresh } = us
 let refreshInterval: any = null
 onMounted(() => {
   refreshInterval = setInterval(() => {
-    if (status.value?.status === 'running' || status.value?.status === 'awaiting') {
+    const s = status.value?.status
+    if (s === 'running' || s === 'awaiting_nodes' || s === 'awaiting') {
       refresh()
     }
   }, 3000)
@@ -142,9 +143,12 @@ const stepList = computed(() => {
     <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
       <div class="flex items-center justify-between w-full">
         <div class="flex items-center gap-4">
-          <NuxtLink @click="push(`/workflows/runs`)" class="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-900 rounded-lg transition-colors cursor-pointer">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-          </NuxtLink>
+          <UButton
+            icon="i-heroicons-chevron-left"
+            color="gray"
+            variant="ghost"
+            @click="push(`/workflows/runs`)"
+          />
           <div>
             <h1 class="text-xl font-bold text-zinc-900 dark:text-white flex items-center gap-2">
               Run: <span class="font-mono text-lg opacity-70">{{ (runId || '').slice(0, 8) }}...</span>
@@ -153,19 +157,20 @@ const stepList = computed(() => {
           </div>
         </div>
         <div class="flex items-center gap-2">
-           <span v-if="normalizedStatus" 
-            class="px-3 py-1 rounded-full text-[10px] font-bold uppercase border shadow-sm"
-            :class="normalizedStatus === 'completed' ? 'text-emerald-600 border-emerald-200 bg-emerald-50' : normalizedStatus === 'failed' ? 'text-red-600 border-red-200 bg-red-50' : 'text-blue-600 border-blue-200 bg-blue-50'"
-           >
-             {{ normalizedStatus }}
-           </span>
-           <button 
-             @click="refresh" 
-             class="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-900 rounded-lg transition-colors text-zinc-500"
-             :class="{ 'animate-spin': pending }"
-           >
-             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-           </button>
+           <UBadge
+             v-if="normalizedStatus"
+             :label="normalizedStatus.toUpperCase()"
+             size="md"
+             :color="normalizedStatus === 'completed' ? 'success' : normalizedStatus === 'failed' ? 'error' : 'neutral'"
+             variant="outline"
+           />
+           <UButton
+             icon="i-heroicons-arrow-path"
+             color="neutral"
+             variant="outline"
+             :loading="pending"
+             @click="refresh"
+           />
         </div>
       </div>
     </div>

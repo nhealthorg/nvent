@@ -537,18 +537,16 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn def() -> WorkflowDef {
-        use crate::types::{AgentSpec, FanoutSpec, InputSpec, NodeDef, OutputRef, WorkflowDef};
+        use crate::types::{FanoutSpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowDef};
         let mut nodes = BTreeMap::new();
 
         nodes.insert(
             "plan".to_string(),
             NodeDef {
-                agent: AgentSpec {
-                    model: "claude-opus-4-8".to_string(),
-                    provider: None,
-                    system_prompt: None,
-                    functions: None,
-                    output: Some(json!({"type":"json"})),
+                function: FunctionSpec {
+                    id: "plan-fn".to_string(),
+                    timeout_ms: None,
+                    runtime: None,
                 },
                 input: InputSpec {
                     from: "run_input".into(),
@@ -562,12 +560,10 @@ mod tests {
         nodes.insert(
             "read".to_string(),
             NodeDef {
-                agent: AgentSpec {
-                    model: "claude-haiku-4-5".to_string(),
-                    provider: None,
-                    system_prompt: None,
-                    functions: None,
-                    output: Some(json!({"type":"json"})),
+                function: FunctionSpec {
+                    id: "read-fn".to_string(),
+                    timeout_ms: None,
+                    runtime: None,
                 },
                 input: InputSpec {
                     from: "fanout_item".into(),
@@ -583,12 +579,10 @@ mod tests {
         nodes.insert(
             "synthesize".to_string(),
             NodeDef {
-                agent: AgentSpec {
-                    model: "claude-opus-4-8".to_string(),
-                    provider: None,
-                    system_prompt: None,
-                    functions: None,
-                    output: Some(json!({"type":"json"})),
+                function: FunctionSpec {
+                    id: "synthesize-fn".to_string(),
+                    timeout_ms: None,
+                    runtime: None,
                 },
                 input: InputSpec {
                     from: "node:read".into(),
@@ -606,6 +600,7 @@ mod tests {
                 from: "node:synthesize".into(),
             },
             default_functions: None,
+            metadata: None,
         }
     }
 
@@ -622,7 +617,6 @@ mod tests {
             result: None,
             result_error: None,
             notify: None,
-            reply_to: None,
             caller_session_id: None,
             created_at: 0,
             updated_at: 0,
@@ -639,6 +633,8 @@ mod tests {
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         }
     }
 
@@ -841,6 +837,8 @@ mod tests {
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         }
     }
 
@@ -854,6 +852,8 @@ mod tests {
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         }
     }
 
@@ -894,19 +894,17 @@ mod tests {
 
     #[test]
     fn many_input_gathers_each_dep_into_keyed_object() {
-        use crate::types::{AgentSpec, InputSpec, NodeDef, OutputRef};
-        let agent = || AgentSpec {
-            model: "m".to_string(),
-            provider: None,
-            system_prompt: None,
-            functions: None,
-            output: Some(json!({"type":"json"})),
+        use crate::types::{FunctionSpec, InputSpec, NodeDef, OutputRef};
+        let function = |id: &str| FunctionSpec {
+            id: id.to_string(),
+            timeout_ms: None,
+            runtime: None,
         };
         let mut nodes = BTreeMap::new();
         nodes.insert(
             "b".to_string(),
             NodeDef {
-                agent: agent(),
+                function: function("fn-b"),
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -918,7 +916,7 @@ mod tests {
         nodes.insert(
             "c".to_string(),
             NodeDef {
-                agent: agent(),
+                function: function("fn-c"),
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -930,7 +928,7 @@ mod tests {
         nodes.insert(
             "join".to_string(),
             NodeDef {
-                agent: agent(),
+                function: function("fn-join"),
                 input: InputSpec {
                     from: InputFrom::Many(vec!["node:b".to_string(), "node:c".to_string()]),
                     template: None,
@@ -946,6 +944,7 @@ mod tests {
                 from: "node:join".into(),
             },
             default_functions: None,
+            metadata: None,
         };
         let r = record();
         let mut results = BTreeMap::new();
@@ -1002,10 +1001,10 @@ mod tests {
         // a -> b, a -> c, b -> d, c -> d
         let d: WorkflowDef = serde_json::from_value(serde_json::json!({
             "version":1, "output":{"from":"node:d"}, "nodes":{
-              "a":{"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"run_input","template":"t"}},
-              "b":{"depends_on":["a"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:a","template":"t"}},
-              "c":{"depends_on":["a"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:a","template":"t"}},
-              "d":{"depends_on":["b","c"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:b","template":"t"}}
+                            "a":{"function":{"id":"fn-a"},"input":{"from":"run_input","template":"t"}},
+                            "b":{"depends_on":["a"],"function":{"id":"fn-b"},"input":{"from":"node:a","template":"t"}},
+                            "c":{"depends_on":["a"],"function":{"id":"fn-c"},"input":{"from":"node:a","template":"t"}},
+                            "d":{"depends_on":["b","c"],"function":{"id":"fn-d"},"input":{"from":"node:b","template":"t"}}
             }})).unwrap();
         assert!(validate_acyclic(&d).is_ok());
     }
@@ -1015,8 +1014,8 @@ mod tests {
         // b -> c, c -> b
         let d: WorkflowDef = serde_json::from_value(serde_json::json!({
             "version":1, "output":{"from":"node:b"}, "nodes":{
-              "b":{"depends_on":["c"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:c","template":"t"}},
-              "c":{"depends_on":["b"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:b","template":"t"}}
+                            "b":{"depends_on":["c"],"function":{"id":"fn-b"},"input":{"from":"node:c","template":"t"}},
+                            "c":{"depends_on":["b"],"function":{"id":"fn-c"},"input":{"from":"node:b","template":"t"}}
             }})).unwrap();
         assert!(validate_acyclic(&d).is_err());
     }
@@ -1026,10 +1025,10 @@ mod tests {
         // a -> b -> d (required); a -> orphan (NOT required by output d)
         let d: WorkflowDef = serde_json::from_value(serde_json::json!({
             "version":1, "output":{"from":"node:d"}, "nodes":{
-              "a":{"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"run_input","template":"t"}},
-              "b":{"depends_on":["a"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:a","template":"t"}},
-              "d":{"depends_on":["b"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:b","template":"t"}},
-              "orphan":{"depends_on":["a"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:a","template":"t"}}
+                            "a":{"function":{"id":"fn-a"},"input":{"from":"run_input","template":"t"}},
+                            "b":{"depends_on":["a"],"function":{"id":"fn-b"},"input":{"from":"node:a","template":"t"}},
+                            "d":{"depends_on":["b"],"function":{"id":"fn-d"},"input":{"from":"node:b","template":"t"}},
+                            "orphan":{"depends_on":["a"],"function":{"id":"fn-orphan"},"input":{"from":"node:a","template":"t"}}
             }})).unwrap();
         let req = required_set(&d);
         assert!(req.contains("a") && req.contains("b") && req.contains("d"));
@@ -1048,18 +1047,18 @@ mod tests {
             "output": {"from": "node:c"},
             "nodes": {
                 "a": {
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-a"},
                     "input": {"from": "run_input", "template": "t"},
                     "depends_on": []
                 },
                 "b": {
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-b"},
                     "input": {"from": "fanout_item", "template": "t"},
                     "depends_on": ["a"],
                     "fanout": {"over": "node:a.result.items"}
                 },
                 "c": {
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-c"},
                     "input": {"from": "node:b", "template": "t"},
                     "depends_on": ["b"]
                 }
@@ -1150,22 +1149,22 @@ mod tests {
             "output": {"from": "node:d"},
             "nodes": {
                 "a": {
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-a"},
                     "input": {"from": "run_input", "template": "t"}
                 },
                 "b": {
                     "depends_on": ["a"],
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-b"},
                     "input": {"from": "node:a", "template": "t"}
                 },
                 "d": {
                     "depends_on": ["b"],
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-d"},
                     "input": {"from": "node:b", "template": "t"}
                 },
                 "orphan": {
                     "depends_on": ["a"],
-                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "function": {"id": "fn-orphan"},
                     "input": {"from": "node:a", "template": "t"}
                 }
             }

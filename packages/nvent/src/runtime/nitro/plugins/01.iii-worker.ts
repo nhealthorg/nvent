@@ -128,7 +128,8 @@ export default defineNitroPlugin(async (nitroApp) => {
   console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
 
   // Register all Node.js functions and triggers with the iii engine
-  registerNodeFunctions(iii, registry.functions ?? [])
+  const nodeFunctions = (registry.functions ?? []).filter(f => f.runtime === 'nodejs')
+  registerNodeFunctions(iii, nodeFunctions)
 
   // Built-in RBAC auth function used by the browser worker-manager.
   iii.registerFunction(

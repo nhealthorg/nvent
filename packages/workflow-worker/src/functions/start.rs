@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -69,14 +69,13 @@ struct StartRequestRaw {
 
 /// Compact copy-pasteable skeleton appended to every shape error.
 const SHAPE_HINT: &str = "Expected shape: \
-    {\"definition\":{\"nodes\":{\"<id>\":{\"agent\":{\"model\":\"<id from router::models::list>\"},\
+    {\"definition\":{\"nodes\":{\"<id>\":{\"function\":{\"id\":\"<function-id>\"},\
     \"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}}}. `version` defaults to 1. \
-    Each node is {agent, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
+    Each node is {function, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
     run_input). Full field docs are inline in this function's request schema.";
 
 const ALLOWED_DEF_KEYS: &[&str] = &["version", "nodes", "output", "default_functions", "metadata"];
-const ALLOWED_NODE_KEYS: &[&str] = &["agent", "function", "input", "depends_on", "fanout"];
-const ALLOWED_AGENT_KEYS: &[&str] = &["model", "provider", "system_prompt", "functions", "output"];
+const ALLOWED_NODE_KEYS: &[&str] = &["function", "input", "depends_on", "fanout"];
 const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "runtime"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
@@ -231,9 +230,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
     };
     for k in n.keys() {
         if !ALLOWED_NODE_KEYS.contains(&k.as_str()) {
-            let hint = if ALLOWED_AGENT_KEYS.contains(&k.as_str()) {
-                format!(" — `{k}` goes inside `agent`")
-            } else if ALLOWED_FUNCTION_KEYS.contains(&k.as_str()) {
+            let hint = if ALLOWED_FUNCTION_KEYS.contains(&k.as_str()) {
                 format!(" — `{k}` goes inside `function`")
             } else {
                 String::new()
@@ -242,40 +239,9 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
         }
     }
 
-    let has_agent = n.contains_key("agent");
     let has_function = n.contains_key("function");
 
-    if has_agent {
-        match n.get("agent") {
-            Some(Value::Object(agent)) => {
-                for k in agent.keys() {
-                    if !ALLOWED_AGENT_KEYS.contains(&k.as_str()) {
-                        let hint = if ALLOWED_NODE_KEYS.contains(&k.as_str()) {
-                            format!(" — `{k}` is a NODE-level field, not under `agent`")
-                        } else {
-                            String::new()
-                        };
-                        p.push(format!("node `{id}`.agent: unknown field `{k}`{hint}"));
-                    }
-                }
-                let has_model = agent
-                    .get("model")
-                    .and_then(|m| m.as_str())
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(false);
-                if !has_model {
-                    p.push(format!(
-                        "node `{id}`.agent: missing `model` — an id from router::models::list"
-                    ));
-                }
-            }
-            Some(other) => p.push(format!(
-                "node `{id}`.agent must be an object, not {}",
-                json_type(other)
-            )),
-            None => unreachable!(),
-        }
-    } else if has_function {
+    if has_function {
         match n.get("function") {
             Some(Value::Object(function)) => {
                 for k in function.keys() {
@@ -299,7 +265,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             None => unreachable!(),
         }
     } else {
-        p.push(format!("node `{id}`: missing `agent` or `function`"));
+        p.push(format!("node `{id}`: missing `function`"));
     }
 
     let has_input = n.get("input").map(|x| !x.is_null()).unwrap_or(false);
@@ -310,8 +276,8 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             .map(|a| !a.is_empty())
             .unwrap_or(false);
         let has_fanout = n.get("fanout").map(|x| !x.is_null()).unwrap_or(false);
-        if !has_input && !has_deps && !has_fanout {
-            // Defaulting happens in the caller, but we check if it's explicitly null/missing
+        if has_deps || has_fanout {
+            p.push(format!("node `{id}`: missing `input`"));
         }
     }
 }
@@ -366,6 +332,12 @@ fn add_read_dependencies(def: &mut WorkflowDef) {
             }
         }
     }
+}
+
+fn prepare_definition_for_execution(def: &WorkflowDef) -> WorkflowDef {
+    let mut prepared = def.clone();
+    add_read_dependencies(&mut prepared);
+    prepared
 }
 
 /// Validate a `WorkflowDef` for structural correctness.
@@ -428,6 +400,15 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
             "output.from references unknown node '{}'",
             out_id
         )));
+    }
+
+    for (node_id, node) in &def.nodes {
+        if node.function.id.trim().is_empty() {
+            return Err(WorkflowError::InvalidDef(format!(
+                "node '{}' has an empty function.id",
+                node_id
+            )));
+        }
     }
 
     // Functions always return JSON - no validation needed
@@ -527,46 +508,7 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
         }
     }
 
-    // Rule 5: every declared dependency must actually be CONSUMED by this node's
-    // `input.from` or `fanout.over`. `depends_on` is only the scheduling barrier;
-    // if a dep is listed but never read, its output is silently dropped while the
-    // run still reports success — the multi-input-join footgun. A join node must
-    // read all its deps, e.g. `input.from: ["node:a", "node:b"]`.
-    for (node_id, node) in &def.nodes {
-        let mut consumed: BTreeSet<&str> = BTreeSet::new();
-        for src in node.input.from.sources() {
-            if let Some(rest) = src.strip_prefix("node:") {
-                consumed.insert(rest.split('.').next().unwrap_or(rest));
-            }
-        }
-        if let Some(fanout) = &node.fanout {
-            if let Some(rest) = fanout.over.strip_prefix("node:") {
-                consumed.insert(rest.split('.').next().unwrap_or(rest));
-            }
-        }
-        for dep in &node.depends_on {
-            if !consumed.contains(dep.as_str()) {
-                let reads = match &node.input.from {
-                    crate::types::InputFrom::One(s) => format!("\"{}\"", s),
-                    crate::types::InputFrom::Many(v) => format!("[{}]", v.join(", ")),
-                };
-                let fan = node
-                    .fanout
-                    .as_ref()
-                    .map(|f| format!(", fanout.over = \"{}\"", f.over))
-                    .unwrap_or_default();
-                return Err(WorkflowError::InvalidDef(format!(
-                    "node '{}' depends_on '{}' but never consumes it (input.from = {}{}). \
-                     A declared dependency whose output is not read is silently dropped; read \
-                     it via input.from (use an array like [\"node:{}\", …] to join several \
-                     deps) or remove it from depends_on.",
-                    node_id, dep, reads, fan, dep
-                )));
-            }
-        }
-    }
-
-    // Rule 3: no cycles.
+    // Rule 5: Cycle detection.
     crate::dag::validate_acyclic(def).map_err(WorkflowError::InvalidDef)?;
 
     Ok(())
@@ -701,16 +643,12 @@ async fn caller_workflow_depth(
 /// the caller gets the `run_id` back immediately and receives the outcome via
 /// `reply_to` / `notify` (or by polling `workflow::status`); the harness turn is
 /// never blocked.
-pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse, WorkflowError> {
-    // A node's reads ARE its dependencies: fold every `input.from`/`fanout.over`
-    // `"node:<id>"` ref into `depends_on` before validating or persisting. Scheduling
-    // consults only `depends_on` (dag::deps_done / ready_frontier), so without this a
-    // node that reads `node:x` but doesn't also list it could fire before `x` finishes
-    // and read null while the run still reports success. Folding reads in keeps the
-    // declared graph — and the cycle check in validate_def — aligned with what
-    // actually executes, and lets callers omit the redundant depends_on entries.
-    add_read_dependencies(&mut req.definition);
-    validate_def(&req.definition)?;
+pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, WorkflowError> {
+    // A node's reads ARE its dependencies for scheduling, but the UI should still
+    // see the original user-authored graph. Persist the raw definition separately
+    // and enrich only the runtime copy used by tick/sweep execution.
+    let runtime_def = prepare_definition_for_execution(&req.definition);
+    validate_def(&runtime_def)?;
 
     // Resolve the caller/orchestrator session for console nesting and idempotency scoping.
     let caller_session_id = req.caller_session_id.clone();
@@ -736,6 +674,7 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
     let _guard = deps.locks.guard(&run_id).await;
 
     state::put_def(&deps.iii, &run_id, &req.definition).await?;
+    state::put_runtime_def(&deps.iii, &run_id, &runtime_def).await?;
 
     // Bound sub-workflow nesting: a node that opted into `workflow::start` could
     // otherwise recurse (sub-workflow → node → sub-workflow → …) without limit.
@@ -795,28 +734,19 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        AgentSpec, FanoutSpec, InputFrom, InputSpec, NodeDef, OutputRef, WorkflowDef,
-    };
+    use crate::types::{FanoutSpec, FunctionSpec, InputFrom, InputSpec, NodeDef, OutputRef, WorkflowDef};
     use serde_json::json;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
-    fn make_node(
-        model: &str,
-        output: Option<Value>,
-        fanout_over: Option<&str>,
-        input_from: &str,
-    ) -> NodeDef {
+    fn make_node(function_id: &str, fanout_over: Option<&str>, input_from: InputFrom) -> NodeDef {
         NodeDef {
-            agent: AgentSpec {
-                model: model.to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output,
+            function: FunctionSpec {
+                id: function_id.to_string(),
+                timeout_ms: None,
+                runtime: None,
             },
             input: InputSpec {
-                from: input_from.into(),
+                from: input_from,
                 template: None,
             },
             depends_on: vec![],
@@ -826,34 +756,22 @@ mod tests {
         }
     }
 
-    /// A well-formed 3-node fan-out/barrier def:
-    ///   plan (output: json) → read (fanout over plan.result.docs, output: json) → summarize (barrier)
     fn well_formed_def() -> WorkflowDef {
         let mut nodes = BTreeMap::new();
 
         nodes.insert(
             "plan".to_string(),
-            make_node(
-                "claude-3-5-haiku-20241022",
-                Some(json!({"type": "json", "schema": {"type": "object"}})),
-                None,
-                "workflow.input",
-            ),
+            make_node("plan-fn", None, "workflow.input".into()),
         );
 
         nodes.insert(
             "read".to_string(),
-            make_node(
-                "claude-3-5-haiku-20241022",
-                Some(json!({"type": "json", "schema": {"type": "object"}})),
-                Some("node:plan.result.docs"),
-                "node:plan",
-            ),
+            make_node("read-fn", Some("node:plan.result.docs"), "node:plan".into()),
         );
 
         nodes.insert(
             "summarize".to_string(),
-            make_node("claude-3-5-haiku-20241022", None, None, "node:read"),
+            make_node("summarize-fn", None, "node:read".into()),
         );
 
         WorkflowDef {
@@ -863,34 +781,91 @@ mod tests {
                 from: "node:summarize".into(),
             },
             default_functions: None,
+            metadata: None,
         }
     }
 
     #[test]
     fn add_read_dependencies_folds_reads_into_depends_on() {
-        // well_formed_def: `read` reads node:plan (BOTH input.from and fanout.over)
-        // with depends_on=[]; `summarize` reads node:read with depends_on=[].
         let mut def = well_formed_def();
+        def.nodes.get_mut("read").unwrap().depends_on.clear();
+        def.nodes.get_mut("summarize").unwrap().depends_on.clear();
         add_read_dependencies(&mut def);
-        // Read-refs become scheduling edges; the duplicate plan ref dedups to one.
         assert_eq!(def.nodes["read"].depends_on, vec!["plan".to_string()]);
         assert_eq!(def.nodes["summarize"].depends_on, vec!["read".to_string()]);
-        // `plan` reads run input (no node ref) → nothing added.
         assert!(def.nodes["plan"].depends_on.is_empty());
-        // Idempotent: a second pass changes nothing.
         add_read_dependencies(&mut def);
         assert_eq!(def.nodes["read"].depends_on, vec!["plan".to_string()]);
-        // The folded def is exactly the well-formed shape, so it still validates.
         assert!(validate_def(&def).is_ok());
     }
 
     #[test]
-    fn rejects_missing_model() {
+    fn prepare_definition_for_execution_keeps_user_graph_unchanged() {
+        let def = well_formed_def();
+        let prepared = prepare_definition_for_execution(&def);
+
+        assert!(def.nodes["read"].depends_on.is_empty());
+        assert!(def.nodes["summarize"].depends_on.is_empty());
+        assert_eq!(prepared.nodes["read"].depends_on, vec!["plan".to_string()]);
+        assert_eq!(prepared.nodes["summarize"].depends_on, vec!["read".to_string()]);
+    }
+
+    #[test]
+    fn prepare_definition_for_execution_matches_multi_step_runtime_shape() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "process-text".to_string(),
+            make_node("process-text", None, "run_input".into()),
+        );
+        nodes.insert(
+            "wait".to_string(),
+            NodeDef { depends_on: vec!["process-text".to_string()], ..make_node("wait", None, "run_input".into()) },
+        );
+        nodes.insert(
+            "process-text_1".to_string(),
+            NodeDef { depends_on: vec!["process-text".to_string()], ..make_node("process-text", None, "run_input".into()) },
+        );
+        nodes.insert(
+            "analyze-text".to_string(),
+            NodeDef {
+                depends_on: vec!["wait".to_string(), "process-text_1".to_string()],
+                ..make_node("analyze-text", None, "node:process-text".into())
+            },
+        );
+
+        let authored = WorkflowDef {
+            version: 1,
+            nodes,
+            output: OutputRef {
+                from: "node:analyze-text".into(),
+            },
+            default_functions: None,
+            metadata: None,
+        };
+
+        let runtime = prepare_definition_for_execution(&authored);
+
+        assert_eq!(
+            authored.nodes["analyze-text"].depends_on,
+            vec!["wait".to_string(), "process-text_1".to_string()]
+        );
+        assert_eq!(
+            runtime.nodes["analyze-text"].depends_on,
+            vec![
+                "wait".to_string(),
+                "process-text_1".to_string(),
+                "process-text".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_missing_function_id() {
         let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.model = "".to_string();
+        def.nodes.get_mut("plan").unwrap().function.id = "".to_string();
         assert!(
             validate_def(&def).is_err(),
-            "expected Err for empty model, got Ok"
+            "expected Err for empty function id, got Ok"
         );
     }
 
@@ -912,7 +887,7 @@ mod tests {
         let mut def = well_formed_def();
         def.nodes.insert(
             "bad#id".to_string(),
-            make_node("claude-3-5-haiku-20241022", None, None, "run_input"),
+            make_node("bad-fn", None, "run_input".into()),
         );
         assert!(
             validate_def(&def).is_err(),
@@ -931,24 +906,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_node_feeding_fanout_without_json_output() {
-        let mut def = well_formed_def();
-        // Remove plan's json output so it fails the fanout rule.
-        def.nodes.get_mut("plan").unwrap().agent.output = None;
-        let result = validate_def(&def);
-        assert!(
-            result.is_err(),
-            "expected Err when plan feeds fanout but has no json output, got Ok"
-        );
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("plan"),
-            "error should mention 'plan', got: {}",
-            msg
-        );
-    }
-
-    #[test]
     fn accepts_well_formed_def() {
         let def = well_formed_def();
         assert!(
@@ -958,29 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_depends_on_that_is_never_consumed() {
-        // The multi-input-join footgun: summarize depends_on both read and plan,
-        // but its single `from` only reads read — plan's output would be silently
-        // dropped while the run still reports success.
-        let mut def = well_formed_def();
-        let summarize = def.nodes.get_mut("summarize").unwrap();
-        summarize.depends_on = vec!["read".to_string(), "plan".to_string()];
-        // input.from stays "node:read" (set by make_node) — plan is unconsumed.
-        let err = validate_def(&def).unwrap_err().to_string();
-        assert!(err.contains("summarize"), "error must name the node: {err}");
-        assert!(
-            err.contains("plan"),
-            "error must name the dropped dep: {err}"
-        );
-        assert!(
-            err.contains("never consumes"),
-            "error must explain the drop: {err}"
-        );
-    }
-
-    #[test]
     fn accepts_join_consuming_all_deps_via_input_array() {
-        // The fix: a join reads BOTH deps via the `Many` array form.
         let mut def = well_formed_def();
         let summarize = def.nodes.get_mut("summarize").unwrap();
         summarize.depends_on = vec!["read".to_string(), "plan".to_string()];
@@ -1008,55 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_models_flags_unregistered_then_clears() {
-        // well_formed_def uses model "claude-3-5-haiku-20241022" on every node, no provider pin.
-        let def = well_formed_def();
-        let mut registered: BTreeSet<(String, String)> = BTreeSet::new();
-        registered.insert(("anthropic".to_string(), "claude-sonnet-4-6".to_string()));
-        assert_eq!(
-            unknown_models(&def, &registered),
-            vec!["claude-3-5-haiku-20241022".to_string()],
-            "the def's model is not in the catalog → flagged once (deduped)"
-        );
-
-        registered.insert((
-            "anthropic".to_string(),
-            "claude-3-5-haiku-20241022".to_string(),
-        ));
-        assert!(
-            unknown_models(&def, &registered).is_empty(),
-            "once the model is registered (node pins no provider), nothing is flagged"
-        );
-    }
-
-    #[test]
-    fn unknown_models_respects_provider_pin() {
-        // A node pinning a provider that doesn't serve the model is flagged even
-        // though the model id IS registered under a different provider.
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.provider = Some("groq".to_string());
-        let mut registered: BTreeSet<(String, String)> = BTreeSet::new();
-        registered.insert((
-            "anthropic".to_string(),
-            "claude-3-5-haiku-20241022".to_string(),
-        ));
-        assert!(
-            unknown_models(&def, &registered)
-                .contains(&"claude-3-5-haiku-20241022 (provider groq)".to_string()),
-            "plan pins groq, which doesn't serve the model registered under anthropic → flagged"
-        );
-
-        registered.insert(("groq".to_string(), "claude-3-5-haiku-20241022".to_string()));
-        assert!(
-            unknown_models(&def, &registered).is_empty(),
-            "once groq serves the model, the pinned node is satisfied"
-        );
-    }
-
-    #[test]
     fn start_request_parses_notify_callback() {
-        // Regression: a caller must be able to register a completion callback at
-        // start time (push) instead of polling workflow::status.
         let req: StartRequest = serde_json::from_value(json!({
             "definition": well_formed_def(),
             "notify": { "function_id": "myworker::wf-done" }
@@ -1072,8 +959,6 @@ mod tests {
 
     #[test]
     fn start_request_parses_caller_session_id() {
-        // The pre_trigger hook stamps `caller_session_id` into the args (from the
-        // caller's turn) so node sessions can nest under the orchestrator.
         let req: StartRequest = serde_json::from_value(json!({
             "definition": well_formed_def(),
             "caller_session_id": "console-abc"
@@ -1093,9 +978,6 @@ mod tests {
 
     #[test]
     fn await_flag_is_dropped_and_ignored() {
-        // The blocking `await` mechanism was removed (the harness must never be
-        // parked). A stale caller still passing `await: true` must not error — the
-        // key is simply ignored and the run is the normal fire-and-forget start.
         let schema = serde_json::to_value(schemars::schema_for!(StartRequest)).unwrap();
         assert!(
             schema["properties"].get("await").is_none(),
@@ -1113,13 +995,10 @@ mod tests {
 
     #[test]
     fn definition_accepts_workflow_alias() {
-        // A model that guessed the wrapper key `workflow` (the worker's own name)
-        // instead of `definition` still parses — this is the exact key the failing
-        // local-model session used.
         let req: StartRequest = serde_json::from_value(json!({
             "workflow": {
                 "version": 1,
-                "nodes": { "a": { "agent": { "model": "m" }, "input": { "from": "run_input" } } },
+                "nodes": { "a": { "function": { "id": "fn-a" }, "input": { "from": "run_input" } } },
                 "output": { "from": "node:a" }
             }
         }))
@@ -1129,13 +1008,11 @@ mod tests {
 
     #[test]
     fn collects_all_structural_problems_at_once() {
-        // The exact failure mode from the local-model session: every node missing
-        // `input`, no `output`. One error must list them ALL (no whack-a-mole).
         let err = serde_json::from_value::<StartRequest>(json!({
             "definition": {
                 "nodes": {
-                    "gen": { "agent": { "model": "m" }, "fanout": { "over": "node:x.items" } },
-                    "crit": { "agent": { "model": "m" }, "depends_on": ["gen"] }
+                    "gen": { "function": { "id": "gen" }, "fanout": { "over": "node:x.items" } },
+                    "crit": { "function": { "id": "crit" }, "depends_on": ["gen"] }
                 }
             }
         }))
@@ -1150,11 +1027,9 @@ mod tests {
 
     #[test]
     fn defaults_version_and_source_node_input() {
-        // A pure source node may omit `input` (defaults to run_input) and the whole
-        // def may omit `version` (defaults to 1).
         let req: StartRequest = serde_json::from_value(json!({
             "definition": {
-                "nodes": { "only": { "agent": { "model": "m" } } },
+                "nodes": { "only": { "function": { "id": "fn-only" } } },
                 "output": { "from": "node:only" }
             }
         }))
@@ -1166,12 +1041,10 @@ mod tests {
 
     #[test]
     fn flags_misplaced_fields_with_hints() {
-        // `input` at the def level and `fanout` under `agent` — common placement
-        // mistakes that deny_unknown_fields would otherwise report one at a time.
         let err = serde_json::from_value::<StartRequest>(json!({
             "definition": {
                 "input": { "from": "run_input" },
-                "nodes": { "n": { "agent": { "model": "m", "fanout": { "over": "x" } }, "input": { "from": "run_input" } } },
+                "nodes": { "n": { "function": { "id": "fn-n", "fanout": { "over": "x" } }, "input": { "from": "run_input" } } },
                 "output": { "from": "node:n" }
             }
         }))
@@ -1182,138 +1055,27 @@ mod tests {
             "msg: {msg}"
         );
         assert!(
-            msg.contains("node `n`.agent: unknown field `fanout`"),
+            msg.contains("node `n`.function: unknown field `fanout`"),
             "msg: {msg}"
         );
-        assert!(msg.contains("NODE-level"), "msg: {msg}");
+        assert!(msg.contains("function"), "msg: {msg}");
     }
 
     #[test]
-    fn accepts_functions_allow_list_array() {
-        // The natural shorthand an agent writes; normalized to {allow:[...]} at dispatch.
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.functions = Some(json!(["web::fetch"]));
+    fn accepts_function_nodes_without_agent_shape() {
+        let def = well_formed_def();
         assert!(
             validate_def(&def).is_ok(),
-            "allow-list array should be accepted"
-        );
-    }
-
-    #[test]
-    fn rejects_functions_with_non_string_element() {
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.functions = Some(json!(["web::fetch", 7]));
-        let err = validate_def(&def).unwrap_err().to_string();
-        assert!(err.contains("plan"), "error should name the node: {err}");
-        assert!(
-            err.contains("non-string"),
-            "error should explain the cause: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_functions_of_wrong_type() {
-        // A number is neither an allow-list, a string, nor a FunctionPolicy object.
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.functions = Some(json!(42));
-        assert!(
-            validate_def(&def).is_err(),
-            "a number is not a valid functions shape"
-        );
-    }
-
-    #[test]
-    fn rejects_json_output_with_empty_schema() {
-        // The live foot-gun: {type:json, schema:{}} fails at the provider with
-        // "input_schema.type: Field required". Catch it at start.
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.output =
-            Some(json!({"type": "json", "schema": {}}));
-        let err = validate_def(&def).unwrap_err().to_string();
-        assert!(err.contains("plan"), "names the node: {err}");
-        assert!(err.contains("type"), "explains the missing type: {err}");
-    }
-
-    #[test]
-    fn rejects_json_output_with_typeless_schema() {
-        let mut def = well_formed_def();
-        // properties but no top-level "type" → still invalid as a tool input_schema.
-        def.nodes.get_mut("plan").unwrap().agent.output =
-            Some(json!({"type": "json", "schema": {"properties": {"x": {"type": "string"}}}}));
-        assert!(
-            validate_def(&def).is_err(),
-            "a schema without a top-level type must be rejected"
-        );
-    }
-
-    #[test]
-    fn accepts_json_output_with_typed_schema() {
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.output = Some(
-            json!({"type": "json", "schema": {"type": "object", "properties": {"x": {"type": "string"}}}}),
-        );
-        assert!(validate_def(&def).is_ok(), "a typed object schema is valid");
-    }
-
-    #[test]
-    fn rejects_fanout_over_non_array_leaf() {
-        // The live foot-gun (run r_fe25cffc): a node fans out over a field its
-        // upstream declares as a string. A fanout needs an array; reject at start
-        // instead of after every upstream node has already run.
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.output = Some(json!({
-            "type": "json",
-            "schema": {"type": "object", "properties": {"docs": {"type": "string"}}}
-        }));
-        let err = validate_def(&def).unwrap_err().to_string();
-        assert!(err.contains("read"), "names the fanout node: {err}");
-        assert!(err.contains("string"), "names the proven leaf type: {err}");
-        assert!(
-            err.contains("array"),
-            "explains a fanout needs an array: {err}"
-        );
-    }
-
-    #[test]
-    fn accepts_fanout_over_array_leaf() {
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.output = Some(json!({
-            "type": "json",
-            "schema": {"type": "object", "properties": {"docs": {"type": "array"}}}
-        }));
-        assert!(
-            validate_def(&def).is_ok(),
-            "fanout over an array-typed field is valid"
-        );
-    }
-
-    #[test]
-    fn fanout_over_unprovable_leaf_defers_to_runtime() {
-        // A union that includes "array" (or any dynamic schema) can't be proven
-        // non-array statically, so start must NOT reject it — the runtime guard
-        // decides once the real value exists. The default well_formed_def (plan's
-        // schema is a typeless `{"type":"object"}` with no `properties`) already
-        // exercises the missing-segment bail; this covers the dynamic-leaf bail.
-        let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().agent.output = Some(json!({
-            "type": "json",
-            "schema": {"type": "object", "properties": {
-                "docs": {"anyOf": [{"type": "array"}, {"type": "null"}]}
-            }}
-        }));
-        assert!(
-            validate_def(&def).is_ok(),
-            "an unprovable (dynamic) leaf must defer to the runtime guard"
+            "function-based definitions should validate without any agent metadata"
         );
     }
 
     #[test]
     fn rejects_cyclic_def() {
-        // b -> c, c -> b
         let d: WorkflowDef = serde_json::from_value(serde_json::json!({
             "version":1, "output":{"from":"node:b"}, "nodes":{
-              "b":{"depends_on":["c"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:c","template":"t"}},
-              "c":{"depends_on":["b"],"agent":{"model":"m","output":{"type":"json"}},"input":{"from":"node:b","template":"t"}}
+              "b":{"depends_on":["c"],"function":{"id":"fn-b"},"input":{"from":"node:c","template":"t"}},
+              "c":{"depends_on":["b"],"function":{"id":"fn-c"},"input":{"from":"node:b","template":"t"}}
             }})).unwrap();
         assert!(validate_def(&d).is_err());
     }

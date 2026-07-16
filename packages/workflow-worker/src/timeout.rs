@@ -50,6 +50,8 @@ mod tests {
             pending_at: Some(pending_at),
             pending_timeout_ms: timeout,
             retries,
+            completed_at: None,
+            worker_name: None,
         }
     }
 

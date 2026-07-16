@@ -38,41 +38,13 @@ async function getRuntimeFromRegistry(functionId: string): Promise<'nodejs' | 'p
     // Registry not available, fall back to heuristics
   }
   
-  return detectFunctionRuntime(functionId)
-}
-
-/**
- * Detect function runtime from ID pattern.
- * Heuristics:
- * - Ends with '.py' or contains 'python' → python
- * - Contains '::' (Rust convention for module paths) → rust
- * - Otherwise → nodejs (default, since defineWorkflow runs in Node.js context)
- */
-function detectFunctionRuntime(functionId: string): 'nodejs' | 'python' | 'rust' | 'unknown' {
-  const lower = functionId.toLowerCase()
-  
-  // Python detection
-  if (functionId.endsWith('.py') || lower.includes('python')) {
-    return 'python'
-  }
-  
-  // Rust detection (module path syntax like "module::function")
-  if (functionId.includes('::')) {
-    return 'rust'
-  }
-  
-  // Default to nodejs since we're in a Node.js context
-  // Most functions registered via defineFunction are Node.js
-  return 'nodejs'
+  return 'unknown'
 }
 
 /**
  * Normalizes various input formats into the InputSpec format expected by the workflow worker.
  * 
  * InputSpec shape: { from: string | string[], template?: string }
- * 
- * @param input - User-provided input specification
- * @param deps - Auto-inferred dependencies from $ref references
  */
 function normalizeInput(input: any, deps: string[]): { from: string | string[], template?: string } {
   // Case 1: String shorthand - wrap in { from }
@@ -82,7 +54,14 @@ function normalizeInput(input: any, deps: string[]): { from: string | string[], 
   
   // Case 2: Array shorthand (for multi-node joins) - wrap in { from }
   if (Array.isArray(input)) {
-    return { from: input }
+    return {
+      from: input.map((item) => {
+        if (item && typeof item === 'object' && '$ref' in item && typeof item.$ref === 'string') {
+          return item.$ref
+        }
+        return item
+      }),
+    }
   }
   
   // Case 3: Already a valid InputSpec with 'from' field
@@ -102,14 +81,17 @@ function normalizeInput(input: any, deps: string[]): { from: string | string[], 
     }
     return { from: 'run_input' }
   }
+
+  // Case 6: User passed a raw object (e.g. from the workflow handler's `input` argument)
+  // In a static DAG, we can't embed the actual values in the plan reliably, 
+  // so we treat passing ANY object that looks like the root input as a request for 'run_input'.
+  if (typeof input === 'object' && !Array.isArray(input)) {
+    return { from: 'run_input' }
+  }
   
-  // Case 6: Invalid - object without 'from' or '$ref' field
-  // This might be the user trying to pass custom data, which doesn't fit the DAG model
-  // For now, warn and default to run_input
+  // Case 7: Invalid - fallback
   console.warn(
-    `[nvent/workflow] Invalid input specification. Expected string, array, or object with 'from' field.`,
-    `Got:`, input,
-    `\nDefaulting to 'run_input'. To pass workflow input to a node, use: input: 'run_input'`
+    `[nvent/workflow] Unexpected input type: ${typeof input}. Defaulting to 'run_input'.`
   )
   return { from: 'run_input' }
 }
@@ -138,19 +120,24 @@ export interface WorkflowContext {
    * const result2 = await ctx.call('analyze', result1)
    */
   call: <T = any>(...args: any[]) => Promise<T>
-  
+
   /**
    * Fanout helper: run a function for each item in an array.
-   * 
-   * @param nodeId - Node ID for the fanout group
-   * @param items - Array reference (e.g., previous node result)
-   * @param functionId - Function to run for each item
-   * 
-   * @example
-   * const items = await ctx.call('fetch-items')
-   * await ctx.foreach('process-items', items, 'process-single-item')
    */
   foreach: <T = any>(nodeId: string, items: any, functionId: string) => Promise<T>
+  
+  /**
+   * Run multiple tasks in parallel.
+   * 
+   * @param tasks - Array of ctx.call or ctx.node promises
+   * 
+   * @example
+   * const [res1, res2] = await ctx.all(c => [
+   *   c.call('task1', input),
+   *   c.call('task2', input)
+   * ])
+   */
+  all: <T extends readonly unknown[]>(fn: (ctx: WorkflowContext) => T) => Promise<{ [K in keyof T]: T[K] extends Promise<infer R> ? R : T[K] }>
 }
 
 export type WorkflowHandler<TInput = any, TOutput = any> = (
@@ -206,29 +193,83 @@ export function defineWorkflow<TInput = any, TOutput = any>(
       const nodes: Record<string, any> = {}
       const nodeOrder: string[] = []
       let autoNodeCounter = 0
+      let controlFrontier: string[] = []
+      let parallelCollector: string[] | null = null
+
+      const collectNodeRefs = (obj: any, refs: Set<string>) => {
+        if (!obj || typeof obj !== 'object') return
+        if (obj.$ref && typeof obj.$ref === 'string' && obj.$ref.startsWith('node:')) {
+          refs.add(obj.$ref.split(':')[1])
+          return
+        }
+        if (Array.isArray(obj)) {
+          for (const item of obj) collectNodeRefs(item, refs)
+          return
+        }
+        for (const key in obj) collectNodeRefs(obj[key], refs)
+      }
+
+      const getDirectDeps = (nodeId: string): string[] => {
+        const node = nodes[nodeId]
+        return Array.isArray(node?.depends_on) ? node.depends_on : []
+      }
+
+      const getAncestors = (nodeId: string): Set<string> => {
+        const ancestors = new Set<string>()
+        const stack = [...getDirectDeps(nodeId)]
+
+        while (stack.length > 0) {
+          const currentId = stack.pop()!
+          if (ancestors.has(currentId)) continue
+          ancestors.add(currentId)
+          stack.push(...getDirectDeps(currentId))
+        }
+
+        return ancestors
+      }
+
+      const reduceDependencies = (deps: string[]): string[] => {
+        const uniqueDeps = [...new Set(deps)]
+
+        return uniqueDeps.filter((candidate) => {
+          return !uniqueDeps.some((other) => {
+            if (other === candidate) return false
+            return getAncestors(other).has(candidate)
+          })
+        })
+      }
 
       const ctx: WorkflowContext = {
         node: async (id, spec) => {
-          const dependsOn = new Set<string>()
-          
-          const findDeps = (obj: any) => {
-            if (!obj || typeof obj !== 'object') return
-            if (obj && obj.$ref && typeof obj.$ref === 'string' && obj.$ref.startsWith('node:')) {
-              dependsOn.add(obj.$ref.split(':')[1])
-            } else {
-              for (const key in obj) findDeps(obj[key])
-            }
-          }
-          findDeps(spec)
+          const dataDepSet = new Set<string>()
+          collectNodeRefs(spec, dataDepSet)
 
-          // Auto-infer dependencies from $ref in the spec
-          const deps = Array.from(dependsOn)
-          
+          const dataDeps = [...dataDepSet]
+          const declaredDeps = Array.isArray(spec.depends_on) ? spec.depends_on : []
+          const combinedDeps = [...controlFrontier, ...declaredDeps, ...dataDeps]
+          const dependsOn = reduceDependencies(combinedDeps)
+
           // Map to Rust NodeDef structure
           const nodeDef: any = {
-            depends_on: spec.depends_on || deps,
-            input: normalizeInput(spec.input, deps),
+            depends_on: dependsOn,
+            input: normalizeInput(spec.input, dataDeps),
             fanout: typeof spec.fanout === 'string' ? { over: spec.fanout } : spec.fanout,
+          }
+
+          // Update control-flow frontier
+          if (parallelCollector) {
+            parallelCollector.push(id)
+          } else {
+            controlFrontier = [id]
+          }
+
+          // If the input was normalized to run_input by the caller, it means they might have 
+          // passed the whole object expecting it to be filtered. But Rust worker expects
+          // { from: "run_input" } or { from: "node:x" }.
+          if (nodeDef.input.from === 'run_input' && spec.input && typeof spec.input === 'object' && !spec.input.$ref) {
+             // This was likely a raw object passed to call(fn, { ... })
+             // In the functional DAG model, we can't pass raw JS objects yet, 
+             // so we stay with run_input but we should have stopped the warning.
           }
 
           // Handle executor
@@ -310,6 +351,31 @@ export function defineWorkflow<TInput = any, TOutput = any>(
             input: 'fanout_item',
             fanout: { over: fanoutOver }
           })
+        },
+
+        all: async <T extends readonly unknown[]>(fn: (c: WorkflowContext) => T) => {
+          const previousCollector = parallelCollector
+          const previousFrontier = [...controlFrontier]
+
+          parallelCollector = []
+
+          const tasks = fn(ctx)
+          const results = await Promise.all(tasks)
+
+          const completedParallelNodes = parallelCollector
+          parallelCollector = previousCollector
+
+          if (completedParallelNodes.length > 0) {
+            if (parallelCollector) {
+              parallelCollector.push(...completedParallelNodes)
+            } else {
+              controlFrontier = reduceDependencies(completedParallelNodes)
+            }
+          } else if (!parallelCollector) {
+            controlFrontier = previousFrontier
+          }
+
+          return results as any
         }
       }
 

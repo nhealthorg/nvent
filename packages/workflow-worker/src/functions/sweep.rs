@@ -99,7 +99,7 @@ async fn sweep_one_run(
     }
 
     // Fetch the workflow definition — skip if missing (orphaned record).
-    let def = match state::get_def(&deps.iii, &record.run_id).await? {
+    let def = match state::get_runtime_def(&deps.iii, &record.run_id).await? {
         Some(d) => d,
         None => return Ok(false),
     };

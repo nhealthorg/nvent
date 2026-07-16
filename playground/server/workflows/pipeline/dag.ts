@@ -23,10 +23,7 @@ export default defineWorkflow({
     // Node 1: Call the Python analyze function
     // The function expects: { text }
     // We use 'run_input' to pass the workflow input directly to the function
-    const analyze = await ctx.node('analyze', {
-      function: 'pipeline::analyze',  // Python function in pipeline/ directory
-      input: payload  // Pass the entire workflow input to the function
-    })
+    const analyze = await ctx.call('pipeline::analyze', payload)
 
     // Return the analysis result
     return analyze

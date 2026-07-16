@@ -27,26 +27,17 @@ export interface FunctionMeta {
   description?: string
   /** Runtime environment (nodejs, python, rust, unknown) */
   runtime: 'nodejs' | 'python' | 'rust' | 'unknown'
-}
-
-export interface PythonFunctionMeta {
-  /** iii function ID (namespace::name) */
-  id: string
-  /** Absolute path to the .py source file */
-  absPath: string
-  /** Relative path within the functions dir */
-  relativePath: string
   /**
    * When true, this function gets its own dedicated worker process.
    * Declare in the .py file: `meta = { ..., "standalone": True }`
    * Default: false (runs in the shared worker process)
    */
-  standalone: boolean
+  standalone?: boolean
 }
 
 export interface ScannedRegistry {
   functions: FunctionMeta[]
-  pythonFunctions: PythonFunctionMeta[]
+  pythonFunctions: FunctionMeta[]
   workflows: FunctionMeta[]
 }
 
@@ -58,16 +49,6 @@ export function filePathToFunctionId(relPath: string): string {
   // Strip any file extension (.ts, .js, .py, etc.)
   const noExt = relPath.replace(/\.[a-zA-Z]+$/, '')
   return noExt.split(/[\\/]/).join('::')
-}
-
-/**
- * Detects runtime from file extension.
- */
-function detectRuntimeFromPath(filePath: string): 'nodejs' | 'python' | 'rust' | 'unknown' {
-  if (filePath.endsWith('.py')) return 'python'
-  if (filePath.endsWith('.ts') || filePath.endsWith('.js') || filePath.endsWith('.mts') || filePath.endsWith('.mjs')) return 'nodejs'
-  if (filePath.endsWith('.rs')) return 'rust'
-  return 'unknown'
 }
 
 /**
@@ -112,7 +93,7 @@ export interface ScanOptions {
 export async function scanFunctions(opts: ScanOptions): Promise<ScannedRegistry> {
   const { layerInfos, functionsDir = 'functions', workflowsDir = 'workflows' } = opts
   const functions: FunctionMeta[] = []
-  const pythonFunctions: PythonFunctionMeta[] = []
+  const pythonFunctions: FunctionMeta[] = []
   const workflows: FunctionMeta[] = []
 
   for (const layer of layerInfos) {
@@ -141,14 +122,20 @@ export async function scanFunctions(opts: ScanOptions): Promise<ScannedRegistry>
           id: `${prefix}${filePathToFunctionId(file)}`, 
           absPath: join(fnDir, file), 
           relativePath: file,
-          runtime: detectRuntimeFromPath(file)
+          runtime: 'nodejs'
         })
       }
 
       for (const file of pyFiles) {
         const absPath = join(fnDir, file)
         const standalone = detectPythonStandalone(absPath)
-        pythonFunctions.push({ id: `${prefix}${filePathToFunctionId(file)}`, absPath, relativePath: file, standalone })
+        pythonFunctions.push({ 
+          id: `${prefix}${filePathToFunctionId(file)}`, 
+          absPath, 
+          relativePath: file,
+          runtime: 'python', 
+          standalone 
+        })
       }
     }
 
@@ -165,7 +152,7 @@ export async function scanFunctions(opts: ScanOptions): Promise<ScannedRegistry>
           id: `${prefix}${filePathToFunctionId(file)}`, 
           absPath: join(workflowDir, file), 
           relativePath: file,
-          runtime: detectRuntimeFromPath(file)
+          runtime: 'nodejs'
         })
       }
     }
@@ -211,20 +198,21 @@ export function generateIiiRegistryTemplate(scanned: ScannedRegistry, pythonPath
     return `_entry(${ns}, ${genString(wf.id)}, ${genString(wf.absPath)}, ${genString(wf.runtime)})`
   })
 
+  const pythonMetadataEntries = scanned.pythonFunctions.map(fn => {
+    const absPath = pythonPathRewrite?.get(fn.absPath) ?? fn.absPath
+    return `{ id: ${genString(fn.id)}, runtime: 'python', filePath: ${genString(absPath)}, absPath: ${genString(absPath)}, standalone: ${fn.standalone} }`
+  })
+
   lines.push('')
   lines.push(`export const registry = {`)
-  lines.push(`  functions: [${[...functionEntries, ...workflowEntries].join(', ')}],`)
+  lines.push(`  functions: [${[...functionEntries, ...workflowEntries, ...pythonMetadataEntries].join(', ')}],`)
   lines.push(`  workflows: [${workflowEntries.join(', ')}],`)
   lines.push(`  get triggers() { return this.functions.flatMap(f => f.triggers ?? []) },`)
   lines.push(`}`)
   lines.push('')
   lines.push('export default registry')
   lines.push('')
-  lines.push(`export const pythonFunctions = ${JSON.stringify(scanned.pythonFunctions.map(fn => ({
-    id: fn.id,
-    absPath: pythonPathRewrite?.get(fn.absPath) ?? fn.absPath,
-    standalone: fn.standalone,
-  })))}`)
+  lines.push(`export const pythonFunctions = registry.functions.filter(f => f.runtime === 'python')`)
   lines.push('')
 
   return lines.join('\n')
@@ -251,7 +239,7 @@ export function generateIiiRegistryTemplate(scanned: ScannedRegistry, pythonPath
  *     client._thread.join()
  * ```
  */
-export function generatePythonWorkerScriptForFunction(fn: PythonFunctionMeta, wsUrl: string): string {
+export function generatePythonWorkerScriptForFunction(fn: FunctionMeta, wsUrl: string): string {
   return pythonEntryScript(wsUrl, [fn])
 }
 
@@ -259,7 +247,7 @@ export function generatePythonWorkerScriptForFunction(fn: PythonFunctionMeta, ws
  * Generates the shared worker entry script that registers ALL non-standalone
  * Python functions in a single process. This is the default mode.
  */
-export function generatePythonWorkerScriptForAll(fns: PythonFunctionMeta[], wsUrl: string): string {
+export function generatePythonWorkerScriptForAll(fns: FunctionMeta[], wsUrl: string): string {
   return pythonEntryScript(wsUrl, fns)
 }
 
@@ -271,7 +259,7 @@ export function generatePythonWorkerScriptForAll(fns: PythonFunctionMeta[], wsUr
  *   4. Loads and registers each function
  *   5. Keeps alive by joining the SDK background thread
  */
-function pythonEntryScript(wsUrl: string, fns: PythonFunctionMeta[]): string {
+function pythonEntryScript(wsUrl: string, fns: FunctionMeta[]): string {
   const lines = [
     '# Auto-generated by nvent — do not edit',
     'import sys, os',

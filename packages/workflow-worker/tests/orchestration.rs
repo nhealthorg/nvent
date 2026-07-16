@@ -12,10 +12,23 @@ use workflow::{
     functions::tick::{decide, TickDecision},
     reconcile::{classify_terminal, NodeOutcome},
     types::{
-        AgentSpec, FanoutSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef, RunStatus,
-        WorkflowDef, WorkflowRunRecord,
+        FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef,
+        RunStatus, WorkflowDef, WorkflowRunRecord,
     },
 };
+
+fn function_node(id: &str, input: InputSpec, depends_on: Vec<String>, fanout: Option<FanoutSpec>) -> NodeDef {
+    NodeDef {
+        function: FunctionSpec {
+            id: id.to_string(),
+            timeout_ms: None,
+            runtime: None,
+        },
+        input,
+        depends_on,
+        fanout,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 3-node definition used across all tests
@@ -26,61 +39,43 @@ fn three_node_def() -> WorkflowDef {
 
     nodes.insert(
         "plan".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-opus-4-8".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "plan-fn",
+            InputSpec {
                 from: "run_input".into(),
                 template: Some("List the docs to read for: {{topic}}".to_string()),
             },
-            depends_on: vec![],
-            fanout: None,
-        },
+            vec![],
+            None,
+        ),
     );
 
     nodes.insert(
         "read".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "read-fn",
+            InputSpec {
                 from: "fanout_item".into(),
                 template: Some("Read and summarize: {{item}}".to_string()),
             },
-            depends_on: vec!["plan".to_string()],
-            fanout: Some(FanoutSpec {
+            vec!["plan".to_string()],
+            Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
             }),
-        },
+        ),
     );
 
     nodes.insert(
         "synthesize".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-opus-4-8".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "synthesize-fn",
+            InputSpec {
                 from: "node:read".into(),
                 template: Some("Synthesize from: {{results}}".to_string()),
             },
-            depends_on: vec!["read".to_string()],
-            fanout: None,
-        },
+            vec!["read".to_string()],
+            None,
+        ),
     );
 
     WorkflowDef {
@@ -90,6 +85,7 @@ fn three_node_def() -> WorkflowDef {
             from: "node:synthesize".into(),
         },
         default_functions: None,
+        metadata: None,
     }
 }
 
@@ -111,7 +107,6 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         result: None,
         result_error: None,
         notify: None,
-        reply_to: None,
         caller_session_id: None,
         created_at: 0,
         updated_at: 0,
@@ -142,6 +137,8 @@ fn drive_step(
                     pending_at: Some(1_000_000),
                     pending_timeout_ms: None,
                     retries: 0,
+                    completed_at: None,
+                    worker_name: None,
                 },
             );
         }
@@ -303,6 +300,8 @@ fn redelivered_drive_is_stable() {
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         },
     );
     results.insert("plan".to_string(), json!({"docs": ["a", "b"]}));
@@ -362,6 +361,8 @@ fn completed_with_result_error_marks_node_failed() {
             pending_at: Some(1_000_000),
             pending_timeout_ms: None,
             retries: 0,
+            completed_at: None,
+            worker_name: None,
         },
     );
 
@@ -412,72 +413,48 @@ fn diamond_def() -> WorkflowDef {
 
     nodes.insert(
         "a".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "a-fn",
+            InputSpec {
                 from: "run_input".into(),
                 template: None,
             },
-            depends_on: vec![],
-            fanout: None,
-        },
+            vec![],
+            None,
+        ),
     );
 
     nodes.insert(
         "b".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "b-fn",
+            InputSpec {
                 from: "node:a".into(),
                 template: None,
             },
-            depends_on: vec!["a".to_string()],
-            fanout: None,
-        },
+            vec!["a".to_string()],
+            None,
+        ),
     );
 
     nodes.insert(
         "c".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "c-fn",
+            InputSpec {
                 from: "node:a".into(),
                 template: None,
             },
-            depends_on: vec!["a".to_string()],
-            fanout: None,
-        },
+            vec!["a".to_string()],
+            None,
+        ),
     );
 
     nodes.insert(
         "d".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "d-fn",
+            InputSpec {
                 // Join node: read BOTH branches. depends_on lists b and c, so the
                 // input must consume both (a single `from` would drop one).
                 from: workflow::types::InputFrom::Many(vec![
@@ -486,9 +463,9 @@ fn diamond_def() -> WorkflowDef {
                 ]),
                 template: None,
             },
-            depends_on: vec!["b".to_string(), "c".to_string()],
-            fanout: None,
-        },
+            vec!["b".to_string(), "c".to_string()],
+            None,
+        ),
     );
 
     WorkflowDef {
@@ -498,6 +475,7 @@ fn diamond_def() -> WorkflowDef {
             from: "node:d".into(),
         },
         default_functions: None,
+        metadata: None,
     }
 }
 
@@ -652,61 +630,43 @@ fn fanout_empty_def() -> WorkflowDef {
 
     nodes.insert(
         "a".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "a-fn",
+            InputSpec {
                 from: "run_input".into(),
                 template: Some("t".to_string()),
             },
-            depends_on: vec![],
-            fanout: None,
-        },
+            vec![],
+            None,
+        ),
     );
 
     nodes.insert(
         "b".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "b-fn",
+            InputSpec {
                 from: "fanout_item".into(),
                 template: Some("t".to_string()),
             },
-            depends_on: vec!["a".to_string()],
-            fanout: Some(FanoutSpec {
+            vec!["a".to_string()],
+            Some(FanoutSpec {
                 over: "node:a.result.items".to_string(),
             }),
-        },
+        ),
     );
 
     nodes.insert(
         "c".to_string(),
-        NodeDef {
-            agent: AgentSpec {
-                model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
-                output: Some(json!({"type": "json"})),
-            },
-            input: InputSpec {
+        function_node(
+            "c-fn",
+            InputSpec {
                 from: "node:b".into(),
                 template: Some("t".to_string()),
             },
-            depends_on: vec!["b".to_string()],
-            fanout: None,
-        },
+            vec!["b".to_string()],
+            None,
+        ),
     );
 
     WorkflowDef {
@@ -716,6 +676,7 @@ fn fanout_empty_def() -> WorkflowDef {
             from: "node:c".into(),
         },
         default_functions: None,
+        metadata: None,
     }
 }
 
@@ -780,6 +741,8 @@ fn sweep_refires_then_fails_after_budget() {
         pending_at: Some(0),
         pending_timeout_ms: Some(1_000),
         retries: 0,
+        completed_at: None,
+        worker_name: None,
     };
     let now = 10_000;
     // first sweep: under budget -> refire attempt 1

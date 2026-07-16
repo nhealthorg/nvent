@@ -2,15 +2,18 @@ declare module '#nvent/iii-registry' {
   interface NodeFnInfo {
     id: string
     description?: string
-    handler: (input: unknown) => Promise<unknown> | unknown
-    triggers: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
-    filePath?: string
+    handler?: (input: unknown) => Promise<unknown> | unknown
+    triggers?: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
+    filePath: string
+    runtime: string
+    standalone?: boolean
   }
   export const registry: {
     functions: NodeFnInfo[]
+    workflows: NodeFnInfo[]
     triggers: Array<{ type: string; function_id: string; config?: Record<string, unknown> }>
   }
-  export const pythonFunctions: Array<{ id: string; absPath: string; standalone: boolean }>
+  export const pythonFunctions: NodeFnInfo[]
 }
 
 declare module '#nvent/server' {

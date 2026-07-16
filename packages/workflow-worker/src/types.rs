@@ -320,14 +320,12 @@ mod tests {
             "run_input", // InputSpec.from sources
             "fanout_item",
             "node:<id>",
-            "allow-list",                        // AgentSpec.functions shorthand
             "barrier",                           // depends_on join semantics
             "crash-resumable",                   // WorkflowDef top-level behavior
             "must not contain",                  // node-id constraint
-            "consumed node has to emit json",    // AgentSpec.output JSON-output rule
-            "router::models::list",              // AgentSpec.model discovery hint
             "fanout path must name a field",     // FanoutSpec.over: dep schema must declare+emit it
-            "real json schema with a top-level", // AgentSpec.output: no empty {} schema
+            "function to execute for this node", // function-based node execution contract
+            "runtime environment",               // runtime metadata exposed for functions
         ] {
             assert!(
                 blob.contains(needle),
@@ -369,6 +367,8 @@ mod tests {
                         pending_at: None,
                         pending_timeout_ms: None,
                         retries: 0,
+                        completed_at: None,
+                        worker_name: None,
                     },
                 );
                 m
@@ -377,7 +377,6 @@ mod tests {
             result: None,
             result_error: None,
             notify: None,
-            reply_to: None,
             caller_session_id: None,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_001,
