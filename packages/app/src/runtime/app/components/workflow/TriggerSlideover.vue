@@ -171,7 +171,11 @@ async function handleTrigger() {
       }
     })
     
-    emit('triggered', { workflowId: props.workflow.id, runId: result.run_id || result.invocation_id })
+    emit('triggered', {
+      workflowId: props.workflow.id,
+      runId: result.run_id || result.invocation_id,
+      stream: result.stream,
+    })
     isOpen.value = false
   } catch (e: any) {
     console.error('Failed to trigger workflow:', e)

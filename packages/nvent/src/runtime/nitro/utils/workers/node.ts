@@ -1,8 +1,11 @@
-import type { registerWorker } from 'iii-sdk'
+import { TriggerAction, type registerWorker } from 'iii-sdk'
 import { trace } from '@opentelemetry/api'
 import type { FunctionDef, FunctionContext, WorkflowFunctionOptions } from '../defineFunction'
 
 type IiiClient = ReturnType<typeof registerWorker>
+
+const WORKFLOW_STATE_SCOPE = 'workflow_run_state'
+const WORKFLOW_STREAM_NAME = 'workflow'
 
 export interface NodeFnInfo {
   /** iii function ID (e.g. 'greet' or 'orders::process') */
@@ -21,11 +24,145 @@ function makeRecordId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+function createWorkflowScopedContext(
+  iii: IiiClient,
+  functionId: string,
+  workflow: { run_id: string, node_uid: string },
+) {
+  const key = (userKey: string) => `${workflow.run_id}/${userKey}`
+  const stateScopeId = workflow.run_id
+  const streamScopeId = workflow.run_id
+  const streamSubscription = { streamName: WORKFLOW_STREAM_NAME, groupId: streamScopeId }
+
+  return {
+    stateScopeId,
+    streamScopeId,
+    state: {
+      scopeId: stateScopeId,
+      async get<T = unknown>(userKey: string): Promise<T | null> {
+        const result = await iii.trigger({
+          function_id: 'state::get',
+          payload: { scope: WORKFLOW_STATE_SCOPE, key: key(userKey) },
+          timeoutMs: 10_000,
+        })
+        return (result ?? null) as T | null
+      },
+      async set<T = unknown>(userKey: string, value: T): Promise<void> {
+        await iii.trigger({
+          function_id: 'state::set',
+          payload: { scope: WORKFLOW_STATE_SCOPE, key: key(userKey), value },
+          timeoutMs: 10_000,
+          action: TriggerAction.Void()
+        })
+        await emitWorkflowTraceEvent(iii, functionId, workflow, 'workflow.state.set', {
+          'workflow.state.key': userKey,
+          'workflow.state.value': value,
+        })
+      },
+      async delete(userKey: string): Promise<void> {
+        await iii.trigger({
+          function_id: 'state::delete',
+          payload: { scope: WORKFLOW_STATE_SCOPE, key: key(userKey) },
+          timeoutMs: 10_000,
+          action: TriggerAction.Void()
+        })
+        await emitWorkflowTraceEvent(iii, functionId, workflow, 'workflow.state.delete', {
+          'workflow.state.key': userKey,
+        })
+      },
+      async list<T = unknown>(): Promise<Array<{ key: string, value: T }>> {
+        const result = await iii.trigger({
+          function_id: 'state::list',
+          payload: { scope: WORKFLOW_STATE_SCOPE },
+          timeoutMs: 10_000,
+        })
+        const values = Array.isArray(result)
+          ? result
+          : (result && typeof result === 'object' && 'values' in (result as any) && Array.isArray((result as any).values)
+              ? (result as any).values
+              : (result && typeof result === 'object'
+                  ? Object.entries(result as Record<string, unknown>).map(([k, v]) => ({ key: k, value: v }))
+                  : []))
+        return values
+          .map((item: any) => ({
+            key: String(item?.key || ''),
+            value: item?.value as T,
+          }))
+          .filter((item: { key: string }) => item.key.startsWith(`${workflow.run_id}/`))
+          .map((item: { key: string, value: T }) => ({
+            key: item.key.slice(workflow.run_id.length + 1),
+            value: item.value,
+          }))
+      },
+    },
+    stream: {
+      scopeId: streamScopeId,
+      streamName: WORKFLOW_STREAM_NAME,
+      groupId: streamScopeId,
+      subscription() {
+        return streamSubscription
+      },
+      async get<T = unknown>(itemId: string): Promise<T | null> {
+        const result = await iii.trigger({
+          function_id: 'stream::get',
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId },
+          timeoutMs: 10_000,
+        })
+        return (result ?? null) as T | null
+      },
+      async set(itemId: string, data: Record<string, unknown>) {
+        await iii.trigger({
+          function_id: 'stream::set',
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId, data },
+          timeoutMs: 10_000,
+          action: TriggerAction.Void()
+        })
+      },
+      async delete(itemId: string) {
+        await iii.trigger({
+          function_id: 'stream::delete',
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId },
+          timeoutMs: 10_000,
+          action: TriggerAction.Void()
+        })
+      },
+      async list<T = unknown>(): Promise<Array<{ key: string, value: T }>> {
+        const result = await iii.trigger({
+          function_id: 'stream::list',
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId },
+          timeoutMs: 10_000,
+        })
+        const raw = Array.isArray(result)
+          ? result
+          : (result && typeof result === 'object' && Array.isArray((result as any).values)
+              ? (result as any).values
+              : (result && typeof result === 'object'
+                  ? Object.entries(result as Record<string, unknown>).map(([k, v]) => ({ key: k, value: v }))
+                  : []))
+        return raw
+          .map((item: any) => ({
+            key: String(item?.key || item?.id || ''),
+            value: (item?.value ?? item?.data ?? item) as T,
+          }))
+          .filter((item: { key: string }) => Boolean(item.key))
+      },
+      async send(type: string, data: Record<string, unknown> = {}) {
+        await iii.trigger({
+          function_id: 'stream::send',
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, type, data },
+          timeoutMs: 10_000,
+          action: TriggerAction.Void()
+        })
+      },
+    },
+  }
+}
+
 async function emitWorkflowTraceEvent(
   iii: IiiClient,
   functionId: string,
   workflow: { run_id: string, node_uid: string, trace_id?: string },
-  eventName: 'workflow.node.started' | 'workflow.node.completed' | 'workflow.node.failed',
+  eventName: 'workflow.node.started' | 'workflow.node.completed' | 'workflow.node.failed' | 'workflow.state.set' | 'workflow.state.delete',
   attributes?: Record<string, unknown>,
 ) {
   const activeSpan = trace.getActiveSpan()
@@ -175,6 +312,10 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
         context.run_id = workflow.run_id
         context.node_uid = workflow.node_uid
         context.trace_id = workflow.trace_id
+        context.workflow = createWorkflowScopedContext(iii, fn.id, {
+          run_id: workflow.run_id,
+          node_uid: workflow.node_uid,
+        })
         const activeSpan = trace.getActiveSpan()
         activeSpan?.setAttribute('workflow.run_id', workflow.run_id)
         activeSpan?.setAttribute('workflow.node_uid', workflow.node_uid)

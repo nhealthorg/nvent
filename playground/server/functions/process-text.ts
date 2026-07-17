@@ -14,8 +14,20 @@ export default defineFunction({
 
     ctx.logger?.debug('Processing text', { text, bla: 'bla' })
 
+    ctx.workflow?.state.set('lastProcessed', new Date().toISOString())
+    let count = await ctx.workflow?.state.get('count') as number || 0
+    ctx.workflow?.state.set('count', count+1)
+
+    ctx.workflow?.stream.send('progress', { message: 'Processing started', text })
+
     // wait for 5 seconds to simulate a long-running process
     await new Promise(resolve => setTimeout(resolve, 5000))
+
+    count = await ctx.workflow?.state.get('count') as number || 0
+    ctx.workflow?.state.set('count', count+1)
+
+    ctx.workflow?.stream.send('count', { message: 'Processing count', count })
+
     
     return {
       original: text,

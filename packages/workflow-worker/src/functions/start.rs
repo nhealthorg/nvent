@@ -688,6 +688,8 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     let mut record = WorkflowRunRecord {
         run_id: run_id.clone(),
         workflow_trace_id: Some(new_trace_id()),
+        state_scope_id: Some(run_id.clone()),
+        stream_scope_id: Some(run_id.clone()),
         step: 0,
         status: RunStatus::Running,
         abort: false,

@@ -129,8 +129,11 @@ class IStream:
         """Set (create/update) an item in the implicit stream channel (flow + traceId)."""
         ...
 
-    async def send(self, data: dict) -> None:
-        """Send a custom event to all subscribers of the implicit stream channel."""
+    async def send(self, type: str, data: dict = None) -> None:
+        """Send a transient event to all subscribers of the implicit stream channel.
+
+        ``type`` is the event category shown to subscribers (e.g. ``'progress'``).
+        """
         ...
 
     def subscription(self) -> dict:
@@ -155,8 +158,11 @@ class IStream:
         """List all items in a stream group."""
         ...
 
-    async def send_to(self, name: str, group: str, data: dict) -> None:
-        """Send a custom event to all subscribers of an explicit stream group."""
+    async def send_to(self, name: str, group: str, type: str, data: dict = None) -> None:
+        """Send a transient event to all subscribers of an explicit stream group.
+
+        ``type`` is the event category shown to subscribers (e.g. ``'progress'``).
+        """
         ...
 
 
@@ -191,6 +197,40 @@ class IState:
     async def list(self) -> list:
         """List all keys in this function's scope."""
         ...
+
+
+class IWorkflowState:
+    """Workflow-run scoped key-value store available as ``ctx.workflow.state``."""
+
+    async def get(self, key: str) -> Any:
+        ...
+
+    async def set(self, key: str, value: Any) -> None:
+        ...
+
+    async def delete(self, key: str) -> None:
+        ...
+
+    async def list(self) -> list:
+        ...
+
+
+class IWorkflowStream:
+    """Workflow-run scoped stream channel available as ``ctx.workflow.stream``."""
+
+    def subscription(self) -> dict:
+        ...
+
+    async def set(self, item_id: str, data: dict) -> None:
+        ...
+
+    async def send(self, type: str, data: dict = None) -> None:
+        ...
+
+
+class IWorkflowContext:
+    state: IWorkflowState
+    stream: IWorkflowStream
 
 
 class Logger:
@@ -238,6 +278,7 @@ class FlowContext:
     logger: ILogger
     state: IState
     stream: IStream
+    workflow: IWorkflowContext | None
     trigger_type: str
 
     @property

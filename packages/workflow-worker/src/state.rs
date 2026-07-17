@@ -22,8 +22,9 @@ pub const SCOPE_RESULT: &str = "workflow_node_result";
 pub const SCOPE_INDEX: &str = "workflow_session_index";
 pub const SCOPE_RUN_LOG: &str = "workflow_run_log";
 pub const SCOPE_RUN_TRACE: &str = "workflow_run_trace";
+pub const SCOPE_RUN_STATE: &str = "workflow_run_state";
 pub const SCOPE_IDEM: &str = "workflow_idem";
-
+pub const STREAM_NAME_WORKFLOW: &str = "workflow";
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunLogRecord {
     pub id: String,
@@ -132,6 +133,81 @@ async fn state_list(iii: &IIIClient, scope: &str) -> Result<Value, WorkflowError
     .map_err(|e| WorkflowError::State(format!("state::list {scope}: {e}")))
 }
 
+async fn stream_list(iii: &IIIClient, stream_name: &str, group_id: &str) -> Result<Value, WorkflowError> {
+    iii.trigger(TriggerRequest {
+        function_id: "stream::list".into(),
+        payload: json!({ "stream_name": stream_name, "group_id": group_id }),
+        action: None,
+        timeout_ms: Some(dispatch_timeout_ms()),
+    })
+    .await
+    .map_err(|e| WorkflowError::State(format!("stream::list {stream_name}/{group_id}: {e}")))
+}
+
+async fn stream_delete(iii: &IIIClient, stream_name: &str, group_id: &str, item_id: &str) -> Result<(), WorkflowError> {
+    iii.trigger(TriggerRequest {
+        function_id: "stream::delete".into(),
+        payload: json!({ "stream_name": stream_name, "group_id": group_id, "item_id": item_id }),
+        action: None,
+        timeout_ms: Some(dispatch_timeout_ms()),
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| WorkflowError::State(format!("stream::delete {stream_name}/{group_id}/{item_id}: {e}")))
+}
+
+fn parse_stream_items(v: &Value) -> Vec<Value> {
+    parse_state_list_values(v)
+}
+
+async fn delete_run_scoped_entries(iii: &IIIClient, scope: &str, run_id: &str) -> Result<(), WorkflowError> {
+    let v = state_list(iii, scope).await?;
+    let prefix = format!("{run_id}/");
+
+    for item in parse_state_list_values(&v) {
+        let key = item
+            .get("key")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let value_run_id = item
+            .get("value")
+            .and_then(|x| x.get("run_id"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+
+        if key.starts_with(&prefix) || value_run_id == run_id {
+            state_delete(iii, scope, key).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn delete_run_stream_entries(iii: &IIIClient, stream_name: &str, group_id: &str, run_id: &str) -> Result<(), WorkflowError> {
+    let v = stream_list(iii, stream_name, group_id).await?;
+    let prefix = format!("{run_id}/");
+
+    for item in parse_stream_items(&v) {
+        let item_id = item
+            .get("id")
+            .and_then(|x| x.as_str())
+            .or_else(|| item.get("item_id").and_then(|x| x.as_str()))
+            .unwrap_or("");
+        let item_run_id = item
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+
+        if item_id.starts_with(&prefix) || item_run_id == run_id {
+            if !item_id.is_empty() {
+                stream_delete(iii, stream_name, group_id, item_id).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Parse helpers (pure — unit-testable)
 // ---------------------------------------------------------------------------
@@ -228,6 +304,14 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
             state_delete(iii, SCOPE_INDEX, session_id).await?;
         }
     }
+    delete_run_scoped_entries(iii, SCOPE_RUN_STATE, &record.run_id).await?;
+    delete_run_stream_entries(
+        iii,
+        STREAM_NAME_WORKFLOW,
+        record.stream_scope_id.as_deref().unwrap_or(&record.run_id),
+        &record.run_id,
+    )
+    .await?;
     state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
     state_delete(iii, SCOPE_RUN_LOG, &record.run_id).await?;
     state_delete(iii, SCOPE_RUN_TRACE, &record.run_id).await?;

@@ -100,6 +100,8 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
     WorkflowRunRecord {
         run_id: "run_test".to_string(),
         workflow_trace_id: Some("trace_test".to_string()),
+        state_scope_id: Some("run_test".to_string()),
+        stream_scope_id: Some("run_test".to_string()),
         step: 0,
         status: RunStatus::Running,
         abort: false,

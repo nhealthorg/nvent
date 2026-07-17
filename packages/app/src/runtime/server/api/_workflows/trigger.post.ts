@@ -20,5 +20,24 @@ export default defineEventHandler(async (event) => {
     payload: input || {} 
   })
 
-  return result
+  const resultRecord = (result && typeof result === 'object') ? (result as any) : null
+  const runId = resultRecord ? resultRecord.run_id : undefined
+  const response: any = runId
+    ? {
+        stream: {
+          streamName: 'workflow',
+          groupId: runId,
+        },
+      }
+    : {
+        stream: undefined,
+      }
+
+  if (resultRecord) {
+    for (const [key, value] of Object.entries(resultRecord)) {
+      response[key] = value
+    }
+  }
+
+  return response
 })

@@ -177,6 +177,31 @@ export interface FunctionContext {
     warn(message: string, data?: unknown): void
     error(message: string, data?: unknown): void
   }
+  /** Workflow-scoped helpers available only during workflow node execution. */
+  workflow?: {
+    stateScopeId: string
+    streamScopeId: string
+    state: {
+      scopeId: string
+      get<T = unknown>(key: string): Promise<T | null>
+      set<T = unknown>(key: string, value: T): Promise<void>
+      delete(key: string): Promise<void>
+      list<T = unknown>(): Promise<Array<{ key: string, value: T }>>
+    }
+    stream: {
+      scopeId: string
+      streamName: string
+      groupId: string
+      /** Stable browser subscription for the full workflow run. */
+      subscription(): { streamName: string, groupId: string }
+      get<T = unknown>(itemId: string): Promise<T | null>
+      set(itemId: string, data: Record<string, unknown>): Promise<void>
+      delete(itemId: string): Promise<void>
+      list<T = unknown>(): Promise<Array<{ key: string, value: T }>>
+      /** Send a transient event to all subscribers. `type` is the event category (e.g. `'progress'`). */
+      send(type: string, data?: Record<string, unknown>): Promise<void>
+    }
+  }
 }
 
 export interface WorkflowFunctionOptions {

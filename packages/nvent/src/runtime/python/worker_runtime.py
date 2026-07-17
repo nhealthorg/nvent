@@ -400,8 +400,11 @@ class _Stream:
                 record_exception(span, exc)
                 raise
 
-    async def send(self, data: dict) -> None:
-        """Send a custom event to all subscribers of the implicit stream channel."""
+    async def send(self, type: str, data: dict = None) -> None:
+        """Send a custom event to all subscribers of the implicit stream channel.
+
+        ``type`` is the event category shown to subscribers (e.g. ``'progress'``).
+        """
         group = self._get_group_id()
         with operation_span("stream::send", **{
             "nvent.stream.name": self._stream_name,
@@ -411,7 +414,8 @@ class _Stream:
                 await self._client.trigger_async({"function_id": "stream::send", "payload": {
                     "stream_name": self._stream_name,
                     "group_id": group,
-                    "data": data,
+                    "type": type,
+                    "data": data or {},
                 }})
                 set_span_ok(span)
             except Exception as exc:
@@ -494,15 +498,18 @@ class _Stream:
                 record_exception(span, exc)
                 raise
 
-    async def send_to(self, name: str, group: str, data: dict) -> None:
-        """Send a custom event to all subscribers of an explicit stream group."""
+    async def send_to(self, name: str, group: str, type: str, data: dict = None) -> None:
+        """Send a custom event to all subscribers of an explicit stream group.
+
+        ``type`` is the event category shown to subscribers (e.g. ``'progress'``).
+        """
         with operation_span("stream::send", **{
             "nvent.stream.name": name,
             "nvent.stream.group_id": group,
         }) as span:
             try:
                 await self._client.trigger_async({"function_id": "stream::send", "payload": {
-                    "stream_name": name, "group_id": group, "data": data,
+                    "stream_name": name, "group_id": group, "type": type, "data": data or {},
                 }})
                 set_span_ok(span)
             except Exception as exc:
@@ -561,6 +568,92 @@ class _State:
                 raise
 
 
+WORKFLOW_STATE_SCOPE = "workflow_run_state"
+WORKFLOW_STREAM_NAME = "workflow"
+
+
+class _WorkflowScopedState:
+    def __init__(self, client, run_id: str, node_uid: str, fn_id: str):
+        self._client = client
+        self._run_id = run_id
+        self._node_uid = node_uid
+        self._fn_id = fn_id
+
+    def _key(self, key: str) -> str:
+        return f"{self._run_id}/{key}"
+
+    async def _emit_trace_event(self, event_name: str, attributes: dict = None):
+        """Emit a trace event for state operations."""
+        try:
+            await self._client.trigger_async({
+                "function_id": "workflow::trace-write",
+                "payload": {
+                    "run_id": self._run_id,
+                    "id": f"trace-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}",
+                    "node_uid": self._node_uid,
+                    "function_id": self._fn_id,
+                    "runtime": "python",
+                    "event_name": event_name,
+                    "ts_unix_ms": int(time.time() * 1000),
+                    "attributes": {"workflow.runtime": "python", **(attributes or {})},
+                },
+            })
+        except Exception as e:
+            print(f"[nvent/workflow] failed to write trace event {event_name}: {e}")
+
+    async def get(self, key: str):
+        return await self._client.trigger_async({
+            "function_id": "state::get",
+            "payload": {"scope": WORKFLOW_STATE_SCOPE, "key": self._key(key)},
+        })
+
+    async def set(self, key: str, value):
+        await self._client.trigger_async({
+            "function_id": "state::set",
+            "payload": {"scope": WORKFLOW_STATE_SCOPE, "key": self._key(key), "value": value},
+        })
+        await self._emit_trace_event("workflow.state.set", {
+            "workflow.state.key": key,
+            "workflow.state.value": value,
+        })
+
+    async def delete(self, key: str):
+        await self._client.trigger_async({
+            "function_id": "state::delete",
+            "payload": {"scope": WORKFLOW_STATE_SCOPE, "key": self._key(key)},
+        })
+        await self._emit_trace_event("workflow.state.delete", {
+            "workflow.state.key": key,
+        })
+
+    async def list(self):
+        result = await self._client.trigger_async({
+            "function_id": "state::list",
+            "payload": {"scope": WORKFLOW_STATE_SCOPE},
+        })
+        values = result if isinstance(result, list) else (result.get("values") if isinstance(result, dict) and isinstance(result.get("values"), list) else [])
+        out = []
+        prefix = f"{self._run_id}/"
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "")
+            if key.startswith(prefix):
+                out.append({"key": key[len(prefix):], "value": item.get("value")})
+        return out
+
+
+
+
+
+class _WorkflowScopedContext:
+    def __init__(self, client, run_id: str, node_uid: str, fn_id: str):
+        self.stateScopeId = run_id
+        self.streamScopeId = run_id
+        self.state = _WorkflowScopedState(client, run_id, node_uid, fn_id)
+        self.stream = _WorkflowScopedStream(client, run_id, node_uid, fn_id)
+
+
 # ---------------------------------------------------------------------------
 # FlowContext — execution context passed to handler(input, ctx)
 # ---------------------------------------------------------------------------
@@ -614,6 +707,10 @@ class FlowContext:
             
         self.state = _State(client, fn_id)
         self.stream = _Stream(client, self._stream_name, self._get_or_create_group_id)
+        if self.run_id and self.node_uid:
+            self.workflow = _WorkflowScopedContext(client, self.run_id, self.node_uid, fn_id)
+        else:
+            self.workflow = None
 
     def _get_or_create_group_id(self) -> str:
         """Return stable group ID for this invocation, generating one lazily if needed."""

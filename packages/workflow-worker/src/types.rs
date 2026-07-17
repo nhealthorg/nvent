@@ -251,6 +251,12 @@ pub struct WorkflowRunRecord {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_trace_id: Option<String>,
+    /// Workflow state scope identifier used by runtime helpers and cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_scope_id: Option<String>,
+    /// iii stream group identifier used by runtime helpers and cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_scope_id: Option<String>,
     /// Monotonic dequeue guard
     pub step: u64,
     pub status: RunStatus,
@@ -366,6 +372,8 @@ mod tests {
         let record = WorkflowRunRecord {
             run_id: "run_abc123".to_string(),
             workflow_trace_id: Some("trace_abc123".to_string()),
+            state_scope_id: Some("run_abc123".to_string()),
+            stream_scope_id: Some("run_abc123".to_string()),
             step: 3,
             status: RunStatus::AwaitingNodes,
             abort: false,
@@ -408,6 +416,8 @@ mod tests {
     fn defaults_fill_in_for_a_minimal_record() {
         let v: Value = json!({
             "run_id": "run_min",
+            "state_scope_id": "run_min",
+            "stream_scope_id": "run_min",
             "step": 0,
             "status": "running",
             "def_ref": "run_min",

@@ -11,6 +11,8 @@ const props = defineProps<{
 
 const runId = computed(() => props.runId || (route.value.params.id as string))
 
+const isStateSlideoverOpen = ref(false)
+
 interface StatusResponse {
   status: string
   definition: any
@@ -26,12 +28,30 @@ interface TimelineResponse {
   logs: any[]
 }
 
+interface WorkflowStatesResponse {
+  states: any[]
+}
+
+interface WorkflowStreamsResponse {
+  streams: any[]
+}
+
 const { data: status, pending, error, refresh } = useFetch<StatusResponse>('/api/_workflows/status', {
   params: { run_id: runId },
   watch: [runId],
 })
 
 const { data: timeline, refresh: refreshTimeline } = useFetch<TimelineResponse>('/api/_workflows/timeline', {
+  params: { run_id: runId, limit: 500 },
+  watch: [runId],
+})
+
+const { data: workflowStates, refresh: refreshStates } = useFetch<WorkflowStatesResponse>('/api/_workflows/states', {
+  params: { run_id: runId, limit: 500 },
+  watch: [runId],
+})
+
+const { data: workflowStreams, refresh: refreshStreams } = useFetch<WorkflowStreamsResponse>('/api/_workflows/streams', {
   params: { run_id: runId, limit: 500 },
   watch: [runId],
 })
@@ -45,6 +65,8 @@ onMounted(() => {
     if (currentStatus === 'running' || currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting') {
       refresh()
       refreshTimeline()
+      refreshStates()
+      refreshStreams()
     }
   }, 3000)
 })
@@ -197,6 +219,8 @@ const timelineEvents = computed(() => {
       if (eventName === 'workflow.node.started') eventType = 'step.started'
       else if (eventName === 'workflow.node.completed') eventType = 'step.completed'
       else if (eventName === 'workflow.node.failed') eventType = 'step.failed'
+      else if (eventName === 'workflow.state.set') eventType = 'state.set'
+      else if (eventName === 'workflow.state.delete') eventType = 'state.delete'
 
       if (!eventType || !eventStepName) continue
       lifecycleKeys.add(`${eventStepName}:${eventType}`)
@@ -211,6 +235,8 @@ const timelineEvents = computed(() => {
           spanId: span?.span_id,
           status: span?.status,
           traceId: span?.trace_id,
+          key: eventAttrs['workflow.state.key'],
+          value: eventAttrs['workflow.state.value'],
           ...attrs,
           ...eventAttrs,
         },
@@ -337,6 +363,40 @@ const timelineLogs = computed(() => {
   })
 })
 
+const timelineStates = computed(() => {
+  return (workflowStates.value?.states ?? []).map((item: any) => ({
+    id: `state-${item.id || `${item.key}-${item.ts_unix_ms || 0}`}`,
+    ts: Number(item.ts_unix_ms || 0),
+    type: item.kind === 'delete' ? 'state.delete' : 'state.set',
+    stepName: item.node_uid || item.function_id,
+    data: {
+      key: item.key,
+      value: item.value,
+      nodeUid: item.node_uid,
+      functionId: item.function_id,
+      runId: item.run_id,
+    },
+  }))
+})
+
+const timelineStreams = computed(() => {
+  return (workflowStreams.value?.streams ?? []).map((item: any) => ({
+    id: `stream-${item.id || `${item.kind}-${item.ts_unix_ms || 0}`}`,
+    ts: Number(item.ts_unix_ms || 0),
+    type: item.kind === 'set' ? 'stream.set' : 'stream.send',
+    stepName: item.node_uid || item.function_id,
+    data: {
+      itemId: item.item_id,
+      payload: item.data,
+      streamName: item.stream_name,
+      groupId: item.group_id,
+      nodeUid: item.node_uid,
+      functionId: item.function_id,
+      runId: item.run_id,
+    },
+  }))
+})
+
 const stepStates = computed(() => {
   const out: Record<string, any> = {}
   Object.entries(status.value?.nodes ?? {}).forEach(([id, nodeStatus]: [string, any]) => {
@@ -393,8 +453,38 @@ const filteredTimelineLogs = computed(() => {
   return timelineLogs.value.filter(item => item.stepName === selectedStep.value)
 })
 
+const filteredTimelineStates = computed(() => {
+  if (!selectedStep.value) return timelineStates.value
+  return timelineStates.value.filter(item => item.stepName === selectedStep.value)
+})
+
+const filteredTimelineStreams = computed(() => {
+  if (!selectedStep.value) return timelineStreams.value
+  return timelineStreams.value.filter(item => item.stepName === selectedStep.value)
+})
+
 async function refreshAll() {
-  await Promise.all([refresh(), refreshTimeline()])
+  await Promise.all([refresh(), refreshTimeline(), refreshStates(), refreshStreams()])
+}
+
+const filteredWorkflowStates = computed(() => {
+  // workflowStates should come from API as array of { key, value }
+  return (workflowStates.value?.states ?? []).map((item: any) => ({
+    key: item.key || item.id || '',
+    value: item.value || item,
+  }))
+})
+
+function exportStates() {
+  const data = filteredWorkflowStates.value
+  const json = JSON.stringify(data, null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `workflow-states-${runId.value}-${Date.now()}.json`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 </script>
 
@@ -418,10 +508,29 @@ async function refreshAll() {
           </div>
         </div>
         <div class="flex items-center gap-2">
+          <!-- State Slideover -->
+          <USlideover 
+            v-model="isStateSlideoverOpen"
+            title="State Inspector">
+            <UButton
+              icon="i-lucide-database"
+              color="neutral"
+              variant="outline"
+              label="State"
+              @click="isStateSlideoverOpen = true"
+            />
+            <template #content>
+              <NventFlowStateInspector
+                :states="filteredWorkflowStates"
+                :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
+                @export="exportStates"
+              />
+            </template>
+          </USlideover>
            <UBadge
              v-if="normalizedStatus"
              :label="normalizedStatus.toUpperCase()"
-             size="md"
+             size="lg"
              :color="normalizedStatus === 'completed' ? 'success' : normalizedStatus === 'failed' ? 'error' : 'neutral'"
              variant="outline"
            />
@@ -495,6 +604,8 @@ async function refreshAll() {
           <NventFlowRunTimeline
             :events="filteredTimelineEvents"
             :logs="filteredTimelineLogs"
+            :states="filteredTimelineStates"
+            :streams="filteredTimelineStreams"
             :selected-step="selectedStep"
             :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
           />
