@@ -25,6 +25,20 @@ pub struct WorkerConfig {
     /// config-cell swap (not structural).
     #[serde(default = "default_max_node_retries")]
     pub max_node_retries: u32,
+
+    /// Retention window for terminal workflow run state (`workflow_run` plus
+    /// referenced `workflow_def`/`workflow_node_result` records).
+    /// Terminal runs older than this value are deleted by `workflow::sweep`.
+    /// Milliseconds.
+    #[serde(default = "default_run_retention_ms")]
+    pub run_retention_ms: u64,
+
+    /// Retention window for workflow-owned observability records
+    /// (`workflow_run_log` and `workflow_run_trace`).
+    /// Entries older than this value are pruned by `workflow::sweep`.
+    /// Milliseconds.
+    #[serde(default = "default_observability_retention_ms")]
+    pub observability_retention_ms: u64,
 }
 
 fn default_pending_timeout_ms() -> u64 {
@@ -39,6 +53,12 @@ fn default_dispatch_timeout_ms() -> u64 {
 fn default_max_node_retries() -> u32 {
     3
 }
+fn default_run_retention_ms() -> u64 {
+    30 * 24 * 60 * 60 * 1000
+}
+fn default_observability_retention_ms() -> u64 {
+    30 * 24 * 60 * 60 * 1000
+}
 
 impl Default for WorkerConfig {
     fn default() -> Self {
@@ -47,6 +67,8 @@ impl Default for WorkerConfig {
             sweep_expression: default_sweep_expression(),
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
             max_node_retries: default_max_node_retries(),
+            run_retention_ms: default_run_retention_ms(),
+            observability_retention_ms: default_observability_retention_ms(),
         }
     }
 }
@@ -90,5 +112,7 @@ mod tests {
         assert_eq!(cfg.sweep_expression, "0 * * * * *");
         assert_eq!(cfg.dispatch_timeout_ms, 30_000);
         assert_eq!(cfg.max_node_retries, 3);
+        assert_eq!(cfg.run_retention_ms, 30 * 24 * 60 * 60 * 1000);
+        assert_eq!(cfg.observability_retention_ms, 30 * 24 * 60 * 60 * 1000);
     }
 }

@@ -155,13 +155,50 @@ type Parseable<T = unknown> = { parse(data: unknown): T }
 /** Infer the TypeScript type from a schema object, or fall back to Fallback. */
 type InferSchema<S, Fallback = unknown> = S extends Parseable<infer T> ? T : Fallback
 
+export interface FunctionContext {
+  /** 
+   * The current workflow run ID, if this function is executed as part of a workflow.
+   */
+  run_id?: string
+  /** 
+   * The node UID in the workflow DAG, if this function is executed as part of a workflow.
+   */
+  node_uid?: string
+  /**
+   * Stable workflow trace id used for workflow-wide log correlation.
+   */
+  trace_id?: string
+  /**
+   * Structured logger for workflow/function execution.
+   */
+  logger: {
+    debug(message: string, data?: unknown): void
+    info(message: string, data?: unknown): void
+    warn(message: string, data?: unknown): void
+    error(message: string, data?: unknown): void
+  }
+}
+
+export interface WorkflowFunctionOptions {
+  /** Named queue for workflow dispatch. Default: 'default'. */
+  queue?: string
+  /** Workflow-engine retry policy (independent from iii queue retries). */
+  engine_retry?: {
+    /** Maximum workflow-engine retries for this function node. */
+    max_attempts?: number
+  }
+}
+
 export type FunctionHandler<TInput = unknown, TOutput = unknown> = (
   input: TInput,
+  context: FunctionContext,
 ) => TOutput | Promise<TOutput>
 
 export interface FunctionDef<TInput = unknown, TOutput = unknown> {
   description?: string
   triggers?: TriggerConfig[]
+  /** Enable workflow execution support for this function. */
+  workflow?: boolean | WorkflowFunctionOptions
   handler: FunctionHandler<TInput, TOutput>
   /** JSON Schema for the function input — registered with iii for agent/CLI discovery. */
   request_format?: Record<string, unknown>
@@ -228,6 +265,8 @@ export function defineFunction<
     request_format?: Record<string, unknown>
     /** Raw JSON Schema override for the output (takes precedence over `output` extraction). */
     response_format?: Record<string, unknown>
+    /** Enable workflow execution support; optionally choose the dispatch queue. */
+    workflow?: boolean | WorkflowFunctionOptions
     triggers?: TTriggers
     handler: FunctionHandler<TInput, TOutput>
   },

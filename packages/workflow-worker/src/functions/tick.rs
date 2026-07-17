@@ -7,7 +7,7 @@ use crate::{
     dag,
     error::WorkflowError,
     ids, state,
-    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{FunctionSpec, NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
 };
 
 use super::Deps;
@@ -46,6 +46,15 @@ pub fn decide(def: &WorkflowDef, record: &WorkflowRunRecord) -> TickDecision {
     } else {
         TickDecision::Fire(ready)
     }
+}
+
+fn dispatch_queue_for(function: &FunctionSpec) -> String {
+    function
+        .queue
+        .as_deref()
+        .filter(|q| !q.trim().is_empty())
+        .unwrap_or("default")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -102,13 +111,14 @@ pub(crate) async fn fire_node(
 
     // Fire the function asynchronously via queue (non-blocking)
     let function = &node.function;
-    let queue = "default".to_string();
+    let queue = dispatch_queue_for(function);
 
     // Wrap input with workflow metadata so functions can emit completion events
     let wrapped_input = json!({
         "_workflow": {
             "run_id": record.run_id,
-            "node_uid": node_uid
+            "node_uid": node_uid,
+            "trace_id": record.workflow_trace_id
         },
         "input": input_val
     });
@@ -312,8 +322,9 @@ pub async fn handle(
     record.step = req.step + 1;
 
     // 4. Load the workflow definition.
-    let def = state::get_runtime_def(&deps.iii, &req.run_id)
+    let def = state::get_def(&deps.iii, &req.run_id)
         .await?
+        .map(|d| super::start::prepare_definition_for_execution(&d))
         .ok_or_else(|| WorkflowError::State("def missing".into()))?;
 
     // 5. Reconcile running nodes.
@@ -399,6 +410,8 @@ mod tests {
                 function: FunctionSpec {
                     id: "plan_function".to_string(),
                     timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
                     runtime: None,
                 },
                 input: InputSpec {
@@ -416,6 +429,8 @@ mod tests {
                 function: FunctionSpec {
                     id: "read_function".to_string(),
                     timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
                     runtime: None,
                 },
                 input: InputSpec {
@@ -435,6 +450,8 @@ mod tests {
                 function: FunctionSpec {
                     id: "synthesize_function".to_string(),
                     timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
                     runtime: None,
                 },
                 input: InputSpec {
@@ -460,6 +477,7 @@ mod tests {
     fn fresh_record() -> WorkflowRunRecord {
         WorkflowRunRecord {
             run_id: "run_test".to_string(),
+            workflow_trace_id: Some("trace_test".to_string()),
             step: 0,
             status: RunStatus::Running,
             abort: false,
@@ -666,5 +684,39 @@ mod tests {
         let mut nodes = BTreeMap::new();
         nodes.insert("a".to_string(), done_cp());
         assert_eq!(summarize_failure(&nodes), None);
+    }
+
+    #[test]
+    fn dispatch_queue_for_uses_configured_queue() {
+        let function = FunctionSpec {
+            id: "fn::critical".to_string(),
+            timeout_ms: None,
+            queue: Some("critical".to_string()),
+            engine_retry: None,
+            runtime: None,
+        };
+
+        assert_eq!(dispatch_queue_for(&function), "critical");
+    }
+
+    #[test]
+    fn dispatch_queue_for_falls_back_to_default() {
+        let none = FunctionSpec {
+            id: "fn::none".to_string(),
+            timeout_ms: None,
+            queue: None,
+            engine_retry: None,
+            runtime: None,
+        };
+        let empty = FunctionSpec {
+            id: "fn::empty".to_string(),
+            timeout_ms: None,
+            queue: Some("   ".to_string()),
+            engine_retry: None,
+            runtime: None,
+        };
+
+        assert_eq!(dispatch_queue_for(&none), "default");
+        assert_eq!(dispatch_queue_for(&empty), "default");
     }
 }

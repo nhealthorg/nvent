@@ -1,4 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const registryMock: { functions: any[] } = { functions: [] }
+
+vi.mock('#nvent/iii-registry', () => ({
+  default: registryMock,
+  registry: registryMock,
+}), { virtual: true })
 
 vi.mock('#imports', () => ({
   useIii: () => ({
@@ -9,6 +16,10 @@ vi.mock('#imports', () => ({
 import { defineWorkflow } from '../../packages/nvent/src/runtime/nitro/utils/defineWorkflow'
 
 describe('defineWorkflow compilation', () => {
+  beforeEach(() => {
+    registryMock.functions = []
+  })
+
   it('keeps control-flow deps separate from older data refs after a parallel block', async () => {
     const workflow = defineWorkflow({
       name: 'multi-step',
@@ -196,5 +207,84 @@ describe('defineWorkflow compilation', () => {
 
     expect(plan.nodes['first-step'].depends_on).toEqual([])
     expect(plan.nodes['final-step'].depends_on).toEqual(['first-step'])
+  })
+
+  it('injects workflow queue from registry function metadata', async () => {
+    registryMock.functions = [{
+      id: 'queue-aware-fn',
+      runtime: 'python',
+      workflow: { queue: 'critical-workflows', engine_retry: { max_attempts: 4 } },
+    }]
+
+    const workflow = defineWorkflow({
+      name: 'queue-propagation',
+      async handler(ctx, input: { text: string }) {
+        return ctx.call('queue-aware-fn', input)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['queue-aware-fn'].function).toMatchObject({
+      id: 'queue-aware-fn',
+      runtime: 'python',
+      queue: 'critical-workflows',
+      engine_retry: { max_attempts: 4 },
+    })
+  })
+
+  it('allows call-level retry override over registry workflow defaults', async () => {
+    registryMock.functions = [{
+      id: 'queue-aware-fn',
+      runtime: 'python',
+      workflow: { queue: 'critical-workflows', engine_retry: { max_attempts: 4 } },
+    }]
+
+    const workflow = defineWorkflow({
+      name: 'retry-override',
+      async handler(ctx, input: { text: string }) {
+        return ctx.call('queue-aware-fn', input, {
+          engine_retry: { max_attempts: 1 },
+          queue: 'heartbeat',
+        })
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['queue-aware-fn'].function).toMatchObject({
+      id: 'queue-aware-fn',
+      runtime: 'python',
+      queue: 'heartbeat',
+      engine_retry: { max_attempts: 1 },
+    })
+  })
+
+  it('allows node-level retry override over registry workflow defaults', async () => {
+    registryMock.functions = [{
+      id: 'queue-aware-fn',
+      runtime: 'python',
+      workflow: { queue: 'critical-workflows', engine_retry: { max_attempts: 4 } },
+    }]
+
+    const workflow = defineWorkflow({
+      name: 'retry-node-override',
+      async handler(ctx, input: { text: string }) {
+        return ctx.node('custom-node', {
+          function: 'queue-aware-fn',
+          input,
+          retry: { max_attempts: 2 },
+        })
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['custom-node'].function).toMatchObject({
+      id: 'queue-aware-fn',
+      runtime: 'python',
+      queue: 'critical-workflows',
+      engine_retry: { max_attempts: 2 },
+    })
   })
 })

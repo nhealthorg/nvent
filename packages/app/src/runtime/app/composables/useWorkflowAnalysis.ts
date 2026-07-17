@@ -5,6 +5,10 @@ export interface WorkflowNodeDefinition {
   function: {
     id: string
     runtime: string
+    queue?: string
+    engine_retry?: {
+      max_attempts?: number
+    }
   }
 }
 
@@ -42,8 +46,10 @@ export function useWorkflowAnalysis() {
     while (placed.size < Object.keys(steps).length) {
       const currentLevel: string[] = []
       for (const id in steps) {
+        const step = steps[id]
+        if (!step) continue
         if (placed.has(id)) continue
-        const deps = steps[id].dependsOn
+        const deps = step.dependsOn
         if (deps.length === 0 || deps.every(d => placed.has(d))) {
           currentLevel.push(id)
         }
@@ -54,10 +60,12 @@ export function useWorkflowAnalysis() {
         const remaining = Object.keys(steps).filter(id => !placed.has(id))
         if (remaining.length > 0) {
           remaining.forEach(id => {
+            const step = steps[id]
+            if (!step) return
             placed.add(id)
             analyzedSteps[id] = {
               name: id,
-              dependsOn: steps[id].dependsOn,
+              dependsOn: step.dependsOn,
               level: levels.length
             }
           })
@@ -68,10 +76,12 @@ export function useWorkflowAnalysis() {
       
       levels.push(currentLevel)
       currentLevel.forEach(id => {
+        const step = steps[id]
+        if (!step) return
         placed.add(id)
         analyzedSteps[id] = {
           name: id,
-          dependsOn: steps[id].dependsOn,
+          dependsOn: step.dependsOn,
           level: levels.length - 1
         }
       })

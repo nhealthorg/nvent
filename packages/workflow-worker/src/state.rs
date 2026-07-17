@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json, Value};
 
 use crate::{
@@ -16,10 +18,48 @@ use crate::{
 
 pub const SCOPE_RUN: &str = "workflow_run";
 pub const SCOPE_DEF: &str = "workflow_def";
-pub const SCOPE_DEF_RUNTIME: &str = "workflow_def_runtime";
 pub const SCOPE_RESULT: &str = "workflow_node_result";
 pub const SCOPE_INDEX: &str = "workflow_session_index";
+pub const SCOPE_RUN_LOG: &str = "workflow_run_log";
+pub const SCOPE_RUN_TRACE: &str = "workflow_run_trace";
 pub const SCOPE_IDEM: &str = "workflow_idem";
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowRunLogRecord {
+    pub id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    pub level: String,
+    pub message: String,
+    pub ts_unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowRunTraceRecord {
+    pub id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    pub event_name: String,
+    pub ts_unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+}
 
 // RPC timeout for state::* dispatch. Process-global so it can be wired from
 // WorkerConfig.dispatch_timeout_ms without threading a param through every state
@@ -101,25 +141,30 @@ async fn state_list(iii: &IIIClient, scope: &str) -> Result<Value, WorkflowError
 /// 2. Object with `values` or `items` key: `{"values":[...]}` / `{"items":[...]}`
 /// 3. Key→value map: `{"r_1": {...}, "r_2": {...}}`
 pub fn parse_record_list(v: &Value) -> Vec<WorkflowRunRecord> {
-    let items: Vec<Value> = if let Some(arr) = v.as_array() {
-        arr.clone()
-    } else if let Some(obj) = v.as_object() {
-        if let Some(arr) = obj.get("values").and_then(|x| x.as_array()) {
-            arr.clone()
-        } else if let Some(arr) = obj.get("items").and_then(|x| x.as_array()) {
-            arr.clone()
-        } else {
-            // key → value map
-            obj.values().cloned().collect()
-        }
-    } else {
-        return vec![];
-    };
+    let items = parse_state_list_values(v);
 
     items
         .into_iter()
         .filter_map(|item| from_value::<WorkflowRunRecord>(item).ok())
         .collect()
+}
+
+pub fn parse_state_list_values(v: &Value) -> Vec<Value> {
+    if let Some(arr) = v.as_array() {
+        return arr.clone();
+    }
+
+    if let Some(obj) = v.as_object() {
+        if let Some(arr) = obj.get("values").and_then(|x| x.as_array()) {
+            return arr.clone();
+        }
+        if let Some(arr) = obj.get("items").and_then(|x| x.as_array()) {
+            return arr.clone();
+        }
+        return obj.values().cloned().collect();
+    }
+
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +229,8 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
         }
     }
     state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
-    state_delete(iii, SCOPE_DEF_RUNTIME, &def_key(&record.run_id)).await?;
+    state_delete(iii, SCOPE_RUN_LOG, &record.run_id).await?;
+    state_delete(iii, SCOPE_RUN_TRACE, &record.run_id).await?;
     state_delete(iii, SCOPE_RUN, &record.run_id).await
 }
 
@@ -202,32 +248,9 @@ pub async fn put_def(
     state_set(iii, SCOPE_DEF, &key, v).await
 }
 
-pub async fn put_runtime_def(
-    iii: &IIIClient,
-    run_id: &str,
-    def: &WorkflowDef,
-) -> Result<(), WorkflowError> {
-    let key = def_key(run_id);
-    let v = serde_json::to_value(def)?;
-    state_set(iii, SCOPE_DEF_RUNTIME, &key, v).await
-}
-
 pub async fn get_def(iii: &IIIClient, run_id: &str) -> Result<Option<WorkflowDef>, WorkflowError> {
     let key = def_key(run_id);
     let v = state_get(iii, SCOPE_DEF, &key).await?;
-    if v.is_null() {
-        Ok(None)
-    } else {
-        Ok(Some(from_value(v)?))
-    }
-}
-
-pub async fn get_runtime_def(
-    iii: &IIIClient,
-    run_id: &str,
-) -> Result<Option<WorkflowDef>, WorkflowError> {
-    let key = def_key(run_id);
-    let v = state_get(iii, SCOPE_DEF_RUNTIME, &key).await?;
     if v.is_null() {
         Ok(None)
     } else {
@@ -341,6 +364,204 @@ pub async fn run_id_for_session(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkflowRunLogBucket {
+    run_id: String,
+    #[serde(default)]
+    logs: Vec<WorkflowRunLogRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkflowRunTraceBucket {
+    run_id: String,
+    #[serde(default)]
+    traces: Vec<WorkflowRunTraceRecord>,
+}
+
+async fn get_run_log_bucket(
+    iii: &IIIClient,
+    run_id: &str,
+) -> Result<Option<WorkflowRunLogBucket>, WorkflowError> {
+    let v = state_get(iii, SCOPE_RUN_LOG, run_id).await?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(from_value(v)?))
+}
+
+async fn get_run_trace_bucket(
+    iii: &IIIClient,
+    run_id: &str,
+) -> Result<Option<WorkflowRunTraceBucket>, WorkflowError> {
+    let v = state_get(iii, SCOPE_RUN_TRACE, run_id).await?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(from_value(v)?))
+}
+
+pub async fn put_run_log(
+    iii: &IIIClient,
+    entry: &WorkflowRunLogRecord,
+) -> Result<(), WorkflowError> {
+    let mut bucket = get_run_log_bucket(iii, &entry.run_id)
+        .await?
+        .unwrap_or_else(|| WorkflowRunLogBucket {
+            run_id: entry.run_id.clone(),
+            logs: Vec::new(),
+        });
+
+    if let Some(existing) = bucket.logs.iter_mut().find(|item| item.id == entry.id) {
+        *existing = entry.clone();
+    } else {
+        bucket.logs.push(entry.clone());
+    }
+
+    state_set(iii, SCOPE_RUN_LOG, &entry.run_id, serde_json::to_value(bucket)?).await
+}
+
+pub async fn list_run_logs(
+    iii: &IIIClient,
+    run_id: &str,
+) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError> {
+    if let Some(bucket) = get_run_log_bucket(iii, run_id).await? {
+        return Ok(bucket.logs);
+    }
+
+    // Backward-compat: still read old per-entry rows during migration.
+    let v = state_list(iii, SCOPE_RUN_LOG).await?;
+    Ok(parse_state_list_values(&v)
+        .into_iter()
+        .filter_map(|item| from_value::<WorkflowRunLogRecord>(item).ok())
+        .filter(|entry| entry.run_id == run_id)
+        .collect())
+}
+
+pub async fn delete_run_log_key(
+    iii: &IIIClient,
+    run_id: &str,
+    id: &str,
+) -> Result<(), WorkflowError> {
+    if let Some(mut bucket) = get_run_log_bucket(iii, run_id).await? {
+        bucket.logs.retain(|item| item.id != id);
+        return state_set(iii, SCOPE_RUN_LOG, run_id, serde_json::to_value(bucket)?).await;
+    }
+
+    // Backward-compat cleanup path for old per-entry rows.
+    state_delete(iii, SCOPE_RUN_LOG, &format!("{run_id}/{id}")).await
+}
+
+pub async fn delete_run_logs(iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
+    state_delete(iii, SCOPE_RUN_LOG, run_id).await
+}
+
+pub async fn prune_run_logs_before(
+    iii: &IIIClient,
+    run_id: &str,
+    cutoff_unix_ms: i64,
+) -> Result<u64, WorkflowError> {
+    if let Some(mut bucket) = get_run_log_bucket(iii, run_id).await? {
+        let before = bucket.logs.len();
+        bucket.logs.retain(|item| item.ts_unix_ms >= cutoff_unix_ms);
+        let removed = (before.saturating_sub(bucket.logs.len())) as u64;
+        if removed > 0 {
+            state_set(iii, SCOPE_RUN_LOG, run_id, serde_json::to_value(bucket)?).await?;
+        }
+        return Ok(removed);
+    }
+
+    // Backward-compat path for old per-entry rows.
+    let mut removed = 0u64;
+    for item in list_run_logs(iii, run_id).await? {
+        if item.ts_unix_ms < cutoff_unix_ms {
+            delete_run_log_key(iii, run_id, &item.id).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+pub async fn put_run_trace(
+    iii: &IIIClient,
+    entry: &WorkflowRunTraceRecord,
+) -> Result<(), WorkflowError> {
+    let mut bucket = get_run_trace_bucket(iii, &entry.run_id)
+        .await?
+        .unwrap_or_else(|| WorkflowRunTraceBucket {
+            run_id: entry.run_id.clone(),
+            traces: Vec::new(),
+        });
+
+    if let Some(existing) = bucket.traces.iter_mut().find(|item| item.id == entry.id) {
+        *existing = entry.clone();
+    } else {
+        bucket.traces.push(entry.clone());
+    }
+
+    state_set(iii, SCOPE_RUN_TRACE, &entry.run_id, serde_json::to_value(bucket)?).await
+}
+
+pub async fn list_run_traces(
+    iii: &IIIClient,
+    run_id: &str,
+) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
+    if let Some(bucket) = get_run_trace_bucket(iii, run_id).await? {
+        return Ok(bucket.traces);
+    }
+
+    // Backward-compat: still read old per-entry rows during migration.
+    let v = state_list(iii, SCOPE_RUN_TRACE).await?;
+    Ok(parse_state_list_values(&v)
+        .into_iter()
+        .filter_map(|item| from_value::<WorkflowRunTraceRecord>(item).ok())
+        .filter(|entry| entry.run_id == run_id)
+        .collect())
+}
+
+pub async fn delete_run_trace_key(
+    iii: &IIIClient,
+    run_id: &str,
+    id: &str,
+) -> Result<(), WorkflowError> {
+    if let Some(mut bucket) = get_run_trace_bucket(iii, run_id).await? {
+        bucket.traces.retain(|item| item.id != id);
+        return state_set(iii, SCOPE_RUN_TRACE, run_id, serde_json::to_value(bucket)?).await;
+    }
+
+    // Backward-compat cleanup path for old per-entry rows.
+    state_delete(iii, SCOPE_RUN_TRACE, &format!("{run_id}/{id}")).await
+}
+
+pub async fn delete_run_traces(iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
+    state_delete(iii, SCOPE_RUN_TRACE, run_id).await
+}
+
+pub async fn prune_run_traces_before(
+    iii: &IIIClient,
+    run_id: &str,
+    cutoff_unix_ms: i64,
+) -> Result<u64, WorkflowError> {
+    if let Some(mut bucket) = get_run_trace_bucket(iii, run_id).await? {
+        let before = bucket.traces.len();
+        bucket.traces.retain(|item| item.ts_unix_ms >= cutoff_unix_ms);
+        let removed = (before.saturating_sub(bucket.traces.len())) as u64;
+        if removed > 0 {
+            state_set(iii, SCOPE_RUN_TRACE, run_id, serde_json::to_value(bucket)?).await?;
+        }
+        return Ok(removed);
+    }
+
+    // Backward-compat path for old per-entry rows.
+    let mut removed = 0u64;
+    for item in list_run_traces(iii, run_id).await? {
+        if item.ts_unix_ms < cutoff_unix_ms {
+            delete_run_trace_key(iii, run_id, &item.id).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 // ---------------------------------------------------------------------------
 // Idempotency keys
 // ---------------------------------------------------------------------------
@@ -388,11 +609,15 @@ mod tests {
         assert_eq!(SCOPE_RUN, "workflow_run");
         assert_eq!(SCOPE_RESULT, "workflow_node_result");
         assert_eq!(SCOPE_INDEX, "workflow_session_index");
+        assert_eq!(SCOPE_RUN_LOG, "workflow_run_log");
+        assert_eq!(SCOPE_RUN_TRACE, "workflow_run_trace");
         // Verify they are never "workflow_run/<id>" style — no slashes
         assert!(!SCOPE_RUN.contains('/'));
         assert!(!SCOPE_DEF.contains('/'));
         assert!(!SCOPE_RESULT.contains('/'));
         assert!(!SCOPE_INDEX.contains('/'));
+        assert!(!SCOPE_RUN_LOG.contains('/'));
+        assert!(!SCOPE_RUN_TRACE.contains('/'));
         assert!(!SCOPE_IDEM.contains('/'));
     }
 
@@ -424,4 +649,5 @@ mod tests {
         assert_eq!(list3.len(), 1, "key→value map should yield 1 record");
         assert_eq!(list3[0].run_id, "r_1");
     }
+
 }

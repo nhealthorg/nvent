@@ -27,6 +27,15 @@ pub struct NodeCompletedEvent {
     pub run_id: String,
     /// The node UID (node_id or node_id#index for fanout items).
     pub node_uid: String,
+    /// Optional runtime-provided trace id for central trace indexing.
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    /// Optional function id for central trace indexing.
+    #[serde(default)]
+    pub function_id: Option<String>,
+    /// Optional runtime label (nodejs/python/rust).
+    #[serde(default)]
+    pub runtime: Option<String>,
     // Note: Additional fields like _caller_worker_id may be injected by iii-engine
     // and will be silently ignored (no deny_unknown_fields)
 }
@@ -82,10 +91,16 @@ mod tests {
     fn event_payload_parses() {
         let event: NodeCompletedEvent = serde_json::from_value(serde_json::json!({
             "run_id": "run_abc",
-            "node_uid": "gen#2"
+            "node_uid": "gen#2",
+            "trace_id": "1234567890abcdef1234567890abcdef",
+            "function_id": "process-text",
+            "runtime": "nodejs"
         }))
         .expect("valid NodeCompletedEvent");
         assert_eq!(event.run_id, "run_abc");
         assert_eq!(event.node_uid, "gen#2");
+        assert_eq!(event.trace_id.as_deref(), Some("1234567890abcdef1234567890abcdef"));
+        assert_eq!(event.function_id.as_deref(), Some("process-text"));
+        assert_eq!(event.runtime.as_deref(), Some("nodejs"));
     }
 }

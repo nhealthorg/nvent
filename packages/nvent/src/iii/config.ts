@@ -155,6 +155,7 @@ export interface OtelModuleConfig {
   endpoint?: string
   sampling_ratio?: number
   memory_max_spans?: number
+  live_spans?: boolean
   metrics_enabled?: boolean
   /** Default: 'memory' */
   metrics_exporter?: 'memory' | 'otlp'
@@ -390,16 +391,19 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
   // OtelModule
   if (cfg.modules.observability !== false) {
     const oCfg = cfg.observability ?? {}
+    const exporter = oCfg.exporter ?? 'memory'
     const otelConfig: Record<string, unknown> = {
       enabled: oCfg.enabled ?? true,
       service_name: oCfg.service_name ?? 'nvent',
-      exporter: oCfg.exporter ?? 'memory',
+      exporter,
     }
     if (oCfg.service_version) otelConfig.service_version = oCfg.service_version
     if (oCfg.service_namespace) otelConfig.service_namespace = oCfg.service_namespace
     if (oCfg.endpoint) otelConfig.endpoint = oCfg.endpoint
     if (oCfg.sampling_ratio != null) otelConfig.sampling_ratio = oCfg.sampling_ratio
     if (oCfg.memory_max_spans != null) otelConfig.memory_max_spans = oCfg.memory_max_spans
+    if (oCfg.live_spans != null) otelConfig.live_spans = oCfg.live_spans
+    else if (exporter === 'memory' || exporter === 'both') otelConfig.live_spans = true
     // Metrics
     if (oCfg.metrics_enabled != null) otelConfig.metrics_enabled = oCfg.metrics_enabled
     if (oCfg.metrics_exporter) otelConfig.metrics_exporter = oCfg.metrics_exporter
@@ -577,6 +581,7 @@ export function buildEngineConfig(
       endpoint: iiiOpts.observability.endpoint,
       sampling_ratio: iiiOpts.observability.samplingRatio,
       memory_max_spans: iiiOpts.observability.memoryMaxSpans,
+      live_spans: iiiOpts.observability.liveSpans,
       metrics_enabled: iiiOpts.observability.metricsEnabled,
       metrics_exporter: iiiOpts.observability.metricsExporter,
       metrics_retention_seconds: iiiOpts.observability.metricsRetentionSeconds,

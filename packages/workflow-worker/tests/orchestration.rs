@@ -22,6 +22,8 @@ fn function_node(id: &str, input: InputSpec, depends_on: Vec<String>, fanout: Op
         function: FunctionSpec {
             id: id.to_string(),
             timeout_ms: None,
+            queue: None,
+            engine_retry: None,
             runtime: None,
         },
         input,
@@ -97,6 +99,7 @@ fn three_node_def() -> WorkflowDef {
 fn new_record(def_input: Value) -> WorkflowRunRecord {
     WorkflowRunRecord {
         run_id: "run_test".to_string(),
+        workflow_trace_id: Some("trace_test".to_string()),
         step: 0,
         status: RunStatus::Running,
         abort: false,

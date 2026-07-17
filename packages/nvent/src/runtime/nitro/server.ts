@@ -13,6 +13,7 @@ export { defineWorkflow } from './utils/defineWorkflow'
 export type {
   FunctionDef,
   FunctionHandler,
+  WorkflowFunctionOptions,
   TriggerConfig,
   HttpTriggerConfig,
   CronTriggerConfig,

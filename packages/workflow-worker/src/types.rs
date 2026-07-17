@@ -136,10 +136,24 @@ pub struct NodeDef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct EngineRetrySpec {
+    /// Maximum workflow-engine retries for this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionSpec {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Optional named queue for workflow dispatch. Defaults to "default" when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
+    /// Optional workflow-engine retry policy for this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_retry: Option<EngineRetrySpec>,
     /// Runtime environment (nodejs, python, rust, unknown). Used by UI to
     /// display runtime-specific info and badges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,6 +249,8 @@ pub struct NotifySpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunRecord {
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_trace_id: Option<String>,
     /// Monotonic dequeue guard
     pub step: u64,
     pub status: RunStatus,
@@ -349,6 +365,7 @@ mod tests {
     fn record_round_trips_through_json() {
         let record = WorkflowRunRecord {
             run_id: "run_abc123".to_string(),
+            workflow_trace_id: Some("trace_abc123".to_string()),
             step: 3,
             status: RunStatus::AwaitingNodes,
             abort: false,

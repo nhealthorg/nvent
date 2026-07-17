@@ -24,21 +24,34 @@ async function getRegistry() {
  * Get runtime from function registry.
  * Falls back to heuristics if registry is not available.
  */
-async function getRuntimeFromRegistry(functionId: string): Promise<'nodejs' | 'python' | 'rust' | 'unknown'> {
+async function getFunctionExecutionConfig(functionId: string): Promise<{
+  runtime: 'nodejs' | 'python' | 'rust' | 'unknown'
+  queue?: string
+  engine_retry?: { max_attempts?: number }
+}> {
   try {
     const registry = await getRegistry()
     
     if (registry?.functions) {
       const fn = registry.functions.find((f: any) => f.id === functionId)
-      if (fn?.runtime) {
-        return fn.runtime
+      if (fn) {
+        const queue = typeof fn.workflow === 'object' && typeof fn.workflow.queue === 'string'
+          ? fn.workflow.queue
+          : undefined
+        return {
+          runtime: fn.runtime || 'unknown',
+          queue,
+          engine_retry: typeof fn.workflow === 'object' && fn.workflow.engine_retry
+            ? fn.workflow.engine_retry
+            : undefined,
+        }
       }
     }
   } catch (e) {
     // Registry not available, fall back to heuristics
   }
   
-  return 'unknown'
+  return { runtime: 'unknown' }
 }
 
 /**
@@ -99,10 +112,27 @@ export interface WorkflowContext {
   /**
    * Low-level node definition (full control over spec)
    */
-  node: <T = any>(id: string, spec: any) => Promise<T>
+  node: <T = any>(id: string, spec: {
+    function?: string | {
+      id: string
+      runtime?: 'nodejs' | 'python' | 'rust' | 'unknown'
+      queue?: string
+      engine_retry?: { max_attempts?: number }
+    }
+    input?: any
+    retry?: { max_attempts?: number }
+    depends_on?: string[]
+    fanout?: string | { over: string }
+    agent?: any
+    executor?: any
+  }) => Promise<T>
   
   /**
    * High-level helper: call a function with automatic input mapping.
+    *
+    * Optional last argument can override function execution config per node:
+    * `{ queue, runtime, engine_retry }` (or `{ retry }` shorthand).
+    * These call/node-level values override defaults from defineFunction({ workflow }).
    * 
    * @param nodeIdOrFunctionId - If only one arg, used as both node ID and function ID
    * @param functionIdOrInput - Function ID if 2 args, or input if 1 arg
@@ -123,6 +153,12 @@ export interface WorkflowContext {
 
   /**
    * Fanout helper: run a function for each item in an array.
+   * @param nodeId - ID of the foreach node
+   * @param items - Array of items to process
+   * @param functionId - ID of the function to call for each item
+   * 
+   * @example
+   * await ctx.foreach('process-items', items, 'process-item')
    */
   foreach: <T = any>(nodeId: string, items: any, functionId: string) => Promise<T>
   
@@ -138,6 +174,19 @@ export interface WorkflowContext {
    * ])
    */
   all: <T extends readonly unknown[]>(fn: (ctx: WorkflowContext) => T) => Promise<{ [K in keyof T]: T[K] extends Promise<infer R> ? R : T[K] }>
+}
+
+type CallOptions = {
+  queue?: string
+  runtime?: 'nodejs' | 'python' | 'rust' | 'unknown'
+  engine_retry?: { max_attempts?: number }
+  retry?: { max_attempts?: number }
+}
+
+function isCallOptions(value: unknown): value is CallOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  return 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
 }
 
 export type WorkflowHandler<TInput = any, TOutput = any> = (
@@ -277,10 +326,17 @@ export function defineWorkflow<TInput = any, TOutput = any>(
             nodeDef.agent = typeof spec.agent === 'string' ? { model: spec.agent } : spec.agent
           } else if (spec.function) {
             const fnSpec = typeof spec.function === 'string' ? { id: spec.function } : spec.function
+
+            if (!fnSpec.engine_retry && spec.retry) {
+              fnSpec.engine_retry = spec.retry
+            }
             
             // Get runtime from registry instead of guessing
-            if (!fnSpec.runtime) {
-              fnSpec.runtime = await getRuntimeFromRegistry(fnSpec.id)
+            if (!fnSpec.runtime || !fnSpec.queue || !fnSpec.engine_retry) {
+              const execution = await getFunctionExecutionConfig(fnSpec.id)
+              if (!fnSpec.runtime) fnSpec.runtime = execution.runtime
+              if (!fnSpec.queue && execution.queue) fnSpec.queue = execution.queue
+              if (!fnSpec.engine_retry && execution.engine_retry) fnSpec.engine_retry = execution.engine_retry
             }
             
             nodeDef.function = fnSpec
@@ -295,6 +351,11 @@ export function defineWorkflow<TInput = any, TOutput = any>(
         },
         
         call: async (...args: any[]) => {
+          let callOptions: CallOptions | undefined
+          if (args.length > 0 && isCallOptions(args[args.length - 1])) {
+            callOptions = args.pop()
+          }
+
           // Parse arguments: call(functionId, input) OR call(nodeId, functionId, input)
           let nodeId: string
           let functionId: string
@@ -328,9 +389,20 @@ export function defineWorkflow<TInput = any, TOutput = any>(
           if (nodes[nodeId]) {
             nodeId = `${nodeId}_${++autoNodeCounter}`
           }
+
+          const functionSpec = callOptions
+            ? {
+                id: functionId,
+                ...(callOptions.runtime ? { runtime: callOptions.runtime } : {}),
+                ...(callOptions.queue ? { queue: callOptions.queue } : {}),
+                ...((callOptions.engine_retry || callOptions.retry)
+                  ? { engine_retry: callOptions.engine_retry ?? callOptions.retry }
+                  : {}),
+              }
+            : functionId
           
           return ctx.node(nodeId, {
-            function: functionId,
+            function: functionSpec,
             input
           })
         },

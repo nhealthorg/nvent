@@ -9,6 +9,16 @@ use crate::{
     types::{NodeState, WorkflowDef, WorkflowRunRecord},
 };
 
+fn effective_max_retries(def: &WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
+    let base_id = node_uid.split('#').next().unwrap_or(node_uid);
+    def
+        .nodes
+        .get(base_id)
+        .and_then(|n| n.function.engine_retry.as_ref())
+        .and_then(|r| r.max_attempts)
+        .unwrap_or(fallback)
+}
+
 // ---------------------------------------------------------------------------
 // NodeOutcome
 // ---------------------------------------------------------------------------
@@ -197,7 +207,7 @@ pub async fn reconcile_function_nodes(
     }
 
     let now = deps.now_ms();
-    let max_retries = deps.cfg().await.max_node_retries;
+    let default_max_retries = deps.cfg().await.max_node_retries;
     let mut results_cache: Option<BTreeMap<String, Value>> = None;
 
     for uid in running_functions {
@@ -222,7 +232,7 @@ pub async fn reconcile_function_nodes(
                         &uid,
                         err_val,
                         now,
-                        max_retries,
+                        effective_max_retries(def, &uid, default_max_retries),
                         &mut results_cache,
                     )
                     .await?;
@@ -408,7 +418,43 @@ pub async fn reconcile_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        EngineRetrySpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowDef,
+    };
     use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn retry_test_def(max_attempts: Option<u32>) -> WorkflowDef {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "step".to_string(),
+            NodeDef {
+                function: FunctionSpec {
+                    id: "worker::step".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: Some(EngineRetrySpec { max_attempts }),
+                    runtime: None,
+                },
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+            },
+        );
+
+        WorkflowDef {
+            version: 1,
+            nodes,
+            output: OutputRef {
+                from: "node:step".to_string(),
+            },
+            default_functions: None,
+            metadata: None,
+        }
+    }
 
     #[test]
     fn completed_without_error_is_done() {
@@ -516,5 +562,19 @@ mod tests {
                 result_error: "boom (retry budget exhausted after 3 retries)".into()
             }
         );
+    }
+
+    #[test]
+    fn effective_max_retries_prefers_node_override() {
+        let def = retry_test_def(Some(1));
+        assert_eq!(effective_max_retries(&def, "step", 3), 1);
+        assert_eq!(effective_max_retries(&def, "step#4", 3), 1);
+    }
+
+    #[test]
+    fn effective_max_retries_falls_back_to_worker_default() {
+        let def = retry_test_def(None);
+        assert_eq!(effective_max_retries(&def, "step", 3), 3);
+        assert_eq!(effective_max_retries(&def, "missing", 3), 3);
     }
 }

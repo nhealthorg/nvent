@@ -9,7 +9,7 @@
 # runtime (inside a worker process) without confusing static analysis.
 
 from __future__ import annotations
-from typing import Any, Callable, Coroutine, Optional, Union
+from typing import Any, Callable, Coroutine, Optional, TypedDict, Union
 
 # ── Type aliases ───────────────────────────────────────────────────────────
 
@@ -293,11 +293,26 @@ class FlowContext:
 _NVENT_FN_MARKER = "__nvent_fn__"
 
 
+class WorkflowFunctionOptions(TypedDict, total=False):
+    """Workflow execution options for define_function.
+
+    Queue tuning (retries/concurrency/fifo/message group) is configured centrally
+    in nvent iii queueConfigs, not per function.
+    """
+
+    queue: str
+    engine_retry: dict[str, int]
+
+
 def define_function(
     *,
     description: str = "",
     triggers: list[dict] = None,
+    workflow: bool | WorkflowFunctionOptions | None = None,
+    request_format: dict | None = None,
+    response_format: dict | None = None,
     handler: NventHandler,
+    **extra: Any,
 ) -> dict:
     """Declare a nvent function without a ``config`` dict.
 
@@ -321,15 +336,24 @@ def define_function(
         define_function(
             description="Greet endpoint",
             triggers=[http("GET", "/greet")],
+            workflow={"queue": "default"},
+            request_format={"type": "object"},
+            response_format={"type": "object"},
             handler=handler,
         )
     """
-    return {
+    result = {
         _NVENT_FN_MARKER: True,
         "description": description,
         "triggers": list(triggers or []),
+        "workflow": workflow,
+        "request_format": request_format,
+        "response_format": response_format,
         "handler": handler,
     }
+    # Preserve unknown keyword arguments for forward compatibility with the TS API.
+    result.update(extra)
+    return result
 
 
 # ── Runtime override (worker process only) ─────────────────────────────────

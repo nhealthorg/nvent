@@ -1,4 +1,6 @@
 export default defineNuxtConfig({
+  compatibilityDate: '2026-07-17',
+
   modules: [
     '@nuxt/ui',
     'nvent',
@@ -35,6 +37,12 @@ export default defineNuxtConfig({
       mode: 'local',
       console: true,
       logLevel: 'warn',
+      observability: {
+        level: 'info',
+        logsEnabled: true,
+        logsExporter: 'memory',
+        exporter: 'memory',
+      },
       workerManager: {
         rbac: {
           port: 49135,
@@ -45,6 +53,11 @@ export default defineNuxtConfig({
       },
       queue: {
         queueConfigs: {
+          heartbeat: {
+            type: 'standard',
+            concurrency: 1,
+            maxRetries: 1,
+          },
         }
       },
       state: {

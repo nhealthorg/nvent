@@ -546,6 +546,8 @@ mod tests {
                 function: FunctionSpec {
                     id: "plan-fn".to_string(),
                     timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
                     runtime: None,
                 },
                 input: InputSpec {
@@ -563,6 +565,8 @@ mod tests {
                 function: FunctionSpec {
                     id: "read-fn".to_string(),
                     timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
                     runtime: None,
                 },
                 input: InputSpec {
@@ -582,6 +586,8 @@ mod tests {
                 function: FunctionSpec {
                     id: "synthesize-fn".to_string(),
                     timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
                     runtime: None,
                 },
                 input: InputSpec {
@@ -607,6 +613,7 @@ mod tests {
     fn record() -> WorkflowRunRecord {
         WorkflowRunRecord {
             run_id: "run_test".to_string(),
+            workflow_trace_id: Some("trace_test".to_string()),
             step: 0,
             status: RunStatus::Running,
             abort: false,
@@ -898,6 +905,8 @@ mod tests {
         let function = |id: &str| FunctionSpec {
             id: id.to_string(),
             timeout_ms: None,
+            queue: None,
+            engine_retry: None,
             runtime: None,
         };
         let mut nodes = BTreeMap::new();

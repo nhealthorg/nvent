@@ -1,6 +1,6 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 
-export interface WorkflowDefinition {
+export interface Workflow {
   id: string
   description?: string
   triggers: any[]
@@ -16,7 +16,7 @@ export interface WorkflowRunStatus {
 }
 
 export function useWorkflows() {
-  const definitions = ref<WorkflowDefinition[]>([])
+  const definitions = ref<Workflow[]>([])
   const activeRuns = ref<WorkflowRunStatus[]>([])
   const loading = ref(true)
   const error = ref<any>(null)

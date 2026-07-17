@@ -182,7 +182,7 @@ export function generateIiiRegistryTemplate(scanned: ScannedRegistry, pythonPath
   // back to individual modules (avoids "not exported" warnings).
   lines.push(`function _entry(ns, id, absPath, runtime) {`)
   lines.push(`  const fn = ns.default`)
-  lines.push(`  return { id, description: fn.description, handler: fn.handler, triggers: (fn.triggers ?? []).map(t => ({ ...t, function_id: id })), request_format: fn.request_format, response_format: fn.response_format, filePath: absPath, runtime, $workflow: !!fn.$workflow }`)
+  lines.push(`  return { id, description: fn.description, handler: fn.handler, triggers: (fn.triggers ?? []).map(t => ({ ...t, function_id: id })), request_format: fn.request_format, response_format: fn.response_format, workflow: fn.workflow, filePath: absPath, runtime, $workflow: !!fn.$workflow }`)
   lines.push(`}`)
   lines.push('')
 

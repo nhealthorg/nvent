@@ -43,6 +43,8 @@ export default defineWorkflow({
       c.call('wait', input),
       c.call('process-text', { text: 'Parallel internal task' })
     ])
+
+    await ctx.call('wait-error')
     
     // Step 2: Analyze the processed text
     // This node depends on the 'process' node and will receive its output

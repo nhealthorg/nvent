@@ -14,6 +14,12 @@ pub mod status;
 pub mod stop;
 pub mod sweep;
 pub mod tick;
+pub mod log_write;
+pub mod log_read;
+pub mod log_delete;
+pub mod trace_write;
+pub mod trace_read;
+pub mod trace_delete;
 
 pub type ConfigCell = Arc<tokio::sync::RwLock<Arc<WorkerConfig>>>;
 
@@ -83,6 +89,66 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              arrives as a separate message when the run finishes. Never poll workflow::status in a loop. \
              Full field docs are inline in this function's request schema.",
         ),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::log-write",
+        RegisterFunction::new_async(move |req: log_write::LogWriteRequest| {
+            let d = d.clone();
+            async move { log_write::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Write a workflow-scoped log entry into workflow worker storage."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::log-read",
+        RegisterFunction::new_async(move |req: log_read::LogReadRequest| {
+            let d = d.clone();
+            async move { log_read::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Read workflow-scoped log entries by run_id with optional filters."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::log-delete",
+        RegisterFunction::new_async(move |req: log_delete::LogDeleteRequest| {
+            let d = d.clone();
+            async move { log_delete::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Delete one or all workflow-scoped log entries for a run."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::trace-write",
+        RegisterFunction::new_async(move |req: trace_write::TraceWriteRequest| {
+            let d = d.clone();
+            async move { trace_write::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Write a workflow-scoped trace event into workflow worker storage."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::trace-read",
+        RegisterFunction::new_async(move |req: trace_read::TraceReadRequest| {
+            let d = d.clone();
+            async move { trace_read::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Read workflow-scoped trace events by run_id with optional filters."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::trace-delete",
+        RegisterFunction::new_async(move |req: trace_delete::TraceDeleteRequest| {
+            let d = d.clone();
+            async move { trace_delete::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Delete one or all workflow-scoped trace events for a run."),
     );
 
     let d = deps.clone();

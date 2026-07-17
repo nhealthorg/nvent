@@ -1,5 +1,6 @@
 import type { registerWorker } from 'iii-sdk'
-import type { FunctionDef } from '../defineFunction'
+import { trace } from '@opentelemetry/api'
+import type { FunctionDef, FunctionContext, WorkflowFunctionOptions } from '../defineFunction'
 
 type IiiClient = ReturnType<typeof registerWorker>
 
@@ -7,12 +8,133 @@ export interface NodeFnInfo {
   /** iii function ID (e.g. 'greet' or 'orders::process') */
   id: string
   description?: string
-  handler: (input: unknown) => Promise<unknown> | unknown
+  handler: (input: unknown, context: FunctionContext) => Promise<unknown> | unknown
   triggers: Array<{ type: string; function_id?: string; config?: Record<string, unknown> }>
   /** JSON Schema for input — passed to iii for agent/CLI discovery. */
   request_format?: Record<string, unknown>
   /** JSON Schema for output — passed to iii for agent/CLI discovery. */
   response_format?: Record<string, unknown>
+  workflow?: boolean | WorkflowFunctionOptions
+}
+
+function makeRecordId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+async function emitWorkflowTraceEvent(
+  iii: IiiClient,
+  functionId: string,
+  workflow: { run_id: string, node_uid: string, trace_id?: string },
+  eventName: 'workflow.node.started' | 'workflow.node.completed' | 'workflow.node.failed',
+  attributes?: Record<string, unknown>,
+) {
+  const activeSpan = trace.getActiveSpan()
+  const spanContext = activeSpan?.spanContext()
+  const traceId = workflow.trace_id ?? spanContext?.traceId
+  const spanId = spanContext?.spanId
+  const tsUnixMs = Date.now()
+  const eventAttrs: Record<string, unknown> = {
+    'iii.function.id': functionId,
+    'workflow.node_uid': workflow.node_uid,
+    'workflow.run_id': workflow.run_id,
+    'workflow.runtime': 'nodejs',
+    ...(attributes || {}),
+  }
+
+  activeSpan?.addEvent(eventName, eventAttrs as any)
+
+  try {
+    await iii.trigger({
+      function_id: 'workflow::trace-write',
+      payload: {
+        run_id: workflow.run_id,
+        id: makeRecordId('trace'),
+        node_uid: workflow.node_uid,
+        function_id: functionId,
+        runtime: 'nodejs',
+        event_name: eventName,
+        ts_unix_ms: tsUnixMs,
+        attributes: eventAttrs,
+        trace_id: traceId,
+        span_id: spanId,
+      },
+      timeoutMs: 10_000,
+    })
+  } catch (err) {
+    console.error(`[nvent/workflow] failed to write trace event ${eventName} for ${functionId}:`, err)
+  }
+}
+
+function createContextLogger(iii: IiiClient, functionId: string, context: { run_id?: string, node_uid?: string, trace_id?: string }) {
+  const pendingWrites = new Set<Promise<unknown>>()
+
+  const activeSpanContext = () => trace.getActiveSpan()?.spanContext()
+
+  const emit = (level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown) => {
+    const tsUnixMs = Date.now()
+
+    const spanContext = activeSpanContext()
+    const traceId = context.trace_id ?? (spanContext?.traceId || undefined)
+    const spanId = spanContext?.spanId
+
+    const structuredData = {
+      ...(data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : (data !== undefined ? { value: data } : {})),
+      level,
+      'iii.function.id': functionId,
+      ...(context.run_id ? { 'workflow.run_id': context.run_id } : {}),
+      ...(context.node_uid ? { 'workflow.node_uid': context.node_uid } : {}),
+      ...(traceId ? { trace_id: traceId } : {}),
+      ...(spanId ? { span_id: spanId } : {}),
+    }
+
+    const write = (context.run_id
+      ? iii.trigger({
+          function_id: 'workflow::log-write',
+          payload: {
+            run_id: context.run_id,
+            id: makeRecordId('log'),
+            node_uid: context.node_uid,
+            function_id: functionId,
+            runtime: 'nodejs',
+            level,
+            message,
+            ts_unix_ms: tsUnixMs,
+            data: structuredData,
+          },
+          timeoutMs: 10_000,
+        })
+      : iii.trigger({
+          function_id: `engine::log::${level === 'debug' ? 'info' : level}`,
+          payload: {
+            message,
+            service_name: 'nvent',
+            ...(traceId ? { trace_id: traceId } : {}),
+            ...(spanId ? { span_id: spanId } : {}),
+            data: structuredData,
+          },
+          timeoutMs: 10_000,
+        })
+    ).catch((err) => {
+      console.error(`[nvent/logger] failed to emit ${level} log for ${functionId}:`, err)
+    }).finally(() => {
+      pendingWrites.delete(write)
+    })
+
+    pendingWrites.add(write)
+  }
+
+  return {
+    logger: {
+      debug: (message: string, data?: unknown) => emit('debug', message, data),
+      info: (message: string, data?: unknown) => emit('info', message, data),
+      warn: (message: string, data?: unknown) => emit('warn', message, data),
+      error: (message: string, data?: unknown) => emit('error', message, data),
+    },
+    flush: async () => {
+      if (pendingWrites.size === 0) return
+      await Promise.allSettled(Array.from(pendingWrites))
+    },
+  }
 }
 
 /**
@@ -40,13 +162,43 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
         ? (input as any).input
         : input
       
-      // Execute handler with unwrapped input
+      // Initialize context and logger
+      const loggerContext = {
+        run_id: hasWorkflowMeta ? workflow.run_id : undefined,
+        node_uid: hasWorkflowMeta ? workflow.node_uid : undefined,
+        trace_id: hasWorkflowMeta ? workflow.trace_id : undefined,
+      }
+      const contextLogger = createContextLogger(iii, fn.id, loggerContext)
+      const context: FunctionContext = { logger: contextLogger.logger }
+
+      if (hasWorkflowMeta) {
+        context.run_id = workflow.run_id
+        context.node_uid = workflow.node_uid
+        context.trace_id = workflow.trace_id
+        const activeSpan = trace.getActiveSpan()
+        activeSpan?.setAttribute('workflow.run_id', workflow.run_id)
+        activeSpan?.setAttribute('workflow.node_uid', workflow.node_uid)
+        activeSpan?.setAttribute('iii.function.id', fn.id)
+        activeSpan?.setAttribute('workflow.runtime', 'nodejs')
+        if (workflow.trace_id) {
+          activeSpan?.setAttribute('workflow.trace_id', workflow.trace_id)
+        }
+        await emitWorkflowTraceEvent(iii, fn.id, workflow, 'workflow.node.started')
+      }
+
+      // Execute handler with unwrapped input and context
       let result: any
       try {
-        result = await fn.handler(actualInput)
+        result = await fn.handler(actualInput, context)
+        await contextLogger.flush()
       } catch (err: any) {
         const errorMessage = err?.message || String(err)
-        console.error(`[nvent/workflow] node ${workflow.node_uid} in run ${workflow.run_id} failed:`, errorMessage)
+        if (hasWorkflowMeta) {
+          await emitWorkflowTraceEvent(iii, fn.id, workflow, 'workflow.node.failed', {
+            error: errorMessage,
+          })
+        }
+        await contextLogger.flush()
 
         if (hasWorkflowMeta) {
           try {
@@ -66,6 +218,9 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
               payload: {
                 run_id: workflow.run_id,
                 node_uid: workflow.node_uid,
+                trace_id: trace.getActiveSpan()?.spanContext().traceId,
+                function_id: fn.id,
+                runtime: 'nodejs',
               },
             })
           } catch (reportErr) {
@@ -78,8 +233,7 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
       // Auto-emit workflow completion if this is a workflow node execution
       if (hasWorkflowMeta) {
         try {
-          console.log(`[nvent/workflow] node ${workflow.node_uid} completed, writing result and emitting event`)
-          
+          await emitWorkflowTraceEvent(iii, fn.id, workflow, 'workflow.node.completed')
           // Write result to state
           await iii.trigger({
             function_id: 'state::set',
@@ -90,18 +244,18 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
             },
           })
           
-          console.log(`[nvent/workflow] result written to state for ${workflow.node_uid}`)
-          
           // Emit completion event (fast-path tick wake)
           await iii.trigger({
             function_id: 'workflow::node-completed',
             payload: {
               run_id: workflow.run_id,
               node_uid: workflow.node_uid,
+              trace_id: trace.getActiveSpan()?.spanContext().traceId,
+              function_id: fn.id,
+              runtime: 'nodejs',
             },
           })
           
-          console.log(`[nvent/workflow] completion event emitted for ${workflow.node_uid}`)
         } catch (err) {
           // Log but don't throw - result is still returned
           console.error(`[nvent/workflow] completion failed for ${workflow.node_uid}:`, err)
@@ -127,14 +281,16 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
       iii.registerTrigger({ type: trigger.type, function_id: fn.id, config: cfg })
     }
 
-    // Auto-register triggerless functions as subscribers to "default" queue
-    // so they can be called asynchronously by the workflow orchestrator
-    if (!fn.triggers || fn.triggers.length === 0) {
-      console.log(`[nvent/workflow] auto-subscribing triggerless function ${fn.id} to default queue`)
+    // Register workflow queue subscriber only when explicitly enabled via defineFunction({ workflow }).
+    if (fn.workflow) {
+      const queue = typeof fn.workflow === 'object' && fn.workflow.queue
+        ? fn.workflow.queue
+        : 'default'
+      console.log(`[nvent/workflow] subscribing workflow-enabled function ${fn.id} to queue ${queue}`)
       iii.registerTrigger({
         type: 'durable:subscriber',
         function_id: fn.id,
-        config: { queue: 'default' },
+        config: { queue },
       })
     }
   }
@@ -162,5 +318,6 @@ export function normalizeModuleToFnInfo(ns: Record<string, unknown>, fallbackId:
     triggers,
     request_format: def.request_format,
     response_format: def.response_format,
+    workflow: def.workflow,
   }
 }

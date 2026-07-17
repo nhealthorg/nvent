@@ -17,6 +17,11 @@ pub fn new_run_id() -> String {
     format!("r_{}", short_uuid())
 }
 
+/// 32-char lowercase hex trace id suitable for OTEL correlation.
+pub fn new_trace_id() -> String {
+    short_uuid()
+}
+
 /// node_uid: node_id for a normal node, "{node_id}#{i}" for a fanned item.
 pub fn node_uid(node_id: &str, item: Option<u32>) -> String {
     match item {

@@ -98,14 +98,18 @@ interface AwaitConfig {
 interface FlowEntry {
   step: string
   queue: string
+  engineRetryMax?: number
   workerId: string
   runtime?: 'nodejs' | 'python'
   runtype?: 'inprocess' | 'task'
   emits?: string[]
+  awaitBefore?: AwaitConfig
   awaitAfter?: AwaitConfig
+  [key: string]: any
 }
 interface FlowStep {
   queue: string
+  engineRetryMax?: number
   workerId: string
   subscribes?: string[]
   runtime?: 'nodejs' | 'python'
@@ -113,6 +117,7 @@ interface FlowStep {
   emits?: string[]
   awaitBefore?: AwaitConfig
   awaitAfter?: AwaitConfig
+  [key: string]: any
 }
 
 interface AnalyzedStep extends FlowStep {
@@ -120,6 +125,7 @@ interface AnalyzedStep extends FlowStep {
   dependsOn: string[]
   triggers: string[]
   level: number
+  stepTimeout?: number
 }
 
 interface FlowMeta {
@@ -134,19 +140,24 @@ interface FlowMeta {
 }
 
 interface StepStatus {
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'retrying' | 'waiting' | 'timeout' | 'canceled' | 'stalled'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'retrying' | 'waiting' | 'resolved' | 'timeout' | 'canceled' | 'stalled'
   attempt?: number
   error?: string
   scheduledTriggerAt?: string
+  retries?: number
+  worker_name?: string
+  pending_at?: number
+  completed_at?: number
+  awaitData?: any
 }
 
 const props = defineProps<{
-  flow?: FlowMeta | null
+  flow?: any
   heightClass?: string
   showControls?: boolean
   showMiniMap?: boolean
   showBackground?: boolean
-  stepStates?: Record<string, StepStatus> // Current execution state
+  stepStates?: Record<string, any> // Current execution state
   flowStatus?: 'running' | 'completed' | 'failed' | 'canceled' | 'stalled' | 'awaiting' // Overall flow status
 }>()
 
@@ -161,6 +172,7 @@ const vueFlowRef = ref<any>(null)
 type StepNodeData = {
   label: string
   queue?: string
+  engineRetryMax?: number
   workerId?: string
   status?: 'idle' | 'running' | 'error' | 'done' | 'canceled'
   attempt?: number
@@ -168,11 +180,13 @@ type StepNodeData = {
   error?: string
   runtime?: 'nodejs' | 'python'
   runtype?: 'inprocess' | 'task'
+  subscribes?: string[]
   emits?: string[]
   stepTimeout?: number
   worker_name?: string
   pending_at?: number
   completed_at?: number
+  [key: string]: any
 }
 
 type AwaitNodeData = {
@@ -181,6 +195,8 @@ type AwaitNodeData = {
   awaitConfig?: AwaitConfig
   status?: 'idle' | 'waiting' | 'resolved' | 'timeout'
   scheduledTriggerAt?: string
+  awaitData?: any
+  [key: string]: any
 }
 
 type FlowNode = {
@@ -221,6 +237,7 @@ const nodes = computed<FlowNode[]>(() => {
       data: {
         label: f.entry.step,
         queue: f.entry.queue,
+        engineRetryMax: f.entry.engineRetryMax,
         workerId: f.entry.workerId,
         status,
         attempt: entryState?.attempt,
@@ -342,6 +359,7 @@ const nodes = computed<FlowNode[]>(() => {
           data: {
             label: stepName,
             queue: step?.queue,
+            engineRetryMax: step?.engineRetryMax,
             workerId: step?.workerId,
             status,
             attempt: stepState?.attempt,
@@ -628,7 +646,9 @@ function applySavedPositions(nodesIn: VFNode[], flowId?: string) {
 
 function savePositionsDebounced(flowId?: string) {
   if (!flowId) return
-  const payload = internalNodes.value.map(n => ({ id: n.id, x: n.position.x, y: n.position.y }))
+  const payload = (internalNodes.value as Array<{ id: string, position: { x: number, y: number } }>).map(
+    n => ({ id: n.id, x: n.position.x, y: n.position.y }),
+  )
   try {
     localStorage.setItem(storageKey(flowId), JSON.stringify(payload))
   }

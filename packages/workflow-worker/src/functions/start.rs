@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::{
     error::WorkflowError,
-    ids::new_run_id,
+    ids::{new_run_id, new_trace_id},
     state,
     types::{RunStatus, WorkflowDef, WorkflowRunRecord},
 };
@@ -76,7 +76,7 @@ const SHAPE_HINT: &str = "Expected shape: \
 
 const ALLOWED_DEF_KEYS: &[&str] = &["version", "nodes", "output", "default_functions", "metadata"];
 const ALLOWED_NODE_KEYS: &[&str] = &["function", "input", "depends_on", "fanout"];
-const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "runtime"];
+const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "queue", "engine_retry", "runtime"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
 // structural problem (plus the canonical shape), instead of serde's fail-fast
@@ -334,7 +334,7 @@ fn add_read_dependencies(def: &mut WorkflowDef) {
     }
 }
 
-fn prepare_definition_for_execution(def: &WorkflowDef) -> WorkflowDef {
+pub(crate) fn prepare_definition_for_execution(def: &WorkflowDef) -> WorkflowDef {
     let mut prepared = def.clone();
     add_read_dependencies(&mut prepared);
     prepared
@@ -674,7 +674,6 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     let _guard = deps.locks.guard(&run_id).await;
 
     state::put_def(&deps.iii, &run_id, &req.definition).await?;
-    state::put_runtime_def(&deps.iii, &run_id, &runtime_def).await?;
 
     // Bound sub-workflow nesting: a node that opted into `workflow::start` could
     // otherwise recurse (sub-workflow → node → sub-workflow → …) without limit.
@@ -688,6 +687,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     let now = deps.now_ms();
     let mut record = WorkflowRunRecord {
         run_id: run_id.clone(),
+        workflow_trace_id: Some(new_trace_id()),
         step: 0,
         status: RunStatus::Running,
         abort: false,
@@ -743,6 +743,8 @@ mod tests {
             function: FunctionSpec {
                 id: function_id.to_string(),
                 timeout_ms: None,
+                queue: None,
+                engine_retry: None,
                 runtime: None,
             },
             input: InputSpec {

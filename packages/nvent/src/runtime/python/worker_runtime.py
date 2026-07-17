@@ -19,6 +19,10 @@ import re
 import inspect
 import importlib.util
 import logging as _logging
+import asyncio
+import time
+import uuid
+from typing import Any
 
 try:
     import iii as _iii_sdk
@@ -101,6 +105,167 @@ def set_span_ok(span) -> None:
         span.set_status(_StatusCode.OK)
 
 
+def _current_trace_id_hex() -> str | None:
+    if not _HAS_OTEL:
+        return None
+    span = _otel_trace.get_current_span()
+    if span is None:
+        return None
+    ctx = span.get_span_context()
+    if not ctx or not ctx.is_valid:
+        return None
+    return f"{ctx.trace_id:032x}"
+
+
+def _current_span_id_hex() -> str | None:
+    if not _HAS_OTEL:
+        return None
+    span = _otel_trace.get_current_span()
+    if span is None:
+        return None
+    ctx = span.get_span_context()
+    if not ctx or not ctx.is_valid:
+        return None
+    return f"{ctx.span_id:016x}"
+
+
+def _record_workflow_span_event(name: str, **attributes) -> None:
+    if not _HAS_OTEL:
+        return
+    span = _otel_trace.get_current_span()
+    if span is None:
+        return
+    span.add_event(name, {k: v for k, v in attributes.items() if v is not None})
+
+
+async def _emit_workflow_trace_event(client, fn_id: str, wf: dict, event_name: str, extra_attrs: dict | None = None) -> None:
+    attrs = {
+        "iii.function.id": fn_id,
+        "workflow.node_uid": wf.get('node_uid'),
+        "workflow.run_id": wf.get('run_id'),
+        "workflow.runtime": "python",
+    }
+    if extra_attrs:
+        attrs.update(extra_attrs)
+
+    _record_workflow_span_event(event_name, **attrs)
+
+    payload = {
+        'run_id': wf['run_id'],
+        'id': f"trace-{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}",
+        'node_uid': wf.get('node_uid'),
+        'function_id': fn_id,
+        'runtime': 'python',
+        'event_name': event_name,
+        'ts_unix_ms': int(time.time() * 1000),
+        'attributes': attrs,
+    }
+    trace_id = wf.get('trace_id') or _current_trace_id_hex()
+    span_id = _current_span_id_hex()
+    if trace_id:
+        payload['trace_id'] = trace_id
+    if span_id:
+        payload['span_id'] = span_id
+
+    try:
+        await client.trigger_async({
+            'function_id': 'workflow::trace-write',
+            'payload': payload,
+        })
+    except Exception as exc:
+        print(f"[nvent/workflow] failed to write trace event {event_name} for {fn_id}: {exc}", flush=True)
+
+
+class _ContextLogger:
+    def __init__(self, client, fn_id: str, *, run_id: str | None = None, node_uid: str | None = None, trace_id: str | None = None):
+        self._client = client
+        self._fn_id = fn_id
+        self._run_id = run_id
+        self._node_uid = node_uid
+        self._trace_id = trace_id
+        self._pending: set[asyncio.Task] = set()
+
+    def _emit(self, level: str, message: str, data: Any = None) -> None:
+        ts_unix_ms = int(time.time() * 1000)
+
+        trace_id = self._trace_id or _current_trace_id_hex()
+        span_id = _current_span_id_hex()
+
+        structured = {
+            **(data if isinstance(data, dict) else ({'value': data} if data is not None else {})),
+            'level': level,
+            'iii.function.id': self._fn_id,
+        }
+        if self._run_id:
+            structured['workflow.run_id'] = self._run_id
+        if self._node_uid:
+            structured['workflow.node_uid'] = self._node_uid
+        if trace_id:
+            structured['trace_id'] = trace_id
+        if span_id:
+            structured['span_id'] = span_id
+
+        if self._run_id:
+            log_payload = {
+                'run_id': self._run_id,
+                'id': f"log-{ts_unix_ms}-{uuid.uuid4().hex[:10]}",
+                'node_uid': self._node_uid,
+                'function_id': self._fn_id,
+                'runtime': 'python',
+                'level': level,
+                'message': message,
+                'ts_unix_ms': ts_unix_ms,
+                'data': structured,
+            }
+            task = asyncio.create_task(self._client.trigger_async({
+                'function_id': 'workflow::log-write',
+                'payload': log_payload,
+            }))
+        else:
+            engine_level = 'info' if level == 'debug' else level
+            payload = {
+                'message': message,
+                'service_name': 'nvent',
+                'data': structured,
+            }
+            if trace_id:
+                payload['trace_id'] = trace_id
+            if span_id:
+                payload['span_id'] = span_id
+            task = asyncio.create_task(self._client.trigger_async({
+                'function_id': f'engine::log::{engine_level}',
+                'payload': payload,
+            }))
+
+        self._pending.add(task)
+
+        def _cleanup(done_task):
+            self._pending.discard(done_task)
+            try:
+                done_task.result()
+            except Exception as exc:
+                print(f"[nvent/logger] failed to emit {level} log for {self._fn_id}: {exc}", flush=True)
+
+        task.add_done_callback(_cleanup)
+
+    def debug(self, message: str, data: Any = None) -> None:
+        self._emit('debug', message, data)
+
+    def info(self, message: str, data: Any = None) -> None:
+        self._emit('info', message, data)
+
+    def warn(self, message: str, data: Any = None) -> None:
+        self._emit('warn', message, data)
+
+    def error(self, message: str, data: Any = None) -> None:
+        self._emit('error', message, data)
+
+    async def flush(self) -> None:
+        if not self._pending:
+            return
+        await asyncio.gather(*list(self._pending), return_exceptions=True)
+
+
 # Internal key used to propagate the stream channel through queue messages.
 _NVENT_STREAM_KEY = '__nventStream'
 
@@ -136,7 +301,16 @@ def cron(expression: str) -> dict:
 _NVENT_FN_MARKER = "__nvent_fn__"
 
 
-def define_function(*, description: str = "", triggers: list = None, handler) -> dict:
+def define_function(
+    *,
+    description: str = "",
+    triggers: list = None,
+    workflow = None,
+    request_format = None,
+    response_format = None,
+    handler,
+    **extra,
+) -> dict:
     """Thin wrapper: declares a nvent function without a config dict.
 
     The function ID is derived from the file path at registration time.
@@ -155,6 +329,9 @@ def define_function(*, description: str = "", triggers: list = None, handler) ->
         define_function(
             description="Greet endpoint",
             triggers=[http("GET", "/greet")],
+            workflow={"queue": "default"},
+            request_format={"type": "object"},
+            response_format={"type": "object"},
             handler=handler,
         )
     """
@@ -162,8 +339,13 @@ def define_function(*, description: str = "", triggers: list = None, handler) ->
         _NVENT_FN_MARKER: True,
         "description": description,
         "triggers": list(triggers or []),
+        "workflow": workflow,
+        "request_format": request_format,
+        "response_format": response_format,
         "handler": handler,
     }
+    # Preserve unknown keyword arguments for forward compatibility with TS defineFunction.
+    result.update(extra)
     # Auto-register into the calling module's namespace so _register() can
     # find it even when the caller does not assign the return value to a variable.
     # Uses CPython frame introspection — safe for all CPython 3.x deployments.
@@ -407,14 +589,29 @@ class FlowContext:
         await ctx.stream.set_in("other-flow", "group-123", "item", data)
     """
 
-    def __init__(self, client, fn_id: str, trigger_type: str, input_data, stream_name: str = "", inherited_group_id: str = None):
+    def __init__(self, client, fn_id: str, trigger_type: str, input_data, stream_name: str = "", inherited_group_id: str = None, workflow_meta: dict = None):
         self._client = client
         self._fn_id = fn_id
         self._trigger_type = trigger_type
         self._input = input_data
         self._stream_name = stream_name or fn_id.split("::")[0]
         self._stream_group_id = inherited_group_id
-        self.logger = Logger(fn_id)
+        self.logger = _ContextLogger(
+            client,
+            fn_id,
+            run_id=(workflow_meta or {}).get("run_id"),
+            node_uid=(workflow_meta or {}).get("node_uid"),
+            trace_id=(workflow_meta or {}).get("trace_id"),
+        )
+        if workflow_meta:
+            self.run_id = workflow_meta.get("run_id")
+            self.node_uid = workflow_meta.get("node_uid")
+            self.trace_id = workflow_meta.get("trace_id")
+        else:
+            self.run_id = None
+            self.node_uid = None
+            self.trace_id = _current_trace_id_hex()
+            
         self.state = _State(client, fn_id)
         self.stream = _Stream(client, self._stream_name, self._get_or_create_group_id)
 
@@ -563,6 +760,38 @@ def _trigger_suffix(trigger: dict) -> str:
     return t_type
 
 
+def _workflow_queue_from_config(workflow_cfg) -> str | None:
+    if workflow_cfg is True:
+        return "default"
+    if isinstance(workflow_cfg, dict):
+        unsupported = [k for k in workflow_cfg.keys() if k not in {"queue", "engine_retry"}]
+        if unsupported:
+            print(
+                f"[nvent/workflow] ignoring unsupported workflow options: {', '.join(sorted(unsupported))}. "
+                "Configure retries/concurrency/fifo in nvent iii queueConfigs.",
+                flush=True,
+            )
+        queue = workflow_cfg.get("queue")
+        if isinstance(queue, str) and queue.strip():
+            return queue.strip()
+        return "default"
+    return None
+
+
+def _register_workflow_subscriber(client, fn_id: str, workflow_cfg) -> bool:
+    queue = _workflow_queue_from_config(workflow_cfg)
+    if not queue:
+        return False
+
+    print(f"[nvent/workflow] subscribing workflow-enabled function {fn_id!r} to queue {queue!r}", flush=True)
+    client.register_trigger({
+        "type": "durable:subscriber",
+        "function_id": fn_id,
+        "config": {"queue": queue},
+    })
+    return True
+
+
 def _register(client, mod, default_id: str) -> None:
     """Register a loaded module's handler and triggers with the iii client.
 
@@ -608,6 +837,9 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
     fn_id = default_id
     description = fn_def.get("description", "")
     triggers = list(fn_def.get("triggers") or [])
+    workflow_cfg = fn_def.get("workflow")
+    request_format = fn_def.get("request_format")
+    response_format = fn_def.get("response_format")
     handler_fn = fn_def.get("handler")
     if not handler_fn:
         print(f"[nvent] define_function() in {getattr(mod, '__file__', '?')} has no handler — skipping", flush=True)
@@ -618,6 +850,9 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
         "description": description,
         "filePath": file_path,
         "triggers": [_normalize_trigger_meta(t) for t in triggers],
+        "workflow": workflow_cfg,
+        "request_format": request_format,
+        "response_format": response_format,
     }
 
     # If no triggers, register the function directly so it can be called by workflows
@@ -635,12 +870,30 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
                 
+                if has_workflow_meta and _HAS_OTEL:
+                    span = _otel_trace.get_current_span()
+                    if span is not None:
+                        span.set_attribute("workflow.run_id", wf['run_id'])
+                        span.set_attribute("workflow.node_uid", wf['node_uid'])
+                        span.set_attribute("iii.function.id", _fn_id)
+                        span.set_attribute("workflow.runtime", "python")
+                        if wf.get('trace_id'):
+                            span.set_attribute("workflow.trace_id", wf['trace_id'])
+                if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.started")
                 try:
                     # Execute handler with unwrapped input
                     result = await _h(actual_input)
                 except Exception as e:
                     # Signal failure to workflow orchestrator if meta is present
                     if has_workflow_meta:
+                        await _emit_workflow_trace_event(
+                            _client,
+                            _fn_id,
+                            wf,
+                            "workflow.node.failed",
+                            {"error": str(e)},
+                        )
                         try:
                             # Write error sentinel to state store so orchestrator can detect it
                             await _client.trigger_async({
@@ -657,6 +910,9 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
+                                    'trace_id': _current_trace_id_hex(),
+                                    'function_id': _fn_id,
+                                    'runtime': 'python',
                                 },
                             })
                         except Exception as e2:
@@ -665,6 +921,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
                         print(f"[nvent/workflow] node {wf['node_uid']} completed, writing result", flush=True)
                         
@@ -686,6 +943,9 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'trace_id': _current_trace_id_hex(),
+                                'function_id': _fn_id,
+                                'runtime': 'python',
                             },
                         })
                         
@@ -698,15 +958,12 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
 
         wrapped = _make_wrapper_no_trigger(handler_fn, client, fn_id)
         client.register_function(fn_id, wrapped, metadata=metadata)
-        
-        # Auto-register as subscriber to "default" queue for workflow orchestration
-        print(f"[nvent/workflow] auto-subscribing {fn_id!r} to default queue", flush=True)
-        client.register_trigger({
-            "type": "durable:subscriber",
-            "function_id": fn_id,
-            "config": {"queue": "default"}
-        })
-        print(f"[nvent] registered {fn_id!r} (0 trigger(s), auto-subscribed to default queue)", flush=True)
+
+        workflow_subscribed = _register_workflow_subscriber(client, fn_id, workflow_cfg)
+        if workflow_subscribed:
+            print(f"[nvent] registered {fn_id!r} (0 trigger(s), workflow queue enabled)", flush=True)
+        else:
+            print(f"[nvent] registered {fn_id!r} (0 trigger(s))", flush=True)
         return
 
     seen_suffixes: set = set()
@@ -730,6 +987,17 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
                 
+                if has_workflow_meta and _HAS_OTEL:
+                    span = _otel_trace.get_current_span()
+                    if span is not None:
+                        span.set_attribute("workflow.run_id", wf['run_id'])
+                        span.set_attribute("workflow.node_uid", wf['node_uid'])
+                        span.set_attribute("iii.function.id", _fn_id)
+                        span.set_attribute("workflow.runtime", "python")
+                        if wf.get('trace_id'):
+                            span.set_attribute("workflow.trace_id", wf['trace_id'])
+                if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.started")
                 # Wrap dict in HttpRequest for HTTP triggers
                 input_data = ApiRequest(**actual_input) if (_is_http and isinstance(actual_input, dict)) else actual_input
                 
@@ -738,6 +1006,13 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 except Exception as e:
                     # Signal failure to workflow orchestrator if meta is present
                     if has_workflow_meta:
+                        await _emit_workflow_trace_event(
+                            _client,
+                            _fn_id,
+                            wf,
+                            "workflow.node.failed",
+                            {"error": str(e)},
+                        )
                         try:
                             # Write error sentinel to state store
                             await _client.trigger_async({
@@ -754,6 +1029,9 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
+                                    'trace_id': _current_trace_id_hex(),
+                                    'function_id': _fn_id,
+                                    'runtime': 'python',
                                 },
                             })
                         except Exception as e2:
@@ -762,6 +1040,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
                         # Write result to state
                         await _client.trigger_async({
@@ -779,6 +1058,9 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'trace_id': _current_trace_id_hex(),
+                                'function_id': _fn_id,
+                                'runtime': 'python',
                             },
                         })
                     except Exception as e:
@@ -791,6 +1073,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
         iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
         client.register_function(function_id, wrapped, metadata=metadata)
         client.register_trigger({"type": iii_trigger_type, "function_id": function_id, "config": iii_cfg})
+    _register_workflow_subscriber(client, fn_id, workflow_cfg)
     print(f"[nvent] registered {fn_id!r} ({len(triggers)} trigger(s))", flush=True)
 
 
@@ -806,6 +1089,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                   "Add `config['name'] = '<your-step-name>'` to fix this.", flush=True)
         description = config_dict.get("description")
         triggers = list(config_dict.get("triggers") or [])
+        workflow_cfg = config_dict.get("workflow")
         flows = list(config_dict.get("flows") or [])
         enqueues = list(config_dict.get("enqueues") or [])
         stream_name = config_dict.get("stream") or (flows[0] if flows else fn_id.split("::")[0])
@@ -818,6 +1102,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                   "Add `meta['name'] = '<your-step-name>'` to fix this.", flush=True)
         description = meta.get("description")
         triggers = list(getattr(mod, "triggers", []) or [])
+        workflow_cfg = meta.get("workflow")
         flows = list(meta.get("flows") or [])
         enqueues = list(meta.get("enqueues") or [])
         stream_name = meta.get("stream") or (flows[0] if flows else fn_id.split("::")[0])
@@ -837,6 +1122,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
         "description": description,
         "filePath": file_path,
         "triggers": [_normalize_trigger_meta(t) for t in triggers],
+        "workflow": workflow_cfg,
         "flows": flows,
         "enqueues": enqueues,
     }
@@ -852,15 +1138,45 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
-                
+
+                workflow_logger = _ContextLogger(
+                    _client,
+                    _fn_id,
+                    run_id=wf.get('run_id') if has_workflow_meta else None,
+                    node_uid=wf.get('node_uid') if has_workflow_meta else None,
+                    trace_id=wf.get('trace_id') if has_workflow_meta else None,
+                ) if has_workflow_meta else None
+                if has_workflow_meta and _HAS_OTEL:
+                    span = _otel_trace.get_current_span()
+                    if span is not None:
+                        span.set_attribute("workflow.run_id", wf['run_id'])
+                        span.set_attribute("workflow.node_uid", wf['node_uid'])
+                        span.set_attribute("iii.function.id", _fn_id)
+                        span.set_attribute("workflow.runtime", "python")
+                        if wf.get('trace_id'):
+                            span.set_attribute("workflow.trace_id", wf['trace_id'])
+                if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.started")
                 try:
                     # Execute handler
                     if not _hc:
                         result = await _h(actual_input)
                     else:
-                        ctx = FlowContext(_client, _fn_id, "invoke", actual_input, _stream_name, None)
+                        ctx = FlowContext(_client, _fn_id, "invoke", actual_input, _stream_name, None, wf)
                         result = await _h(actual_input, ctx)
+                    if workflow_logger:
+                        await workflow_logger.flush()
                 except Exception as e:
+                    if has_workflow_meta:
+                        await _emit_workflow_trace_event(
+                            _client,
+                            _fn_id,
+                            wf,
+                            "workflow.node.failed",
+                            {"error": str(e)},
+                        )
+                    if workflow_logger:
+                        await workflow_logger.flush()
                     # Signal failure to workflow orchestrator if meta is present
                     if has_workflow_meta:
                         try:
@@ -879,6 +1195,9 @@ def _register_legacy(client, mod, default_id: str) -> None:
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
+                                    'trace_id': _current_trace_id_hex(),
+                                    'function_id': _fn_id,
+                                    'runtime': 'python',
                                 },
                             })
                         except Exception as e2:
@@ -887,6 +1206,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
                         # Write result to state
                         await _client.trigger_async({
@@ -904,6 +1224,9 @@ def _register_legacy(client, mod, default_id: str) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'trace_id': _current_trace_id_hex(),
+                                'function_id': _fn_id,
+                                'runtime': 'python',
                             },
                         })
                     except Exception as e:
@@ -914,14 +1237,12 @@ def _register_legacy(client, mod, default_id: str) -> None:
 
         wrapped = _make_wrapper_no_trigger(handler_fn, fn_id, has_ctx, stream_name, client)
         client.register_function(fn_id, wrapped, metadata=metadata)
-        
-        # Auto-register as subscriber to "default" queue for workflow orchestration
-        client.register_trigger({
-            "type": "durable:subscriber",
-            "function_id": fn_id,
-            "config": {"queue": "default"}
-        })
-        print(f"[nvent] registered {fn_id!r} (0 trigger(s), auto-subscribed to default queue)", flush=True)
+
+        workflow_subscribed = _register_workflow_subscriber(client, fn_id, workflow_cfg)
+        if workflow_subscribed:
+            print(f"[nvent] registered {fn_id!r} (0 trigger(s), workflow queue enabled)", flush=True)
+        else:
+            print(f"[nvent] registered {fn_id!r} (0 trigger(s))", flush=True)
         return
 
     seen_suffixes: set = set()
@@ -956,17 +1277,52 @@ def _register_legacy(client, mod, default_id: str) -> None:
                         inherited_group = nvent_stream.get('groupId')
                         effective_stream = nvent_stream.get('name') or _stream_name
                     clean_data = {k: v for k, v in working_data.items() if k != _NVENT_STREAM_KEY}
+
+                workflow_logger = _ContextLogger(
+                    _client,
+                    _fn_id,
+                    run_id=wf.get('run_id') if has_workflow_meta else None,
+                    node_uid=wf.get('node_uid') if has_workflow_meta else None,
+                    trace_id=wf.get('trace_id') if has_workflow_meta else None,
+                ) if has_workflow_meta else None
+                if has_workflow_meta and _HAS_OTEL:
+                    span = _otel_trace.get_current_span()
+                    if span is not None:
+                        span.set_attribute("workflow.run_id", wf['run_id'])
+                        span.set_attribute("workflow.node_uid", wf['node_uid'])
+                        span.set_attribute("iii.function.id", _fn_id)
+                        span.set_attribute("workflow.runtime", "python")
+                        if wf.get('trace_id'):
+                            span.set_attribute("workflow.trace_id", wf['trace_id'])
+                if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.started")
                 
                 # Wrap dict in HttpRequest for HTTP triggers
                 input_data = ApiRequest(**clean_data) if (_is_http and isinstance(clean_data, dict)) else clean_data
-                if not _hc:
-                    result = await _h(input_data)
-                else:
-                    ctx = FlowContext(_client, _fn_id, _t_type, input_data, effective_stream, inherited_group)
-                    result = await _h(input_data, ctx)
+                try:
+                    if not _hc:
+                        result = await _h(input_data)
+                    else:
+                        ctx = FlowContext(_client, _fn_id, _t_type, input_data, effective_stream, inherited_group, wf)
+                        result = await _h(input_data, ctx)
+                    if workflow_logger:
+                        await workflow_logger.flush()
+                except Exception as e:
+                    if has_workflow_meta:
+                        await _emit_workflow_trace_event(
+                            _client,
+                            _fn_id,
+                            wf,
+                            "workflow.node.failed",
+                            {"error": str(e)},
+                        )
+                    if workflow_logger:
+                        await workflow_logger.flush()
+                    raise
                 
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
                         # Write result to state
                         await _client.trigger_async({
@@ -984,6 +1340,9 @@ def _register_legacy(client, mod, default_id: str) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'trace_id': _current_trace_id_hex(),
+                                'function_id': _fn_id,
+                                'runtime': 'python',
                             },
                         })
                     except Exception as e:
@@ -1004,6 +1363,8 @@ def _register_legacy(client, mod, default_id: str) -> None:
             "function_id": function_id,
             "config": iii_cfg,
         })
+
+    _register_workflow_subscriber(client, fn_id, workflow_cfg)
 
     print(f"[nvent] registered {fn_id!r} ({len(triggers)} trigger(s))", flush=True)
 

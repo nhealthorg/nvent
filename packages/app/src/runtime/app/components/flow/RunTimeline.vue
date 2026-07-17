@@ -1,24 +1,27 @@
 <template>
-  <div class="flex flex-col h-full">
-    <!-- Filter Bar -->
-    <div class="h-[72px] px-6 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 shrink-0">
-      <!-- Top Row: Title and Action -->
-      <div class="flex items-center justify-between gap-4 mb-2">
-        <div class="flex items-center gap-2">
-          <UIcon
-            name="i-lucide-activity"
-            class="w-4 h-4 text-gray-400"
-          />
-          <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            Timeline & Logs
-          </span>
-          <span
-            v-if="isLive"
-            class="flex items-center gap-1.5 ml-2"
-          >
-            <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span class="text-xs text-gray-500 dark:text-gray-400">Live</span>
-          </span>
+  <div class="flex flex-col h-full min-h-0">
+    <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 shrink-0 space-y-3">
+      <div class="flex items-start justify-between gap-4">
+        <div class="space-y-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <UIcon
+              name="i-lucide-activity"
+              class="w-4 h-4 text-gray-400"
+            />
+            <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              Run Timeline
+            </span>
+            <span
+              v-if="isLive"
+              class="flex items-center gap-1.5 ml-2"
+            >
+              <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span class="text-xs text-gray-500 dark:text-gray-400">Live</span>
+            </span>
+          </div>
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            {{ selectedStep ? `Filtered to ${selectedStep}` : 'Showing the full workflow activity feed' }}
+          </p>
         </div>
 
         <UButton
@@ -33,10 +36,35 @@
         </UButton>
       </div>
 
-      <!-- Bottom Row: Filter and Count -->
+      <div class="grid grid-cols-3 gap-2 text-[11px]">
+        <div class="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2">
+          <div class="text-gray-500 dark:text-gray-400">Visible</div>
+          <div class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{{ filteredItems.length }}</div>
+        </div>
+        <div class="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2">
+          <div class="text-gray-500 dark:text-gray-400">Events</div>
+          <div class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{{ eventCount }}</div>
+        </div>
+        <div class="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2">
+          <div class="text-gray-500 dark:text-gray-400">Logs</div>
+          <div class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{{ logCount }}</div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-2 text-[11px]">
+        <UBadge color="neutral" variant="soft">debug {{ debugCount }}</UBadge>
+        <UBadge color="primary" variant="soft">info {{ infoCount }}</UBadge>
+        <UBadge color="warning" variant="soft">warn {{ warnCount }}</UBadge>
+        <UBadge color="error" variant="soft">error {{ errorCount }}</UBadge>
+      </div>
+
       <div class="flex items-center justify-between gap-4 text-[11px]">
         <div class="flex items-center gap-1.5">
-          <span class="text-gray-500 dark:text-gray-400">Filter:</span>
+          <UIcon
+            name="i-lucide-filter"
+            class="w-3.5 h-3.5 text-gray-400"
+          />
+          <span class="text-gray-500 dark:text-gray-400">Stream:</span>
           <URadioGroup
             v-model="filter"
             :items="filterOptions"
@@ -54,17 +82,16 @@
 
         <div class="flex items-center gap-1.5">
           <UIcon
-            name="i-lucide-list"
+            name="i-lucide-badge-info"
             class="w-3.5 h-3.5 text-gray-400"
           />
           <span class="text-gray-600 dark:text-gray-300">
-            {{ filteredItems.length }} {{ filteredItems.length === 1 ? 'item' : 'items' }}
+            {{ latestTimestampLabel }}
           </span>
         </div>
       </div>
     </div>
 
-    <!-- Combined Timeline/Logs Content -->
     <div class="flex-1 overflow-y-auto overflow-x-hidden">
       <div
         v-if="filteredItems.length === 0"
@@ -92,6 +119,7 @@ import TimelineList from '../TimelineList.vue'
 const props = defineProps<{
   events: any[]
   logs: any[]
+  selectedStep?: string | null
   isLive?: boolean
 }>()
 
@@ -108,6 +136,13 @@ const filterOptions = [
   { value: 'events', label: 'Events' },
   { value: 'logs', label: 'Logs' },
 ]
+
+const eventCount = computed(() => props.events.length)
+const logCount = computed(() => props.logs.length)
+const debugCount = computed(() => props.logs.filter(log => (log?.level || log?.data?.level || '').toLowerCase() === 'debug').length)
+const infoCount = computed(() => props.logs.filter(log => (log?.level || log?.data?.level || '').toLowerCase() === 'info').length)
+const warnCount = computed(() => props.logs.filter(log => (log?.level || log?.data?.level || '').toLowerCase() === 'warn').length)
+const errorCount = computed(() => props.logs.filter(log => (log?.level || log?.data?.level || '').toLowerCase() === 'error').length)
 
 // Helper function to create a unique hash for an item
 function getItemHash(item: any): string {
@@ -140,9 +175,11 @@ const filteredItems = computed(() => {
     ts: log.ts,
     type: 'log',
     stepName: log.step || log.stepName,
+    level: log.level,
+    message: log.message || log.msg,
     data: {
-      level: log.level,
-      message: log.msg || log.message,
+      level: log.level || log?.data?.level,
+      message: log.message || log.msg || log?.data?.message,
       ...log.data,
     },
   }))
@@ -183,5 +220,15 @@ const filteredItems = computed(() => {
   })
 
   return deduplicatedItems
+})
+
+const latestTimestampLabel = computed(() => {
+  const first = filteredItems.value[0]
+  if (!first) return 'No activity yet'
+
+  const ts = typeof first.ts === 'number' ? first.ts : new Date(first.ts).getTime()
+  if (!Number.isFinite(ts)) return 'No activity yet'
+
+  return `Latest update ${new Date(ts).toLocaleTimeString()}`
 })
 </script>

@@ -9,8 +9,19 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{error::WorkflowError, functions::Deps, reconcile, state, types::NodeState};
+use crate::{observability, observability::ObservabilityAdapter};
 
 use super::start;
+
+fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
+    let base_id = node_uid.split('#').next().unwrap_or(node_uid);
+    def
+        .nodes
+        .get(base_id)
+        .and_then(|n| n.function.engine_retry.as_ref())
+        .and_then(|r| r.max_attempts)
+        .unwrap_or(fallback)
+}
 
 pub const SWEEP_ID: &str = "workflow::sweep";
 pub const SWEEP_DESC: &str =
@@ -31,12 +42,6 @@ pub struct SweepResponse {
     pub swept: u64,
 }
 
-/// How long a terminal run's records are retained before the sweep GCs them.
-/// `workflow::status` / `workflow::node-result` return null for a run after this
-/// window. ponytail: fixed 24h; lift to a WorkerConfig knob if operators ever need
-/// to tune run-history retention.
-const TERMINAL_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
-
 pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, WorkflowError> {
     let runs = state::list_runs(&deps.iii).await?;
     let active = runs.iter().filter(|r| !r.status.is_terminal()).count() as u64;
@@ -45,6 +50,37 @@ pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, Wo
 
     let cfg = deps.cfg().await;
     let now = deps.now_ms();
+    let obs_cutoff = now - cfg.observability_retention_ms.min(i64::MAX as u64) as i64;
+    let run_cutoff = now - cfg.run_retention_ms.min(i64::MAX as u64) as i64;
+    let obs_adapter = observability::adapter();
+
+    for run in &runs {
+        match obs_adapter
+            .prune_logs_before(&deps.iii, &run.run_id, obs_cutoff)
+            .await
+        {
+            Ok(removed) if removed > 0 => {
+                tracing::debug!(run_id = %run.run_id, removed, "sweep: pruned workflow logs");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(run_id = %run.run_id, error = %e, "sweep: log retention prune failed")
+            }
+        }
+
+        match obs_adapter
+            .prune_traces_before(&deps.iii, &run.run_id, obs_cutoff)
+            .await
+        {
+            Ok(removed) if removed > 0 => {
+                tracing::debug!(run_id = %run.run_id, removed, "sweep: pruned workflow traces");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(run_id = %run.run_id, error = %e, "sweep: trace retention prune failed")
+            }
+        }
+    }
 
     for run in runs.iter().filter(|r| !r.status.is_terminal()) {
         // Isolate each run: one failing run must not starve the rest of the
@@ -62,7 +98,7 @@ pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, Wo
     // unbounded history every cycle (terminal runs are otherwise never deleted). Uses
     // the snapshot taken above, so a run that finalized THIS cycle (updated_at ~= now)
     // is never reaped here. Best-effort; a failed delete is retried next sweep.
-    let cutoff = now - TERMINAL_RETENTION_MS;
+    let cutoff = run_cutoff;
     for run in runs
         .iter()
         .filter(|r| r.status.is_terminal() && r.updated_at < cutoff)
@@ -99,8 +135,8 @@ async fn sweep_one_run(
     }
 
     // Fetch the workflow definition — skip if missing (orphaned record).
-    let def = match state::get_runtime_def(&deps.iii, &record.run_id).await? {
-        Some(d) => d,
+    let def = match state::get_def(&deps.iii, &record.run_id).await? {
+        Some(d) => crate::functions::start::prepare_definition_for_execution(&d),
         None => return Ok(false),
     };
 
@@ -111,12 +147,17 @@ async fn sweep_one_run(
     // Timeout sweep: apply timeout_action to each Running checkpoint.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
     let default_timeout_ms = cfg.default_pending_timeout_ms;
-    let max_retries = cfg.max_node_retries;
+    let default_max_retries = cfg.max_node_retries;
     let mut timed_out_any = false;
     let node_uids: Vec<String> = record.nodes.keys().cloned().collect();
     for uid in node_uids {
         let cp = record.nodes.get(&uid).cloned().unwrap();
-        match crate::timeout::timeout_action(&cp, default_timeout_ms, max_retries, now) {
+        match crate::timeout::timeout_action(
+            &cp,
+            default_timeout_ms,
+            effective_max_retries(&def, &uid, default_max_retries),
+            now,
+        ) {
             crate::timeout::TimeoutAction::StillWaiting => {}
             crate::timeout::TimeoutAction::Refire { attempt } => {
                 if let Some(c) = record.nodes.get_mut(&uid) {

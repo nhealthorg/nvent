@@ -232,6 +232,21 @@
         />
       </div>
       <div
+        v-if="typeof data?.engineRetryMax === 'number'"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-arrow-uturn-left-20-solid"
+            class="size-3"
+          />
+          Workflow Retry
+        </span>
+        <span class="ml-2 font-medium text-blue-600 dark:text-blue-400">
+          max {{ data.engineRetryMax }}
+        </span>
+      </div>
+      <div
         v-if="data?.retries && data.retries > 0"
         class="flex items-center justify-between"
       >
@@ -278,24 +293,7 @@ interface AwaitConfig {
 
 const props = defineProps<{
   id: string
-  data: {
-    label?: string
-    queue?: string
-    workerId?: string
-    status?: Status
-    attempt?: number
-    error?: string
-    runtime?: 'nodejs' | 'python'
-    runtype?: 'inprocess' | 'task'
-    subscribes?: string[]
-    emits?: string[]
-    awaitBefore?: AwaitConfig
-    awaitAfter?: AwaitConfig
-    stepTimeout?: number
-    worker_name?: string
-    pending_at?: number
-    completed_at?: number
-  }
+  data: Record<string, any>
   kind?: 'entry' | 'step'
 }>()
 

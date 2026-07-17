@@ -1,30 +1,50 @@
 <script setup lang="ts">
-import { useFetch, computed, useComponentRouter, onMounted, onUnmounted } from '#imports'
+import { useFetch, computed, ref, useComponentRouter, onMounted, onUnmounted } from '#imports'
 import { useWorkflowAnalysis } from '../../composables/useWorkflowAnalysis'
 
 const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis()
 const { push, route } = useComponentRouter()
-// In component router mode, params might be different, but let's assume we can get it from query or a passed prop
+
 const props = defineProps<{
   runId?: string
 }>()
 
 const runId = computed(() => props.runId || (route.value.params.id as string))
 
-const { data: status, pending, error, refresh } = useFetch('/api/_workflows/status', {
+interface StatusResponse {
+  status: string
+  definition: any
+  nodes: Record<string, any>
+  created_at: number
+  updated_at: number
+  result?: any
+}
+
+interface TimelineResponse {
+  trace_ids: string[]
+  spans: any[]
+  logs: any[]
+}
+
+const { data: status, pending, error, refresh } = useFetch<StatusResponse>('/api/_workflows/status', {
   params: { run_id: runId },
-  watch: [runId]
+  watch: [runId],
+})
+
+const { data: timeline, refresh: refreshTimeline } = useFetch<TimelineResponse>('/api/_workflows/timeline', {
+  params: { run_id: runId, limit: 500 },
+  watch: [runId],
 })
 
 const definition = computed(() => status.value?.definition)
 
-// Auto-refresh while running
-let refreshInterval: any = null
+let refreshInterval: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   refreshInterval = setInterval(() => {
-    const s = status.value?.status
-    if (s === 'running' || s === 'awaiting_nodes' || s === 'awaiting') {
+    const currentStatus = status.value?.status
+    if (currentStatus === 'running' || currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting') {
       refresh()
+      refreshTimeline()
     }
   }, 3000)
 })
@@ -33,46 +53,65 @@ onUnmounted(() => {
   if (refreshInterval) clearInterval(refreshInterval)
 })
 
-
 const normalizedStatus = computed(() => {
-  const s = status.value?.status
-  if (s === 'done') return 'completed'
-  if (s === 'error') return 'failed'
-  return s
+  const currentStatus = status.value?.status
+  if (currentStatus === 'done') return 'completed'
+  if (currentStatus === 'error') return 'failed'
+  return currentStatus
 })
 
-// Convert WorkflowDef + StatusResponse to FlowMeta + stepStates
+function nanosToMs(value: unknown): number {
+  const num = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(num) || num <= 0) return 0
+  return Math.floor(num / 1_000_000)
+}
+
+function normalizeTraceAttributes(value: unknown): Record<string, any> {
+  if (Array.isArray(value)) {
+    return Object.fromEntries(
+      value
+        .filter((entry): entry is [string, unknown] => Array.isArray(entry) && entry.length >= 2 && typeof entry[0] === 'string')
+        .map(([key, attrValue]) => [key, attrValue]),
+    )
+  }
+
+  if (value && typeof value === 'object') return value as Record<string, any>
+  return {}
+}
+
 const flowMeta = computed(() => {
   if (!definition.value?.nodes) return null
-  
+
   const analyzed = analyzeWorkflow(definition.value.nodes)
   const steps: Record<string, any> = {}
-  
+
   Object.entries(definition.value.nodes).forEach(([id, node]: [string, any]) => {
     steps[id] = {
       name: id,
       workerId: node.function?.id,
       runtime: node.function?.runtime,
       dependsOn: node.depends_on || [],
-      // Standardize properties for Diagram component
-      queue: (node as any).queue || 'default',
+      queue: node.function?.queue || 'default',
+      engineRetryMax: node.function?.engine_retry?.max_attempts,
       runtype: (node as any).runtype || 'task',
-      emits: (node as any).emits || []
+      emits: (node as any).emits || [],
     }
   })
 
-  // Try to determine a single entry point for centered rendering in Diagram
-  let entry = undefined
+  let entry
   if (analyzed.levels[0]?.length === 1) {
     const entryId = analyzed.levels[0][0]
-    const node = definition.value.nodes[entryId]
-    entry = {
-      step: entryId,
-      queue: (node as any).queue || 'default',
-      workerId: node.function.id,
-      runtime: node.function.runtime as 'nodejs' | 'python',
-      runtype: (node as any).runtype || 'task',
-      emits: (node as any).emits || []
+    if (entryId) {
+      const node = definition.value.nodes[entryId]
+      entry = {
+        step: entryId,
+        queue: node.function?.queue || 'default',
+        engineRetryMax: node.function?.engine_retry?.max_attempts,
+        workerId: node.function.id,
+        runtime: node.function.runtime as 'nodejs' | 'python',
+        runtype: (node as any).runtype || 'task',
+        emits: (node as any).emits || [],
+      }
     }
   }
 
@@ -80,15 +119,227 @@ const flowMeta = computed(() => {
     id: runId.value,
     entry,
     steps,
-    analyzed
+    analyzed,
   }
 })
 
+const stepNameBySpanId = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {}
+  for (const span of timeline.value?.spans ?? []) {
+    const attrs = normalizeTraceAttributes(span?.attributes)
+    const stepName = attrs['workflow.node_uid'] || attrs['iii.function.id'] || span?.name
+    if (span?.span_id && stepName) out[span.span_id] = String(stepName)
+  }
+  return out
+})
+
+const stepNameByTraceId = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {}
+  for (const span of timeline.value?.spans ?? []) {
+    const attrs = normalizeTraceAttributes(span?.attributes)
+    const stepName = attrs['workflow.node_uid'] || attrs['iii.function.id'] || span?.name
+    if (span?.trace_id && stepName && !out[span.trace_id]) out[span.trace_id] = String(stepName)
+  }
+  return out
+})
+
+const timelineEvents = computed(() => {
+  const items: any[] = []
+  const lifecycleKeys = new Set<string>()
+
+  if (status.value?.created_at) {
+    items.push({
+      id: `flow-start-${status.value.created_at}`,
+      ts: status.value.created_at,
+      type: 'flow.start',
+      data: {
+        runId: runId.value,
+        status: status.value.status,
+      },
+    })
+  }
+
+  if (normalizedStatus.value === 'completed' || normalizedStatus.value === 'failed') {
+    items.push({
+      id: `flow-terminal-${status.value?.updated_at || 0}`,
+      ts: status.value?.updated_at,
+      type: normalizedStatus.value === 'completed' ? 'flow.completed' : 'flow.failed',
+      data: {
+        runId: runId.value,
+        status: normalizedStatus.value,
+      },
+    })
+  }
+
+  Object.entries(status.value?.nodes ?? {}).forEach(([id, checkpoint]: [string, any]) => {
+    if (checkpoint.retries > 0) {
+      items.push({
+        id: `step-retry-${id}-${checkpoint.retries}`,
+        ts: checkpoint.pending_at || status.value?.updated_at,
+        type: 'step.retry',
+        stepName: id,
+        data: { retries: checkpoint.retries },
+      })
+    }
+  })
+
+  for (const span of timeline.value?.spans ?? []) {
+    const attrs = normalizeTraceAttributes(span?.attributes)
+    const stepName = attrs['workflow.node_uid'] || attrs['iii.function.id'] || span?.name
+    const pending = Boolean(span?.pending || span?.end_time_unix_nano === 0)
+    for (const event of span?.events ?? []) {
+      const eventAttrs = normalizeTraceAttributes(event?.attributes)
+      const eventName = String(event?.name || '')
+      const eventStepName = eventAttrs['workflow.node_uid'] || eventAttrs['iii.function.id'] || stepName
+      const eventTs = nanosToMs(event?.timestamp_unix_nano) || nanosToMs(span?.start_time_unix_nano)
+
+      let eventType: string | null = null
+      if (eventName === 'workflow.node.started') eventType = 'step.started'
+      else if (eventName === 'workflow.node.completed') eventType = 'step.completed'
+      else if (eventName === 'workflow.node.failed') eventType = 'step.failed'
+
+      if (!eventType || !eventStepName) continue
+      lifecycleKeys.add(`${eventStepName}:${eventType}`)
+      items.push({
+        id: `span-event-${span?.span_id || 'unknown'}-${eventName}-${eventTs}`,
+        ts: eventTs,
+        type: eventType,
+        stepName: String(eventStepName),
+        data: {
+          name: span?.name,
+          pending,
+          spanId: span?.span_id,
+          status: span?.status,
+          traceId: span?.trace_id,
+          ...attrs,
+          ...eventAttrs,
+        },
+      })
+    }
+
+    if (pending && stepName && !lifecycleKeys.has(`${stepName}:step.started`)) {
+      items.push({
+        id: `span-pending-${span?.span_id || stepName}`,
+        ts: nanosToMs(span?.start_time_unix_nano) || status.value?.updated_at || Date.now(),
+        type: 'step.running',
+        stepName: String(stepName),
+        data: {
+          name: span?.name,
+          pending,
+          spanId: span?.span_id,
+          status: span?.status,
+          traceId: span?.trace_id,
+          ...attrs,
+        },
+      })
+    }
+  }
+
+  Object.entries(status.value?.nodes ?? {}).forEach(([id, checkpoint]: [string, any]) => {
+    if (checkpoint.pending_at && !lifecycleKeys.has(`${id}:step.started`)) {
+      items.push({
+        id: `step-running-${id}-${checkpoint.pending_at}`,
+        ts: checkpoint.pending_at,
+        type: checkpoint.state === 'running' ? 'step.running' : 'step.started',
+        stepName: id,
+        data: {
+          state: checkpoint.state,
+          retries: checkpoint.retries,
+          workerName: checkpoint.worker_name,
+        },
+      })
+    }
+
+    if (checkpoint.completed_at && !lifecycleKeys.has(`${id}:${checkpoint.result_error ? 'step.failed' : 'step.completed'}`)) {
+      items.push({
+        id: `step-completed-${id}-${checkpoint.completed_at}`,
+        ts: checkpoint.completed_at,
+        type: checkpoint.result_error ? 'step.failed' : 'step.completed',
+        stepName: id,
+        data: {
+          error: checkpoint.result_error,
+          retries: checkpoint.retries,
+          workerName: checkpoint.worker_name,
+        },
+      })
+    }
+
+    if (checkpoint.result_error && !checkpoint.completed_at && !lifecycleKeys.has(`${id}:step.failed`)) {
+      items.push({
+        id: `step-error-${id}-${checkpoint.pending_at || status.value?.updated_at || 0}`,
+        ts: checkpoint.pending_at || status.value?.updated_at,
+        type: 'step.failed',
+        stepName: id,
+        data: {
+          error: checkpoint.result_error,
+          retries: checkpoint.retries,
+          workerName: checkpoint.worker_name,
+        }
+      })
+    }
+  })
+
+  items.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
+  return items.slice(0, 100)
+})
+
+const timelineLogs = computed(() => {
+  return (timeline.value?.logs ?? []).map((log: any) => {
+    const nestedLogData = log?.attributes?.['log.data'] || {}
+    const systemKeys = new Set([
+      'level',
+      'trace_id',
+      'span_id',
+      'workflow.run_id',
+      'workflow.node_uid',
+      'iii.function.id',
+      'workflow.runtime',
+    ])
+    const metadata = Object.fromEntries(
+      Object.entries(nestedLogData).filter(([key]) => !systemKeys.has(key)),
+    )
+
+    const traceId = log?.trace_id || nestedLogData?.trace_id
+    const spanId = log?.span_id || nestedLogData?.span_id
+
+    const stepName = log?.attributes?.['workflow.node_uid']
+      || nestedLogData?.['workflow.node_uid']
+      || stepNameBySpanId.value[spanId]
+      || stepNameByTraceId.value[traceId]
+      || log?.attributes?.['iii.function.id']
+      || nestedLogData?.['iii.function.id']
+
+    const level = String(nestedLogData?.level || log?.severity_text || 'INFO').toLowerCase()
+    const message = String(log?.body || '')
+
+    return {
+      id: `log-${log?.timestamp_unix_nano}-${log?.span_id || ''}`,
+      ts: nanosToMs(log?.timestamp_unix_nano),
+      type: 'log',
+      stepName,
+      level,
+      message,
+      data: {
+        level,
+        message,
+        serviceName: log?.service_name,
+        traceId,
+        spanId,
+        metadata,
+        workflow: {
+          runId: log?.attributes?.['workflow.run_id'] || nestedLogData?.['workflow.run_id'],
+          nodeUid: log?.attributes?.['workflow.node_uid'] || nestedLogData?.['workflow.node_uid'],
+          functionId: log?.attributes?.['iii.function.id'] || nestedLogData?.['iii.function.id'],
+          runtime: log?.attributes?.['workflow.runtime'] || nestedLogData?.['workflow.runtime'],
+        },
+      },
+    }
+  })
+})
+
 const stepStates = computed(() => {
-  if (!status.value?.nodes) return {}
   const out: Record<string, any> = {}
-  Object.entries(status.value.nodes).forEach(([id, nodeStatus]: [string, any]) => {
-    // NodeCheckpoint object from workflow_runs state
+  Object.entries(status.value?.nodes ?? {}).forEach(([id, nodeStatus]: [string, any]) => {
     let uiStatus = nodeStatus.state || nodeStatus
     if (typeof uiStatus === 'string') {
       if (uiStatus === 'done') uiStatus = 'completed'
@@ -103,7 +354,7 @@ const stepStates = computed(() => {
       pending_at: nodeStatus.pending_at,
       completed_at: nodeStatus.completed_at,
       worker_name: nodeStatus.worker_name,
-      retries: nodeStatus.retries
+      retries: nodeStatus.retries,
     }
   })
   return out
@@ -111,22 +362,40 @@ const stepStates = computed(() => {
 
 const stepList = computed(() => {
   if (!definition.value?.nodes) return []
-  
-  // Get sorted keys based on execution levels
-  const sortedKeys = sortNodesByLevel(definition.value.nodes)
-  
-  // Create a list based on definition to show ALL steps in the sidebar
-  return sortedKeys.map(id => {
+
+  return sortNodesByLevel(definition.value.nodes).map(id => {
     const state = stepStates.value[id]
     return {
       key: id,
       status: state?.status || 'idle',
       error: state?.error,
       result: state?.result,
-      retries: state?.retries
+      retries: state?.retries,
     }
   })
 })
+
+const selectedStep = ref<string | null>(null)
+
+const filteredTimelineEvents = computed(() => {
+  if (!selectedStep.value) return timelineEvents.value
+
+  return timelineEvents.value.filter((item) => {
+    if (!item.stepName) {
+      return item.type === 'flow.start' || item.type === 'flow.completed' || item.type === 'flow.failed'
+    }
+    return item.stepName === selectedStep.value
+  })
+})
+
+const filteredTimelineLogs = computed(() => {
+  if (!selectedStep.value) return timelineLogs.value
+  return timelineLogs.value.filter(item => item.stepName === selectedStep.value)
+})
+
+async function refreshAll() {
+  await Promise.all([refresh(), refreshTimeline()])
+}
 </script>
 
 <template>
@@ -161,16 +430,15 @@ const stepList = computed(() => {
              color="neutral"
              variant="outline"
              :loading="pending"
-             @click="refresh"
+             @click="refreshAll"
            />
         </div>
       </div>
     </div>
 
-    <!-- Main Content: Split View -->
-    <div class="flex-1 flex overflow-hidden">
-      <!-- Left: Diagram -->
-      <div class="flex-1 relative overflow-hidden border-r border-zinc-200 dark:border-zinc-800">
+    <div class="flex-1 overflow-hidden">
+      <div class="h-full flex flex-col xl:flex-row overflow-hidden">
+        <div class="min-w-0 flex-1 relative overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800">
         <div v-if="pending && !status" class="absolute inset-0 flex items-center justify-center bg-white/50 z-10 dark:bg-zinc-900/50">
            <div class="w-10 h-10 border-4 border-zinc-200 border-t-zinc-800 rounded-full animate-spin"></div>
         </div>
@@ -184,7 +452,6 @@ const stepList = computed(() => {
         </div>
 
         <div v-else class="h-full w-full">
-          <!-- We use the existing Diagram component -->
           <NventFlowDiagram 
             v-if="flowMeta"
             height-class="h-full"
@@ -198,28 +465,39 @@ const stepList = computed(() => {
              No diagram data available
           </div>
         </div>
-      </div>
+        </div>
 
-      <!-- Right: Details Sidebar -->
-      <div class="w-96 shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden">
-        <NventFlowRunOverview
-          v-if="status"
-          :run-status="normalizedStatus"
-          :run-id="runId"
-          :steps="stepList"
-          :started-at="status.created_at"
-          :completed-at="status.updated_at"
-          :result="status.result"
-          @cancel-flow="() => {}"
-          @restart-flow="() => {}"
-        />
-        <div v-else-if="pending" class="p-8 space-y-4">
-          <div class="h-8 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse w-1/2"></div>
-          <div class="h-32 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
-          <div class="space-y-2">
-            <div class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
-            <div class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
+        <div class="w-full xl:w-[24rem] 2xl:w-[26rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800">
+          <NventFlowRunOverview
+            v-if="status"
+            :run-status="normalizedStatus"
+            :run-id="runId"
+            :steps="stepList"
+            :started-at="status.created_at"
+            :completed-at="status.updated_at"
+            :result="status.result"
+            :flow-def="flowMeta"
+            @select-step="selectedStep = $event"
+            @cancel-flow="() => {}"
+            @restart-flow="() => {}"
+          />
+          <div v-else-if="pending" class="p-8 space-y-4">
+            <div class="h-8 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse w-1/2"></div>
+            <div class="h-32 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
+            <div class="space-y-2">
+              <div class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
+              <div class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
+            </div>
           </div>
+        </div>
+
+        <div class="w-full xl:w-[28rem] 2xl:w-[32rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden">
+          <NventFlowRunTimeline
+            :events="filteredTimelineEvents"
+            :logs="filteredTimelineLogs"
+            :selected-step="selectedStep"
+            :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
+          />
         </div>
       </div>
     </div>

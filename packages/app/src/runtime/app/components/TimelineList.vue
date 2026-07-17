@@ -19,19 +19,31 @@
 
       <!-- Custom title slot to include kind badge and subject -->
       <template #title="{ item }">
-        <div class="flex items-center gap-2 min-w-0">
-          <span
-            :class="eventTypeColor(item.eventType)"
-            class="font-mono text-xs px-2 py-1 rounded font-medium flex-shrink-0"
+        <div class="min-w-0 space-y-2">
+          <div
+            v-if="item.groupLabel"
+            class="flex items-center gap-2"
           >
-            {{ item.eventType }}
-          </span>
-          <span
-            v-if="item.stepName"
-            class="text-xs text-gray-600 dark:text-gray-300 truncate"
-          >
-            {{ item.stepName }}
-          </span>
+            <div class="h-px flex-1 bg-gray-200 dark:bg-gray-800" />
+            <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 dark:text-gray-400">
+              {{ item.groupLabel }}
+            </span>
+            <div class="h-px flex-1 bg-gray-200 dark:bg-gray-800" />
+          </div>
+          <div class="flex items-center gap-2 min-w-0">
+            <span
+              :class="eventTypeColor(item.eventType)"
+              class="font-mono text-xs px-2 py-1 rounded font-medium flex-shrink-0"
+            >
+              {{ item.eventType }}
+            </span>
+            <span
+              v-if="item.stepName"
+              class="text-xs text-gray-600 dark:text-gray-300 truncate"
+            >
+              {{ item.stepName }}
+            </span>
+          </div>
         </div>
       </template>
 
@@ -40,7 +52,10 @@
         <!-- Special rendering for log events -->
         <div
           v-if="item.eventType === 'log'"
-          :class="hasMetadata(item.eventData) ? 'p-3 rounded-lg border bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 mt-2' : 'mt-1'"
+          :class="[
+            hasMetadata(item.eventData) ? 'p-3 rounded-lg border mt-2' : 'mt-1 p-3 rounded-lg border',
+            logSurfaceClass(item?.eventData?.level),
+          ]"
           class="space-y-2"
         >
           <div class="flex items-start gap-2">
@@ -55,6 +70,11 @@
             <span class="text-xs text-gray-900 dark:text-gray-100 flex-1 break-words line-clamp-3">
               {{ item?.eventData?.message || '' }}
             </span>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-500 dark:text-gray-400">
+            <span v-if="item?.eventData?.serviceName" class="rounded bg-white/70 dark:bg-black/20 px-2 py-0.5">{{ item.eventData.serviceName }}</span>
+            <span v-if="item?.eventData?.traceId" class="font-mono rounded bg-white/70 dark:bg-black/20 px-2 py-0.5">trace {{ shortId(item.eventData.traceId) }}</span>
+            <span v-if="item?.eventData?.spanId" class="font-mono rounded bg-white/70 dark:bg-black/20 px-2 py-0.5">span {{ shortId(item.eventData.spanId) }}</span>
           </div>
           <!-- Show metadata in accordion if exists -->
           <div v-if="hasMetadata(item.eventData)">
@@ -415,15 +435,43 @@ const timelineItems = computed(() => {
     return bi.localeCompare(ai)
   })
 
-  // Map to timeline item format
-  return arr.map(e => ({
-    date: formatTs(e),
-    icon: eventIcon(e.type),
-    eventType: e.type,
-    stepName: e.stepName,
-    eventData: e.data,
-  } as TimelineItem & { eventType: string, stepName?: string, eventData?: any }))
+  let previousGroup = ''
+
+  return arr.map((e) => {
+    const currentGroup = String(e?.stepName || 'workflow')
+    const groupLabel = currentGroup !== previousGroup ? currentGroup : undefined
+    previousGroup = currentGroup
+
+    return {
+      date: formatTs(e),
+      icon: eventIcon(e.type),
+      eventType: e.type,
+      stepName: e.stepName,
+      eventData: e.data,
+      groupLabel,
+    } as TimelineItem & { eventType: string, stepName?: string, eventData?: any, groupLabel?: string }
+  })
 })
+
+function shortId(value?: string): string {
+  if (!value) return ''
+  return value.length > 8 ? value.slice(0, 8) : value
+}
+
+function logSurfaceClass(level?: string) {
+  switch ((level || '').toLowerCase()) {
+    case 'debug':
+      return 'bg-slate-50 dark:bg-slate-950/40 border-slate-200 dark:border-slate-800'
+    case 'info':
+      return 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-900/60'
+    case 'warn':
+      return 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/60'
+    case 'error':
+      return 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/60'
+    default:
+      return 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700'
+  }
+}
 
 function pretty(v: any) {
   try {
@@ -493,18 +541,28 @@ function isEmitEvent(type: string) {
 
 function hasMetadata(eventData: any): boolean {
   if (!eventData || typeof eventData !== 'object') return false
+  if (eventData.metadata && typeof eventData.metadata === 'object') {
+    return Object.keys(eventData.metadata).length > 0
+  }
   // Check if there's user-provided metadata beyond the auto-injected fields
   // 'value' is used when the 3rd param is a primitive (boolean, string, number, array)
-  const autoInjectedKeys = ['message', 'level', 'msg', 'stepName', 'stepId', 'stepRunId', 'attempt', 'flowName']
+  const autoInjectedKeys = ['message', 'level', 'msg', 'stepName', 'stepId', 'stepRunId', 'attempt', 'flowName', 'traceId', 'spanId', 'serviceName', 'workflow']
   const keys = Object.keys(eventData).filter(k => !autoInjectedKeys.includes(k))
   return keys.length > 0
 }
 
 function prettyMetadata(eventData: any): string {
   if (!eventData || typeof eventData !== 'object') return ''
+  if (eventData.metadata && typeof eventData.metadata === 'object') {
+    if (Object.keys(eventData.metadata).length === 0) return ''
+    if (Object.keys(eventData.metadata).length === 1 && 'value' in eventData.metadata) {
+      return pretty(eventData.metadata.value)
+    }
+    return pretty(eventData.metadata)
+  }
   // Filter out message, level, and auto-injected step context fields
   // to show only the user-provided 3rd parameter metadata
-  const { message, level, msg, stepName, stepId, stepRunId, attempt, flowName, ...metadata } = eventData
+  const { message, level, msg, stepName, stepId, stepRunId, attempt, flowName, traceId, spanId, serviceName, workflow, ...metadata } = eventData
   // If the only key is 'value', display the value directly for better UX
   if (Object.keys(metadata).length === 1 && 'value' in metadata) {
     return pretty(metadata.value)

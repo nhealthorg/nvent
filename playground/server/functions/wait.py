@@ -17,4 +17,7 @@ async def handler(input_data: dict):
 define_function(
     description="A simple function that waits for a specified number of seconds",
     handler=handler,
+    workflow=True,
+    request_format={"type": "object", "properties": {"seconds": {"type": "number"}}},
+    response_format={"type": "object", "properties": {"waited_for": {"type": "number"}, "status": {"type": "string"}}},
 )

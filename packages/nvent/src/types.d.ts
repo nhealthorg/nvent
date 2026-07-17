@@ -131,6 +131,7 @@ export interface NventIiiOptions {
       endpoint?: string
       samplingRatio?: number
       memoryMaxSpans?: number
+      liveSpans?: boolean
       metricsEnabled?: boolean
       metricsExporter?: 'memory' | 'otlp'
       metricsRetentionSeconds?: number
