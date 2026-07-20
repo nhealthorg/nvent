@@ -28,6 +28,8 @@ pub struct TraceWriteRequest {
 }
 
 pub async fn handle(deps: &Deps, req: TraceWriteRequest) -> Result<(), WorkflowError> {
+    let _g = deps.locks.guard(&req.run_id).await;
+
     if state::get_run(&deps.iii, &req.run_id).await?.is_none() {
         return Ok(());
     }

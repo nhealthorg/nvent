@@ -29,83 +29,64 @@ function createWorkflowScopedContext(
   functionId: string,
   workflow: { run_id: string, node_uid: string },
 ) {
-  const key = (userKey: string) => `${workflow.run_id}/${userKey}`
-  const stateScopeId = workflow.run_id
-  const streamScopeId = workflow.run_id
-  const streamSubscription = { streamName: WORKFLOW_STREAM_NAME, groupId: streamScopeId }
-
   return {
-    stateScopeId,
-    streamScopeId,
+    stateScopeId: workflow.run_id,
+    streamScopeId: workflow.run_id,
     state: {
-      scopeId: stateScopeId,
+      scopeId: workflow.run_id,
       async get<T = unknown>(userKey: string): Promise<T | null> {
         const result = await iii.trigger({
-          function_id: 'state::get',
-          payload: { scope: WORKFLOW_STATE_SCOPE, key: key(userKey) },
+          function_id: 'workflow::state-get',
+          payload: { run_id: workflow.run_id, key: userKey },
           timeoutMs: 10_000,
         })
         return (result ?? null) as T | null
       },
       async set<T = unknown>(userKey: string, value: T): Promise<void> {
         await iii.trigger({
-          function_id: 'state::set',
-          payload: { scope: WORKFLOW_STATE_SCOPE, key: key(userKey), value },
+          function_id: 'workflow::state-set',
+          payload: {
+            run_id: workflow.run_id,
+            key: userKey,
+            value,
+            node_uid: workflow.node_uid
+          },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
-        })
-        await emitWorkflowTraceEvent(iii, functionId, workflow, 'workflow.state.set', {
-          'workflow.state.key': userKey,
-          'workflow.state.value': value,
         })
       },
       async delete(userKey: string): Promise<void> {
         await iii.trigger({
-          function_id: 'state::delete',
-          payload: { scope: WORKFLOW_STATE_SCOPE, key: key(userKey) },
+          function_id: 'workflow::state-delete',
+          payload: {
+            run_id: workflow.run_id,
+            key: userKey,
+            node_uid: workflow.node_uid
+          },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
-        })
-        await emitWorkflowTraceEvent(iii, functionId, workflow, 'workflow.state.delete', {
-          'workflow.state.key': userKey,
         })
       },
       async list<T = unknown>(): Promise<Array<{ key: string, value: T }>> {
         const result = await iii.trigger({
-          function_id: 'state::list',
-          payload: { scope: WORKFLOW_STATE_SCOPE },
+          function_id: 'workflow::state-list',
+          payload: { run_id: workflow.run_id },
           timeoutMs: 10_000,
         })
-        const values = Array.isArray(result)
-          ? result
-          : (result && typeof result === 'object' && 'values' in (result as any) && Array.isArray((result as any).values)
-              ? (result as any).values
-              : (result && typeof result === 'object'
-                  ? Object.entries(result as Record<string, unknown>).map(([k, v]) => ({ key: k, value: v }))
-                  : []))
-        return values
-          .map((item: any) => ({
-            key: String(item?.key || ''),
-            value: item?.value as T,
-          }))
-          .filter((item: { key: string }) => item.key.startsWith(`${workflow.run_id}/`))
-          .map((item: { key: string, value: T }) => ({
-            key: item.key.slice(workflow.run_id.length + 1),
-            value: item.value,
-          }))
+        return (result || []) as Array<{ key: string, value: T }>
       },
     },
     stream: {
-      scopeId: streamScopeId,
+      scopeId: workflow.run_id,
       streamName: WORKFLOW_STREAM_NAME,
-      groupId: streamScopeId,
+      groupId: workflow.run_id,
       subscription() {
-        return streamSubscription
+        return { streamName: WORKFLOW_STREAM_NAME, groupId: workflow.run_id }
       },
       async get<T = unknown>(itemId: string): Promise<T | null> {
         const result = await iii.trigger({
           function_id: 'stream::get',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id, item_id: itemId },
           timeoutMs: 10_000,
         })
         return (result ?? null) as T | null
@@ -113,7 +94,7 @@ function createWorkflowScopedContext(
       async set(itemId: string, data: Record<string, unknown>) {
         await iii.trigger({
           function_id: 'stream::set',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId, data },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id, item_id: itemId, data },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
         })
@@ -121,7 +102,7 @@ function createWorkflowScopedContext(
       async delete(itemId: string) {
         await iii.trigger({
           function_id: 'stream::delete',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id, item_id: itemId },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
         })
@@ -129,7 +110,7 @@ function createWorkflowScopedContext(
       async list<T = unknown>(): Promise<Array<{ key: string, value: T }>> {
         const result = await iii.trigger({
           function_id: 'stream::list',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id },
           timeoutMs: 10_000,
         })
         const raw = Array.isArray(result)
@@ -146,10 +127,29 @@ function createWorkflowScopedContext(
           }))
           .filter((item: { key: string }) => Boolean(item.key))
       },
+      async publish(streamName: string, data: any) {
+        await iii.trigger({
+          function_id: 'workflow::stream-publish',
+          payload: {
+            run_id: workflow.run_id,
+            stream: streamName,
+            data,
+            node_uid: workflow.node_uid
+          },
+          timeoutMs: 10_000,
+          action: TriggerAction.Void()
+        })
+      },
+      // Keep legacy send for compatibility, but map it to publish if possible
       async send(type: string, data: Record<string, unknown> = {}) {
         await iii.trigger({
-          function_id: 'stream::send',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, type, data },
+          function_id: 'workflow::stream-publish',
+          payload: {
+            run_id: workflow.run_id,
+            stream: type,
+            data,
+            node_uid: workflow.node_uid,
+          },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
         })

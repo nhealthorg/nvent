@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { useFetch, computed, ref, useComponentRouter, onMounted, onUnmounted } from '#imports'
+import { computed, ref, useComponentRouter, onMounted, onUnmounted, watch } from '#imports'
+import type { ComputedRef, Ref } from 'vue'
 import { useWorkflowAnalysis } from '../../composables/useWorkflowAnalysis'
 
 const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis()
@@ -12,8 +13,9 @@ const props = defineProps<{
 const runId = computed(() => props.runId || (route.value.params.id as string))
 
 const isStateSlideoverOpen = ref(false)
+const isStreamSlideoverOpen = ref(false)
 
-interface StatusResponse {
+interface WorkflowRunStatusResponse {
   status: string
   definition: any
   nodes: Record<string, any>
@@ -22,51 +24,199 @@ interface StatusResponse {
   result?: any
 }
 
-interface TimelineResponse {
+interface WorkflowTimelineResponse {
   trace_ids: string[]
   spans: any[]
   logs: any[]
 }
 
 interface WorkflowStatesResponse {
-  states: any[]
+  states: Array<{ key: string, value: unknown }>
 }
 
 interface WorkflowStreamsResponse {
-  streams: any[]
+  streams: Array<{
+    streamName: string
+    items: Array<{
+      id: string
+      item_id?: string
+      run_id?: string
+      node_uid?: string
+      function_id?: string
+      ts_unix_ms?: number
+      data?: unknown
+    }>
+  }>
 }
 
-const { data: status, pending, error, refresh } = useFetch<StatusResponse>('/api/_workflows/status', {
-  params: { run_id: runId },
-  watch: [runId],
-})
+interface UseWorkflowRunDetailResult {
+  status: Ref<WorkflowRunStatusResponse | null>
+  statusPending: Ref<boolean>
+  statusError: Ref<unknown>
+  refreshStatus: () => Promise<void>
+  timeline: Ref<WorkflowTimelineResponse | null>
+  timelinePending: Ref<boolean>
+  timelineError: Ref<unknown>
+  refreshTimeline: () => Promise<void>
+  workflowStates: Ref<WorkflowStatesResponse | null>
+  statesPending: Ref<boolean>
+  statesError: Ref<unknown>
+  refreshStates: () => Promise<void>
+  workflowStreams: Ref<WorkflowStreamsResponse | null>
+  streamsPending: Ref<boolean>
+  streamsError: Ref<unknown>
+  refreshStreams: () => Promise<void>
+  isLive: ComputedRef<boolean>
+  refreshAll: () => Promise<void>
+}
 
-const { data: timeline, refresh: refreshTimeline } = useFetch<TimelineResponse>('/api/_workflows/timeline', {
-  params: { run_id: runId, limit: 500 },
-  watch: [runId],
-})
+function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult {
+  const status = ref<WorkflowRunStatusResponse | null>(null)
+  const timeline = ref<WorkflowTimelineResponse | null>(null)
+  const workflowStates = ref<WorkflowStatesResponse | null>(null)
+  const workflowStreams = ref<WorkflowStreamsResponse | null>(null)
+  const statusPending = ref(false)
+  const statusError = ref<unknown>(null)
+  const timelinePending = ref(false)
+  const timelineError = ref<unknown>(null)
+  const statesPending = ref(false)
+  const statesError = ref<unknown>(null)
+  const streamsPending = ref(false)
+  const streamsError = ref<unknown>(null)
 
-const { data: workflowStates, refresh: refreshStates } = useFetch<WorkflowStatesResponse>('/api/_workflows/states', {
-  params: { run_id: runId, limit: 500 },
-  watch: [runId],
-})
+  async function refreshStatus() {
+    statusPending.value = true
+    statusError.value = null
+    try {
+      status.value = await $fetch<WorkflowRunStatusResponse>('/api/_workflows/status', {
+        params: { run_id: runIdRef.value },
+      })
+    }
+    catch (error) {
+      statusError.value = error
+    }
+    finally {
+      statusPending.value = false
+    }
+  }
 
-const { data: workflowStreams, refresh: refreshStreams } = useFetch<WorkflowStreamsResponse>('/api/_workflows/streams', {
-  params: { run_id: runId, limit: 500 },
-  watch: [runId],
-})
+  async function refreshTimeline() {
+    timelinePending.value = true
+    timelineError.value = null
+    try {
+      timeline.value = await $fetch<WorkflowTimelineResponse>('/api/_workflows/timeline', {
+        params: { run_id: runIdRef.value, limit: 500 },
+      })
+    }
+    catch (error) {
+      timelineError.value = error
+    }
+    finally {
+      timelinePending.value = false
+    }
+  }
+
+  async function refreshStates() {
+    statesPending.value = true
+    statesError.value = null
+    try {
+      workflowStates.value = await $fetch<WorkflowStatesResponse>('/api/_workflows/states', {
+        params: { run_id: runIdRef.value, limit: 500 },
+      })
+    }
+    catch (error) {
+      statesError.value = error
+    }
+    finally {
+      statesPending.value = false
+    }
+  }
+
+  async function refreshStreams() {
+    streamsPending.value = true
+    streamsError.value = null
+    try {
+      workflowStreams.value = await $fetch<WorkflowStreamsResponse>('/api/_workflows/streams', {
+        params: { run_id: runIdRef.value, limit: 500 },
+      })
+    }
+    catch (error) {
+      streamsError.value = error
+    }
+    finally {
+      streamsPending.value = false
+    }
+  }
+
+  const isLive = computed(() => {
+    const currentStatus = status.value?.status
+    return currentStatus === 'running' || currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting'
+  })
+
+  async function refreshAll() {
+    await Promise.all([
+      refreshStatus(),
+      refreshTimeline(),
+    ])
+  }
+
+  onMounted(() => {
+    void refreshAll()
+  })
+
+  watch(runIdRef, () => {
+    void refreshAll()
+  })
+
+  return {
+    status,
+    statusPending,
+    statusError,
+    refreshStatus,
+    timeline,
+    timelinePending,
+    timelineError,
+    refreshTimeline,
+    workflowStates,
+    statesPending,
+    statesError,
+    refreshStates,
+    workflowStreams,
+    streamsPending,
+    streamsError,
+    refreshStreams,
+    isLive,
+    refreshAll,
+  }
+}
+
+const {
+  status,
+  statusPending: pending,
+  statusError: error,
+  refreshStatus: refresh,
+  timeline,
+  timelinePending,
+  timelineError,
+  refreshTimeline,
+  workflowStates,
+  statesPending,
+  statesError,
+  refreshStates,
+  workflowStreams,
+  streamsPending,
+  streamsError,
+  refreshStreams,
+  refreshAll: refreshAllData,
+} = useWorkflowRunDetail(runId)
 
 const definition = computed(() => status.value?.definition)
 
 let refreshInterval: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   refreshInterval = setInterval(() => {
-    const currentStatus = status.value?.status
-    if (currentStatus === 'running' || currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting') {
-      refresh()
-      refreshTimeline()
-      refreshStates()
-      refreshStreams()
+    if (status.value?.status === 'running' || status.value?.status === 'awaiting_nodes' || status.value?.status === 'awaiting') {
+      refreshAllData()
     }
   }, 3000)
 })
@@ -79,6 +229,7 @@ const normalizedStatus = computed(() => {
   const currentStatus = status.value?.status
   if (currentStatus === 'done') return 'completed'
   if (currentStatus === 'error') return 'failed'
+  if (currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting') return 'running'
   return currentStatus
 })
 
@@ -100,6 +251,10 @@ function normalizeTraceAttributes(value: unknown): Record<string, any> {
   if (value && typeof value === 'object') return value as Record<string, any>
   return {}
 }
+
+const workflowStreamRefs = computed(() => {
+  return workflowStreams.value?.streams ?? []
+})
 
 const flowMeta = computed(() => {
   if (!definition.value?.nodes) return null
@@ -221,6 +376,8 @@ const timelineEvents = computed(() => {
       else if (eventName === 'workflow.node.failed') eventType = 'step.failed'
       else if (eventName === 'workflow.state.set') eventType = 'state.set'
       else if (eventName === 'workflow.state.delete') eventType = 'state.delete'
+      else if (eventName === 'workflow.stream.publish' || eventName === 'workflow.stream.set') eventType = 'stream.publish'
+      else if (eventName === 'workflow.stream.delete') eventType = 'stream.delete'
 
       if (!eventType || !eventStepName) continue
       lifecycleKeys.add(`${eventStepName}:${eventType}`)
@@ -380,21 +537,23 @@ const timelineStates = computed(() => {
 })
 
 const timelineStreams = computed(() => {
-  return (workflowStreams.value?.streams ?? []).map((item: any) => ({
-    id: `stream-${item.id || `${item.kind}-${item.ts_unix_ms || 0}`}`,
-    ts: Number(item.ts_unix_ms || 0),
-    type: item.kind === 'set' ? 'stream.set' : 'stream.send',
-    stepName: item.node_uid || item.function_id,
-    data: {
-      itemId: item.item_id,
-      payload: item.data,
-      streamName: item.stream_name,
-      groupId: item.group_id,
-      nodeUid: item.node_uid,
-      functionId: item.function_id,
-      runId: item.run_id,
-    },
-  }))
+  return timelineEvents.value
+    .filter(item => item.type === 'stream.publish' || item.type === 'stream.delete')
+    .map((item: any, index: number) => ({
+      id: item.id || `stream-${item.data?.streamName || item.data?.['workflow.stream.name'] || index}`,
+      ts: item.ts,
+      type: item.type,
+      stepName: item.stepName,
+      data: {
+        streamName: String(item.data?.streamName || item.data?.['workflow.stream.name'] || ''),
+        itemId: item.data?.itemId || item.data?.['workflow.stream.item_id'],
+        nodeUid: item.stepName || item.data?.nodeUid || item.data?.['workflow.node_uid'],
+        functionId: item.data?.functionId || item.data?.['iii.function.id'],
+        preview: item.data?.preview || item.data?.['workflow.stream.preview'],
+        eventName: item.type,
+        runId: runId.value,
+      },
+    }))
 })
 
 const stepStates = computed(() => {
@@ -440,7 +599,7 @@ const selectedStep = ref<string | null>(null)
 const filteredTimelineEvents = computed(() => {
   if (!selectedStep.value) return timelineEvents.value
 
-  return timelineEvents.value.filter((item) => {
+  return timelineEvents.value.filter((item: any) => {
     if (!item.stepName) {
       return item.type === 'flow.start' || item.type === 'flow.completed' || item.type === 'flow.failed'
     }
@@ -450,29 +609,35 @@ const filteredTimelineEvents = computed(() => {
 
 const filteredTimelineLogs = computed(() => {
   if (!selectedStep.value) return timelineLogs.value
-  return timelineLogs.value.filter(item => item.stepName === selectedStep.value)
+  return timelineLogs.value.filter((item: any) => item.stepName === selectedStep.value)
 })
 
 const filteredTimelineStates = computed(() => {
   if (!selectedStep.value) return timelineStates.value
-  return timelineStates.value.filter(item => item.stepName === selectedStep.value)
+  return timelineStates.value.filter((item: any) => item.stepName === selectedStep.value)
 })
 
 const filteredTimelineStreams = computed(() => {
   if (!selectedStep.value) return timelineStreams.value
-  return timelineStreams.value.filter(item => item.stepName === selectedStep.value)
+  return timelineStreams.value.filter((item: any) => item.stepName === selectedStep.value)
 })
 
 async function refreshAll() {
-  await Promise.all([refresh(), refreshTimeline(), refreshStates(), refreshStreams()])
+  await Promise.all([refresh(), refreshTimeline()])
+}
+
+async function openStateSlideover() {
+  isStateSlideoverOpen.value = true
+  await refreshStates()
+}
+
+async function openStreamSlideover() {
+  isStreamSlideoverOpen.value = true
+  await refreshStreams()
 }
 
 const filteredWorkflowStates = computed(() => {
-  // workflowStates should come from API as array of { key, value }
-  return (workflowStates.value?.states ?? []).map((item: any) => ({
-    key: item.key || item.id || '',
-    value: item.value || item,
-  }))
+  return workflowStates.value?.states ?? []
 })
 
 function exportStates() {
@@ -517,13 +682,36 @@ function exportStates() {
               color="neutral"
               variant="outline"
               label="State"
-              @click="isStateSlideoverOpen = true"
+              @click="openStateSlideover"
             />
             <template #content>
               <NventFlowStateInspector
                 :states="filteredWorkflowStates"
+                :is-loading="statesPending"
+                :error-message="statesError ? 'State data could not be loaded' : null"
                 :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
                 @export="exportStates"
+              />
+            </template>
+          </USlideover>
+
+          <!-- Stream Slideover -->
+          <USlideover
+            v-model="isStreamSlideoverOpen"
+            title="Stream Inspector">
+            <UButton
+              icon="i-lucide-waves"
+              color="neutral"
+              variant="outline"
+              label="Streams"
+              @click="openStreamSlideover"
+            />
+            <template #content>
+              <NventFlowStreamInspector
+                :streams="workflowStreamRefs"
+                :is-loading="streamsPending"
+                :error-message="streamsError ? 'Stream references could not be loaded' : null"
+                :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
               />
             </template>
           </USlideover>
@@ -606,6 +794,8 @@ function exportStates() {
             :logs="filteredTimelineLogs"
             :states="filteredTimelineStates"
             :streams="filteredTimelineStreams"
+            :timeline-loading="timelinePending"
+            :timeline-error="timelineError"
             :selected-step="selectedStep"
             :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
           />

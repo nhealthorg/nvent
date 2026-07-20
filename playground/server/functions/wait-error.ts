@@ -7,7 +7,7 @@ export default defineFunction({
   handler: async (input, context) => {
     context.logger?.debug('Waited at', { tick: new Date().toISOString() })
     await new Promise(resolve => setTimeout(resolve, 10000)) // wait for 10 seconds
-    throw new Error('Simulated error after wait')
+
     return { waited: new Date().toISOString() }
   },
 })

@@ -28,6 +28,8 @@ function getStatusColor(status: string) {
       return 'text-red-600 bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/20'
     case 'running':
     case 'active':
+    case 'awaiting':
+    case 'awaiting_nodes':
       return 'text-blue-600 bg-blue-50 dark:bg-blue-900/10 border-blue-100 dark:border-blue-900/20 animate-pulse'
     default: return 'text-zinc-600 bg-zinc-50 dark:bg-zinc-900/10 border-zinc-100 dark:border-zinc-900/20'
   }
@@ -99,9 +101,9 @@ function formatDate(timestamp: number) {
                 </td>
                 <td class="px-6 py-4">
                   <UBadge
-                    :label="run.status.toUpperCase()"
+                    :label="run.status === 'awaiting_nodes' ? 'RUNNING' : run.status.toUpperCase()"
                     size="xs"
-                    :color="run.status === 'completed' || run.status === 'done' ? 'success' : run.status === 'failed' || run.status === 'error' ? 'error' : run.status === 'running' || run.status === 'active' ? 'blue' : 'neutral'"
+                    :color="(run.status === 'completed' || run.status === 'done') ? 'success' : (run.status === 'failed' || run.status === 'error') ? 'error' : (run.status === 'running' || run.status === 'active' || run.status === 'awaiting_nodes' || run.status === 'awaiting') ? 'info' : 'neutral'"
                     variant="soft"
                   />
                 </td>

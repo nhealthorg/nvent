@@ -579,71 +579,97 @@ class _WorkflowScopedState:
         self._node_uid = node_uid
         self._fn_id = fn_id
 
-    def _key(self, key: str) -> str:
-        return f"{self._run_id}/{key}"
-
-    async def _emit_trace_event(self, event_name: str, attributes: dict = None):
-        """Emit a trace event for state operations."""
-        try:
-            await self._client.trigger_async({
-                "function_id": "workflow::trace-write",
-                "payload": {
-                    "run_id": self._run_id,
-                    "id": f"trace-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}",
-                    "node_uid": self._node_uid,
-                    "function_id": self._fn_id,
-                    "runtime": "python",
-                    "event_name": event_name,
-                    "ts_unix_ms": int(time.time() * 1000),
-                    "attributes": {"workflow.runtime": "python", **(attributes or {})},
-                },
-            })
-        except Exception as e:
-            print(f"[nvent/workflow] failed to write trace event {event_name}: {e}")
-
     async def get(self, key: str):
         return await self._client.trigger_async({
-            "function_id": "state::get",
-            "payload": {"scope": WORKFLOW_STATE_SCOPE, "key": self._key(key)},
+            "function_id": "workflow::state-get",
+            "payload": {"run_id": self._run_id, "key": key},
         })
 
     async def set(self, key: str, value):
         await self._client.trigger_async({
-            "function_id": "state::set",
-            "payload": {"scope": WORKFLOW_STATE_SCOPE, "key": self._key(key), "value": value},
-        })
-        await self._emit_trace_event("workflow.state.set", {
-            "workflow.state.key": key,
-            "workflow.state.value": value,
+            "function_id": "workflow::state-set",
+            "payload": {
+                "run_id": self._run_id,
+                "key": key,
+                "value": value,
+                "node_uid": self._node_uid
+            },
         })
 
     async def delete(self, key: str):
         await self._client.trigger_async({
-            "function_id": "state::delete",
-            "payload": {"scope": WORKFLOW_STATE_SCOPE, "key": self._key(key)},
-        })
-        await self._emit_trace_event("workflow.state.delete", {
-            "workflow.state.key": key,
+            "function_id": "workflow::state-delete",
+            "payload": {
+                "run_id": self._run_id,
+                "key": key,
+                "node_uid": self._node_uid
+            },
         })
 
     async def list(self):
         result = await self._client.trigger_async({
-            "function_id": "state::list",
-            "payload": {"scope": WORKFLOW_STATE_SCOPE},
+            "function_id": "workflow::state-list",
+            "payload": {"run_id": self._run_id},
         })
-        values = result if isinstance(result, list) else (result.get("values") if isinstance(result, dict) and isinstance(result.get("values"), list) else [])
-        out = []
-        prefix = f"{self._run_id}/"
-        for item in values:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "")
-            if key.startswith(prefix):
-                out.append({"key": key[len(prefix):], "value": item.get("value")})
-        return out
+        return result or []
 
 
+class _WorkflowScopedStream:
+    def __init__(self, client, run_id: str, node_uid: str, fn_id: str):
+        self._client = client
+        self._run_id = run_id
+        self._node_uid = node_uid
+        self._fn_id = fn_id
 
+    def subscription(self) -> dict:
+        return {"streamName": WORKFLOW_STREAM_NAME, "groupId": self._run_id}
+
+    async def get(self, key: str):
+        return await self._client.trigger_async({
+            "function_id": "stream::get",
+            "payload": {"stream_name": WORKFLOW_STREAM_NAME, "group_id": self._run_id, "item_id": key},
+        })
+
+    async def set(self, key: str, value):
+        await self._client.trigger_async({
+            "function_id": "stream::set",
+            "payload": {"stream_name": WORKFLOW_STREAM_NAME, "group_id": self._run_id, "item_id": key, "data": value},
+        })
+
+    async def delete(self, key: str):
+        await self._client.trigger_async({
+            "function_id": "stream::delete",
+            "payload": {"stream_name": WORKFLOW_STREAM_NAME, "group_id": self._run_id, "item_id": key},
+        })
+
+    async def list(self):
+        result = await self._client.trigger_async({
+            "function_id": "stream::list",
+            "payload": {"stream_name": WORKFLOW_STREAM_NAME, "group_id": self._run_id},
+        })
+        return result or []
+
+    async def publish(self, stream_name: str, data: Any):
+        await self._client.trigger_async({
+            "function_id": "workflow::stream-publish",
+            "payload": {
+                "run_id": self._run_id,
+                "stream": stream_name,
+                "data": data,
+                "node_uid": self._node_uid
+            },
+        })
+
+    async def send(self, type_name: str, data: dict = None):
+        await self._client.trigger_async({
+            "function_id": "workflow::stream-publish",
+            "payload": {
+                "run_id": self._run_id,
+                "stream": type_name,
+                "data": data or {},
+                "node_uid": self._node_uid,
+            },
+        })
 
 
 class _WorkflowScopedContext:

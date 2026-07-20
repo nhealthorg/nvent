@@ -20,6 +20,12 @@ pub mod log_delete;
 pub mod trace_write;
 pub mod trace_read;
 pub mod trace_delete;
+pub mod state_set;
+pub mod state_get;
+pub mod state_delete;
+pub mod state_list;
+pub mod stream_publish;
+pub mod stream_list;
 
 pub type ConfigCell = Arc<tokio::sync::RwLock<Arc<WorkerConfig>>>;
 
@@ -149,6 +155,66 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { trace_delete::handle(&d, req).await.map_err(Error::from) }
         })
         .description("Delete one or all workflow-scoped trace events for a run."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::state-set",
+        RegisterFunction::new_async(move |req: state_set::StateSetRequest| {
+            let d = d.clone();
+            async move { state_set::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Set a workflow-scoped state value and update the run registry."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::state-get",
+        RegisterFunction::new_async(move |req: state_get::StateGetRequest| {
+            let d = d.clone();
+            async move { state_get::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Get a workflow-scoped state value."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::state-delete",
+        RegisterFunction::new_async(move |req: state_delete::StateDeleteRequest| {
+            let d = d.clone();
+            async move { state_delete::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Delete a workflow-scoped state value and remove it from the run registry."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::state-list",
+        RegisterFunction::new_async(move |req: state_list::StateListRequest| {
+            let d = d.clone();
+            async move { state_list::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("List all workflow-scoped state keys and values for a run via registry."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::stream-publish",
+        RegisterFunction::new_async(move |req: stream_publish::StreamPublishRequest| {
+            let d = d.clone();
+            async move { stream_publish::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Publish data to a workflow-scoped stream and update the run registry."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::stream-list",
+        RegisterFunction::new_async(move |req: stream_list::StreamListRequest| {
+            let d = d.clone();
+            async move { stream_list::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("List all known stream IDs for a run via registry."),
     );
 
     let d = deps.clone();

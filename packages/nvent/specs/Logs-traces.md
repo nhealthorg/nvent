@@ -102,7 +102,87 @@ Mindestens folgende Events sollen geschrieben werden:
 3. workflow.node.failed
 4. workflow.node.retry optional in Phase 2
 
-## Worker-Konfiguration für Workflow-Fähigkeit
+## Problem: Race Condition beim aktuellen Write-Pattern
+
+### Aktueller Code (state.rs)
+
+`put_run_log` und `put_run_trace` verwenden ein **Read-Modify-Write**-Pattern:
+
+```rust
+// 1. Bucket lesen
+let mut bucket = get_run_log_bucket(iii, &entry.run_id).await?
+    .unwrap_or_else(|| WorkflowRunLogBucket { ... });
+
+// 2. Lokal modifizieren
+bucket.logs.push(entry.clone());
+
+// 3. Komplett zurückschreiben
+state_set(iii, SCOPE_RUN_LOG, &entry.run_id, serde_json::to_value(bucket)?).await
+```
+
+### Das Problem
+
+`state::set` ist ein **unconditional overwrite** – es gibt kein Compare-and-Set.
+
+Kommen zwei Events **gleichzeitig** (z.B. `workflow.node.started` und ein Log-Eintrag aus demselben Node-Run), passiert folgendes:
+
+```
+Worker A:  read(bucket=[])   →  push(log_1)  →  write(bucket=[log_1])
+Worker B:  read(bucket=[])   →  push(log_2)  →  write(bucket=[log_2])
+                                                  ^--- überschreibt log_1!
+```
+
+**Ergebnis:** `log_1` ist verloren. Nur `log_2` ist gespeichert.
+
+Da der Workflow Worker normalerweise single-writer-per-run ist (Lock), tritt das im Normalfall nicht auf. Aber:
+- Log-Writes aus Node.js/Python Runtimes laufen **außerhalb des Locks**
+- Trace-Writes aus `emitWorkflowTraceEvent` in node.ts laufen parallel
+- Bei Retries können mehrere Instanzen kurzzeitig gleichzeitig schreiben
+
+### Lösung: `state::update` mit atomarem `append`-Op
+
+iii-state bietet `state::update` mit Array-Operationen, die **atomar** auf Serverseite ausgeführt werden:
+
+```json
+{
+  "function_id": "state::update",
+  "payload": {
+    "scope": "workflow_run_log",
+    "key": "[RUN_ID]",
+    "ops": [{ "type": "append", "path": "logs", "value": { ...log_entry... } }]
+  }
+}
+```
+
+Damit entfällt das Read-Modify-Write komplett. Der Server führt den `append` atomar aus:
+
+```
+Worker A:  update(append log_1)  →  server: logs=[log_1]
+Worker B:  update(append log_2)  →  server: logs=[log_1, log_2]  ✓
+```
+
+Kein Lost Update, keine Race Condition — unabhängig von der Anzahl gleichzeitiger Writer.
+
+### Verfügbare atomare Ops (iii-state v0.21.6)
+
+| Op | Beschreibung |
+|---|---|
+| `append` | Push ein Element in ein Array oder String konkatenieren |
+| `set` | Feld setzen oder Root-Wert ersetzen |
+| `merge` | Shallow-merge eines Objekts |
+| `increment` | Numerisches Feld erhöhen |
+| `decrement` | Numerisches Feld verringern |
+| `remove` | Feld aus Objekt entfernen |
+
+### Geplante Umstellung
+
+- `put_run_log` → `state::update` mit `append` auf `logs`-Array
+- `put_run_trace` → `state::update` mit `append` auf `traces`-Array
+- Initial-Erstellung (erster Write) → `state::set` mit leerem Bucket, dann `update`  
+  **oder** direkt `update` mit `merge`-Op, falls der Key noch nicht existiert (muss getestet werden)
+- Read (`list_run_logs`, `list_run_traces`) → unverändert via `state::get` + Bucket-Deserialisierung
+
+
 Funktionen sollen nicht mehr automatisch für Workflow-Queue registriert werden.
 
 Neue Zielkonfiguration in defineFunction:

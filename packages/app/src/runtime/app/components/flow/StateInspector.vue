@@ -21,7 +21,9 @@
             </span>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400">
-            {{ states.length }} key(s) persisted
+            <span v-if="isLoading">Loading states...</span>
+            <span v-else-if="errorMessage">Unable to load states</span>
+            <span v-else>{{ stateEntries.length }} key/value pair(s) persisted</span>
           </p>
         </div>
 
@@ -30,7 +32,7 @@
           color="neutral"
           variant="ghost"
           icon="i-lucide-download"
-          :disabled="states.length === 0"
+          :disabled="stateEntries.length === 0 || isLoading"
           @click="$emit('export')"
         >
           Export
@@ -56,10 +58,25 @@
 
     <!-- State Table -->
     <div class="flex-1 overflow-hidden flex flex-col">
-      <div v-if="filteredStates.length === 0" class="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500">
+      <div v-if="isLoading" class="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500">
+        <div class="text-center space-y-3">
+          <div class="w-10 h-10 border-4 border-gray-200 border-t-gray-800 rounded-full animate-spin mx-auto" />
+          <span class="text-sm">Loading state values...</span>
+        </div>
+      </div>
+
+      <div v-else-if="errorMessage" class="flex-1 flex items-center justify-center text-red-500 dark:text-red-400 px-6 text-center">
+        <div class="space-y-2">
+          <UIcon name="i-lucide-alert-triangle" class="w-10 h-10 mx-auto opacity-70" />
+          <p class="text-sm font-medium">{{ errorMessage }}</p>
+          <p class="text-xs text-gray-500 dark:text-gray-400">The workflow worker returned no readable state payload.</p>
+        </div>
+      </div>
+
+      <div v-else-if="filteredStates.length === 0" class="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500">
         <div class="text-center">
           <UIcon name="i-lucide-inbox" class="w-12 h-12 mb-3 opacity-50 mx-auto" />
-          <span class="text-sm">{{ filterText ? 'No matching states' : 'No state data' }}</span>
+          <span class="text-sm">{{ filterText ? 'No matching states' : 'No state data for this run' }}</span>
         </div>
       </div>
 
@@ -67,7 +84,7 @@
         <div class="divide-y divide-gray-200 dark:divide-gray-800">
           <div
             v-for="(item, idx) in filteredStates"
-            :key="idx"
+            :key="item.key || idx"
             class="group hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors"
           >
             <!-- State Row -->
@@ -85,6 +102,9 @@
               <div class="min-w-0 flex-1">
                 <div class="text-sm font-mono text-gray-900 dark:text-gray-100 truncate">
                   {{ item.key }}
+                </div>
+                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">
+                  {{ getValuePreview(item.value) }}
                 </div>
               </div>
 
@@ -126,8 +146,10 @@ interface StateItem {
 }
 
 const props = defineProps<{
-  states: StateItem[]
+  states: Array<Record<string, unknown>>
   isLive?: boolean
+  isLoading?: boolean
+  errorMessage?: string | null
 }>()
 
 defineEmits<{
@@ -137,10 +159,23 @@ defineEmits<{
 const filterText = ref('')
 const expanded = ref<Set<number>>(new Set())
 
+const stateEntries = computed<StateItem[]>(() => {
+  return props.states
+    .map((item, index) => {
+      const key = String(item.key || item.id || item.name || item.state_key || `state-${index + 1}`)
+      const value = (item.value ?? item.data ?? item.state_value ?? item.payload ?? item) as unknown
+      return { key, value }
+    })
+    .sort((left, right) => left.key.localeCompare(right.key))
+})
+
 const filteredStates = computed(() => {
-  if (!filterText.value) return props.states
+  if (!filterText.value) return stateEntries.value
   const query = filterText.value.toLowerCase()
-  return props.states.filter(s => s.key.toLowerCase().includes(query))
+  return stateEntries.value.filter(entry => {
+    const preview = getValuePreview(entry.value).toLowerCase()
+    return entry.key.toLowerCase().includes(query) || preview.includes(query)
+  })
 })
 
 function toggleExpanded(idx: number) {

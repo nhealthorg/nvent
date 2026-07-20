@@ -25,6 +25,69 @@ pub const SCOPE_RUN_TRACE: &str = "workflow_run_trace";
 pub const SCOPE_RUN_STATE: &str = "workflow_run_state";
 pub const SCOPE_IDEM: &str = "workflow_idem";
 pub const STREAM_NAME_WORKFLOW: &str = "workflow";
+pub const RUN_SCOPED_KEY_SEPARATOR: &str = "_";
+pub const STATE_REGISTRY_KEY_PREFIX: &str = "k_";
+
+pub fn run_scoped_key(run_id: &str, key: &str) -> String {
+    format!("{run_id}{RUN_SCOPED_KEY_SEPARATOR}{key}")
+}
+
+pub fn run_scoped_prefix(run_id: &str) -> String {
+    format!("{run_id}{RUN_SCOPED_KEY_SEPARATOR}")
+}
+
+pub fn encode_state_registry_key(key: &str) -> String {
+    let mut encoded = String::with_capacity(key.len() * 2);
+    for byte in key.as_bytes() {
+        encoded.push(nibble_to_hex(byte >> 4));
+        encoded.push(nibble_to_hex(byte & 0x0f));
+    }
+    encoded
+}
+
+pub fn decode_state_registry_key(encoded: &str) -> Option<String> {
+    let encoded = encoded.strip_prefix(STATE_REGISTRY_KEY_PREFIX)?;
+    if !encoded.len().is_multiple_of(2) {
+        return None;
+    }
+
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    let mut iter = encoded.as_bytes().iter().copied();
+    while let Some(high) = iter.next() {
+        let low = iter.next()?;
+        let hi = hex_to_nibble(high)?;
+        let lo = hex_to_nibble(low)?;
+        bytes.push((hi << 4) | lo);
+    }
+
+    String::from_utf8(bytes).ok()
+}
+
+pub fn state_registry_encoded_key(key: &str) -> String {
+    format!("{}{}", STATE_REGISTRY_KEY_PREFIX, encode_state_registry_key(key))
+}
+
+pub fn state_registry_merge_value(key: &str, present: bool) -> Value {
+    let encoded = state_registry_encoded_key(key);
+    json!({ encoded: present })
+}
+
+fn nibble_to_hex(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'a' + (n - 10)) as char,
+        _ => '0',
+    }
+}
+
+fn hex_to_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(10 + b - b'a'),
+        b'A'..=b'F' => Some(10 + b - b'A'),
+        _ => None,
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunLogRecord {
     pub id: String,
@@ -82,7 +145,7 @@ fn dispatch_timeout_ms() -> u64 {
 // Private primitive helpers
 // ---------------------------------------------------------------------------
 
-async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Value, WorkflowError> {
+pub async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Value, WorkflowError> {
     iii.trigger(TriggerRequest {
         function_id: "state::get".into(),
         payload: json!({ "scope": scope, "key": key }),
@@ -93,7 +156,7 @@ async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Value, Wor
     .map_err(|e| WorkflowError::State(format!("state::get {scope}/{key}: {e}")))
 }
 
-async fn state_set(
+pub async fn state_set(
     iii: &IIIClient,
     scope: &str,
     key: &str,
@@ -110,7 +173,24 @@ async fn state_set(
     .map_err(|e| WorkflowError::State(format!("state::set {scope}/{key}: {e}")))
 }
 
-async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), WorkflowError> {
+pub async fn state_update(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    ops: Value,
+) -> Result<(), WorkflowError> {
+    iii.trigger(TriggerRequest {
+        function_id: "state::update".into(),
+        payload: json!({ "scope": scope, "key": key, "ops": ops }),
+        action: None,
+        timeout_ms: Some(dispatch_timeout_ms()),
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| WorkflowError::State(format!("state::update {scope}/{key}: {e}")))
+}
+
+pub async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), WorkflowError> {
     iii.trigger(TriggerRequest {
         function_id: "state::delete".into(),
         payload: json!({ "scope": scope, "key": key }),
@@ -122,7 +202,7 @@ async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), Wor
     .map_err(|e| WorkflowError::State(format!("state::delete {scope}/{key}: {e}")))
 }
 
-async fn state_list(iii: &IIIClient, scope: &str) -> Result<Value, WorkflowError> {
+pub async fn state_list(iii: &IIIClient, scope: &str) -> Result<Value, WorkflowError> {
     iii.trigger(TriggerRequest {
         function_id: "state::list".into(),
         payload: json!({ "scope": scope }),
@@ -160,32 +240,24 @@ fn parse_stream_items(v: &Value) -> Vec<Value> {
     parse_state_list_values(v)
 }
 
-async fn delete_run_scoped_entries(iii: &IIIClient, scope: &str, run_id: &str) -> Result<(), WorkflowError> {
-    let v = state_list(iii, scope).await?;
-    let prefix = format!("{run_id}/");
-
-    for item in parse_state_list_values(&v) {
-        let key = item
-            .get("key")
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-        let value_run_id = item
-            .get("value")
-            .and_then(|x| x.get("run_id"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-
-        if key.starts_with(&prefix) || value_run_id == run_id {
-            state_delete(iii, scope, key).await?;
+async fn delete_run_state_entries_from_registry(
+    iii: &IIIClient,
+    record: &WorkflowRunRecord,
+) -> Result<(), WorkflowError> {
+    for (encoded_key, present) in &record.state_keys_map {
+        if !*present {
+            continue;
+        }
+        if let Some(key) = decode_state_registry_key(encoded_key) {
+            let scoped_key = run_scoped_key(&record.run_id, &key);
+            state_delete(iii, SCOPE_RUN_STATE, &scoped_key).await?;
         }
     }
-
     Ok(())
 }
 
-async fn delete_run_stream_entries(iii: &IIIClient, stream_name: &str, group_id: &str, run_id: &str) -> Result<(), WorkflowError> {
+async fn delete_run_stream_entries(iii: &IIIClient, stream_name: &str, group_id: &str) -> Result<(), WorkflowError> {
     let v = stream_list(iii, stream_name, group_id).await?;
-    let prefix = format!("{run_id}/");
 
     for item in parse_stream_items(&v) {
         let item_id = item
@@ -193,15 +265,9 @@ async fn delete_run_stream_entries(iii: &IIIClient, stream_name: &str, group_id:
             .and_then(|x| x.as_str())
             .or_else(|| item.get("item_id").and_then(|x| x.as_str()))
             .unwrap_or("");
-        let item_run_id = item
-            .get("run_id")
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
 
-        if item_id.starts_with(&prefix) || item_run_id == run_id {
-            if !item_id.is_empty() {
-                stream_delete(iii, stream_name, group_id, item_id).await?;
-            }
+        if !item_id.is_empty() {
+            stream_delete(iii, stream_name, group_id, item_id).await?;
         }
     }
 
@@ -297,21 +363,15 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
         if let Some(key) = &cp.result_ref {
             state_delete(iii, SCOPE_RESULT, key).await?;
         }
-        // Clear the session → run reverse index (used by workflow::wake) so a
-        // long-lived worker doesn't accumulate orphaned index rows for every run
-        // it GCs.
-        if let Some(session_id) = &cp.session_id {
-            state_delete(iii, SCOPE_INDEX, session_id).await?;
-        }
     }
-    delete_run_scoped_entries(iii, SCOPE_RUN_STATE, &record.run_id).await?;
-    delete_run_stream_entries(
-        iii,
-        STREAM_NAME_WORKFLOW,
-        record.stream_scope_id.as_deref().unwrap_or(&record.run_id),
-        &record.run_id,
-    )
-    .await?;
+    delete_run_state_entries_from_registry(iii, record).await?;
+
+    let stream_group_id = record.stream_scope_id.as_deref().unwrap_or(&record.run_id);
+    for stream_name in &record.stream_ids {
+        delete_run_stream_entries(iii, stream_name, stream_group_id).await?;
+    }
+
+    // No backward-compat cleanup paths: this worker runs only the v1 data model.
     state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
     state_delete(iii, SCOPE_RUN_LOG, &record.run_id).await?;
     state_delete(iii, SCOPE_RUN_TRACE, &record.run_id).await?;
@@ -488,20 +548,24 @@ pub async fn put_run_log(
     iii: &IIIClient,
     entry: &WorkflowRunLogRecord,
 ) -> Result<(), WorkflowError> {
-    let mut bucket = get_run_log_bucket(iii, &entry.run_id)
-        .await?
-        .unwrap_or_else(|| WorkflowRunLogBucket {
-            run_id: entry.run_id.clone(),
-            logs: Vec::new(),
-        });
-
-    if let Some(existing) = bucket.logs.iter_mut().find(|item| item.id == entry.id) {
-        *existing = entry.clone();
-    } else {
-        bucket.logs.push(entry.clone());
-    }
-
-    state_set(iii, SCOPE_RUN_LOG, &entry.run_id, serde_json::to_value(bucket)?).await
+    state_update(
+        iii,
+        SCOPE_RUN_LOG,
+        &entry.run_id,
+        json!([
+            {
+                "type": "set",
+                "path": "run_id",
+                "value": entry.run_id
+            },
+            {
+                "type": "append",
+                "path": "logs",
+                "value": serde_json::to_value(entry)?
+            }
+        ]),
+    )
+    .await
 }
 
 pub async fn list_run_logs(
@@ -569,20 +633,24 @@ pub async fn put_run_trace(
     iii: &IIIClient,
     entry: &WorkflowRunTraceRecord,
 ) -> Result<(), WorkflowError> {
-    let mut bucket = get_run_trace_bucket(iii, &entry.run_id)
-        .await?
-        .unwrap_or_else(|| WorkflowRunTraceBucket {
-            run_id: entry.run_id.clone(),
-            traces: Vec::new(),
-        });
-
-    if let Some(existing) = bucket.traces.iter_mut().find(|item| item.id == entry.id) {
-        *existing = entry.clone();
-    } else {
-        bucket.traces.push(entry.clone());
-    }
-
-    state_set(iii, SCOPE_RUN_TRACE, &entry.run_id, serde_json::to_value(bucket)?).await
+    state_update(
+        iii,
+        SCOPE_RUN_TRACE,
+        &entry.run_id,
+        json!([
+            {
+                "type": "set",
+                "path": "run_id",
+                "value": entry.run_id
+            },
+            {
+                "type": "append",
+                "path": "traces",
+                "value": serde_json::to_value(entry)?
+            }
+        ]),
+    )
+    .await
 }
 
 pub async fn list_run_traces(
@@ -732,6 +800,30 @@ mod tests {
         let list3 = parse_record_list(&v3);
         assert_eq!(list3.len(), 1, "key→value map should yield 1 record");
         assert_eq!(list3[0].run_id, "r_1");
+    }
+
+    #[test]
+    fn registry_key_encoding_roundtrip_and_path() {
+        let raw = "node.result/key.with:chars and spaces";
+        let encoded = encode_state_registry_key(raw);
+        let prefixed = format!("{STATE_REGISTRY_KEY_PREFIX}{encoded}");
+        let decoded = decode_state_registry_key(&prefixed).expect("decode encoded key");
+
+        assert_eq!(decoded, raw);
+        assert_eq!(state_registry_encoded_key(raw), prefixed);
+    }
+
+    #[test]
+    fn registry_key_decode_rejects_invalid_hex() {
+        assert!(decode_state_registry_key("abc").is_none(), "missing prefix must fail");
+        assert!(
+            decode_state_registry_key("k_abc").is_none(),
+            "odd-length hex must fail"
+        );
+        assert!(
+            decode_state_registry_key("k_zz").is_none(),
+            "non-hex bytes must fail"
+        );
     }
 
 }

@@ -311,6 +311,60 @@
           </div>
         </div>
 
+        <!-- Special rendering for stream events -->
+        <div
+          v-else-if="isStreamEvent(item.eventType)"
+          class="mt-2"
+        >
+          <div class="space-y-2 p-2 rounded border bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs text-gray-500 dark:text-gray-400">Stream:</span>
+              <UBadge
+                color="neutral"
+                variant="solid"
+                size="xs"
+                class="font-mono"
+              >
+                {{ item.eventData?.streamName || 'unknown' }}
+              </UBadge>
+              <UBadge
+                :color="item.eventType === 'stream.delete' ? 'error' : 'primary'"
+                variant="subtle"
+                size="xs"
+              >
+                {{ item.eventType === 'stream.delete' ? 'delete' : 'publish' }}
+              </UBadge>
+            </div>
+
+            <div class="flex flex-wrap gap-2 text-[10px] text-gray-500 dark:text-gray-400">
+              <span v-if="item.eventData?.nodeUid" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">node {{ item.eventData.nodeUid }}</span>
+              <span v-if="item.eventData?.functionId" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">fn {{ item.eventData.functionId }}</span>
+              <span v-if="item.eventData?.itemId" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">item {{ item.eventData.itemId }}</span>
+              <span v-if="item.eventData?.runId" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">group {{ item.eventData.runId }}</span>
+            </div>
+
+            <div v-if="item.eventData?.preview" class="text-xs text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">
+              {{ item.eventData.preview }}
+            </div>
+
+            <div v-else-if="item.eventData">
+              <UAccordion
+                :items="[{ label: 'Event Data', icon: 'i-lucide-braces', defaultOpen: false, content: item.eventData }]"
+                :ui="{
+                  trigger: 'text-[10px] py-1',
+                  leadingIcon: 'size-3 text-gray-500 dark:text-gray-400',
+                  label: 'text-[10px]',
+                  item: 'border-0 mt-1',
+                }"
+              >
+                <template #content="{ item: accordionItem }">
+                  <pre class="text-xs bg-gray-50 dark:bg-gray-800 rounded p-2 overflow-y-auto max-h-60 text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap break-words">{{ pretty(accordionItem.content) }}</pre>
+                </template>
+              </UAccordion>
+            </div>
+          </div>
+        </div>
+
         <!-- Default rendering with accordion -->
         <div
           v-else-if="item.eventData && Object.keys(item.eventData).length > 0"
@@ -412,6 +466,10 @@ function eventIcon(type: string) {
 
   // Log events
   if (type === 'log') return 'i-lucide-file-text'
+
+  // Stream events
+  if (type === 'stream.publish') return 'i-lucide-waves'
+  if (type === 'stream.delete') return 'i-lucide-trash-2'
 
   // Emit events
   if (type === 'emit') return 'i-lucide-zap'
@@ -520,6 +578,10 @@ function eventTypeColor(type: string) {
   // Log events
   if (type === 'log') return 'bg-yellow-100 dark:bg-yellow-900/50 text-yellow-700 dark:text-yellow-300'
 
+  // Stream events
+  if (type === 'stream.publish') return 'bg-cyan-100 dark:bg-cyan-900/50 text-cyan-700 dark:text-cyan-300'
+  if (type === 'stream.delete') return 'bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300'
+
   // Emit events
   if (type === 'emit') return 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300'
 
@@ -537,6 +599,10 @@ function isAwaitEvent(type: string) {
 
 function isEmitEvent(type: string) {
   return type === 'emit'
+}
+
+function isStreamEvent(type: string) {
+  return type === 'stream.publish' || type === 'stream.delete'
 }
 
 function hasMetadata(eventData: any): boolean {

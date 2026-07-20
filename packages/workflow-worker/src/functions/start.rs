@@ -695,6 +695,8 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         abort: false,
         def_ref: run_id.clone(),
         input: req.input,
+        state_keys_map: BTreeMap::new(),
+        stream_ids: Vec::new(),
         nodes: BTreeMap::new(),
         fanout_src: BTreeMap::new(),
         result: None,

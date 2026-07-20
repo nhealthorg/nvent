@@ -1,4 +1,5 @@
 import { useIii } from '#imports'
+import type { TriggerConfig } from './defineFunction'
 
 /**
  * Lazy-loaded registry cache to avoid circular dependencies.
@@ -108,6 +109,19 @@ function normalizeInput(input: any, deps: string[]): { from: string | string[], 
   )
   return { from: 'run_input' }
 }
+
+/**
+ * Extracts a plain JSON Schema object from a schema library instance (e.g. Zod v4).
+ * @internal
+ */
+function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined {
+  if (!schema || typeof schema !== 'object') return undefined
+  const s = schema as Record<string, any>
+  if (typeof s.parse !== 'function') return s // raw JSON Schema
+  if (typeof s.toJsonSchema === 'function') return s.toJsonSchema()
+  return undefined
+}
+
 export interface WorkflowContext {
   /**
    * Low-level node definition (full control over spec)
@@ -192,13 +206,24 @@ function isCallOptions(value: unknown): value is CallOptions {
 export type WorkflowHandler<TInput = any, TOutput = any> = (
   ctx: WorkflowContext,
   input: TInput
-) => Promise<TOutput>
+) => TOutput | Promise<TOutput>
 
-export interface WorkflowOptions<TInput = any, TOutput = any> {
+/** Any schema library with a parse method (Zod, Valibot, etc.) */
+type Parseable<T = unknown> = { parse(data: unknown): T }
+
+/** @internal Infers the handler input type from the declared trigger configs. */
+type InferHandlerInput<TTriggers extends TriggerConfig[]> =
+  [TTriggers[number]['type']] extends ['http'] ? import('./defineFunction').HttpRequest : unknown
+
+export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends TriggerConfig[] = TriggerConfig[]> {
   name: string
   handler: WorkflowHandler<TInput, TOutput>
   description?: string
-  triggers?: any[]
+  triggers?: TTriggers
+  /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
+  input?: Parseable<TInput>
+  /** Schema for the handler output. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
+  output?: Parseable<TOutput>
   request_format?: Record<string, any>
   response_format?: Record<string, any>
 }
@@ -210,11 +235,23 @@ export interface WorkflowOptions<TInput = any, TOutput = any> {
  * handler compiles the local JS workflow definition into a static DAG plan 
  * and sends it to the workflow-worker via `workflow::start`.
  */
-export function defineWorkflow<TInput = any, TOutput = any>(
-  options: WorkflowOptions<TInput, TOutput>
+export function defineWorkflow<
+  TInSchema extends Parseable<any> | undefined = undefined,
+  TOutSchema extends Parseable<any> | undefined = undefined,
+  TTriggers extends TriggerConfig[] = TriggerConfig[],
+  TInput = TInSchema extends Parseable<infer T> ? T : InferHandlerInput<TTriggers>,
+  TOutput = TOutSchema extends Parseable<infer T> ? T : any,
+>(
+  options: WorkflowOptions<TInput, TOutput, TTriggers>
 ) {
+  // Extract JSON schemas if provided via input/output
+  const request_format = options.request_format ?? (options.input ? extractJsonSchema(options.input) : undefined)
+  const response_format = options.response_format ?? (options.output ? extractJsonSchema(options.output) : undefined)
+
   const workflow = {
     ...options,
+    request_format,
+    response_format,
     $workflow: true,
     // The "nvent" generic function handler. 
     // When called as a standard function (e.g. via iii.trigger), it compiles 

@@ -621,6 +621,8 @@ mod tests {
             abort: false,
             def_ref: "run_test".to_string(),
             input: json!({"topic": "rust"}),
+            state_keys_map: BTreeMap::new(),
+            stream_ids: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
             result: None,

@@ -266,6 +266,13 @@ pub struct WorkflowRunRecord {
     /// Key into workflow_def/<run_id>
     pub def_ref: String,
     pub input: Value,
+    /// Registry of user-defined state keys for this run.
+    /// Keys are encoded as hex so they can be used as stable state::update paths.
+    #[serde(default)]
+    pub state_keys_map: BTreeMap<String, bool>,
+    /// Registry of stream IDs used by this run.
+    #[serde(default)]
+    pub stream_ids: Vec<String>,
     /// Keyed by node_uid
     #[serde(default)]
     pub nodes: BTreeMap<String, NodeCheckpoint>,
@@ -379,6 +386,8 @@ mod tests {
             abort: false,
             def_ref: "run_abc123".to_string(),
             input: json!({"topic": "test"}),
+            state_keys_map: BTreeMap::new(),
+            stream_ids: Vec::new(),
             nodes: {
                 let mut m = BTreeMap::new();
                 m.insert(
