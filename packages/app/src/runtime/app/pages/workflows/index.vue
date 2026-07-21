@@ -14,6 +14,7 @@ const stats = computed(() => [
 ])
 
 const isTriggerOpen = ref(false)
+const isConfigOpen = ref(false)
 const selectedWorkflow = ref<any>(null)
 
 let refreshInterval: any = null
@@ -61,6 +62,13 @@ function onTriggered(event: { workflowId: string, runId: string }) {
             variant="outline"
             label="Workflow Runs"
             @click="push('/workflows/runs')"
+          />
+          <UButton
+            icon="i-lucide-sliders-horizontal"
+            color="neutral"
+            variant="outline"
+            label="Worker Config"
+            @click="isConfigOpen = true"
           />
         </div>
       </div>
@@ -131,6 +139,8 @@ function onTriggered(event: { workflowId: string, runId: string }) {
       :workflow="selectedWorkflow"
       @triggered="onTriggered"
     />
+
+    <NventWorkflowConfigSlideover v-model="isConfigOpen" />
   </div>
 </template>
 
