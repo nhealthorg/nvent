@@ -907,12 +907,152 @@ def _register_workflow_subscriber(client, fn_id: str, workflow_cfg) -> bool:
         return False
 
     print(f"[nvent/workflow] subscribing workflow-enabled function {fn_id!r} to queue {queue!r}", flush=True)
-    client.register_trigger({
-        "type": "durable:subscriber",
-        "function_id": fn_id,
-        "config": {"queue": queue},
-    })
+    _register_workflow_subscriber_with_retry(client, fn_id, queue)
     return True
+
+
+def _register_workflow_subscriber_with_retry(client, function_id: str, queue: str, max_attempts: int = 40, initial_delay_s: float = 0.25) -> None:
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client.trigger({
+                "function_id": "engine::register_trigger",
+                "payload": {
+                    "trigger_type": "durable:subscriber",
+                    "function_id": function_id,
+                    "config": {"queue": queue},
+                },
+                "timeout_ms": 10000,
+            })
+            return
+        except Exception as exc:
+            last_err = exc
+            if (not _is_transient_trigger_registration_error(exc)) or attempt >= max_attempts:
+                raise
+            delay = min(initial_delay_s * (1.35 ** (attempt - 1)), 3.0)
+            time.sleep(delay)
+    if last_err:
+        raise last_err
+
+
+def _is_transient_trigger_registration_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return bool(re.search(r"worker\s+.+\s+is\s+missing|trigger\s+type\s+.+\s+not\s+found|not\s+active\s+in\s+your\s+project", msg, re.IGNORECASE))
+
+
+def _register_trigger_with_retry(client, trigger: dict, max_attempts: int = 40, initial_delay_s: float = 0.25) -> None:
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client.register_trigger(trigger)
+            return
+        except Exception as exc:
+            last_err = exc
+            if (not _is_transient_trigger_registration_error(exc)) or attempt >= max_attempts:
+                raise
+            delay = min(initial_delay_s * (1.35 ** (attempt - 1)), 3.0)
+            time.sleep(delay)
+    if last_err:
+        raise last_err
+
+
+def _extract_worker_name_status(entry: Any) -> tuple[str | None, str | None]:
+    if isinstance(entry, str):
+        return entry, "unknown"
+    if not isinstance(entry, dict):
+        return None, None
+    name = entry.get("name") or entry.get("worker") or entry.get("id")
+    status = entry.get("status") or entry.get("state")
+    return (str(name) if name else None), (str(status) if status else None)
+
+
+def _as_result_list(result: Any, key: str) -> list:
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        value = result.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _wait_for_required_workers(client, required_workers: set[str], timeout_s: float = 20.0) -> None:
+    if not required_workers:
+        return
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            result = client.trigger({
+                "function_id": "engine::workers::list",
+                "payload": {},
+                "timeout_ms": 5000,
+            })
+            running: set[str] = set()
+
+            for entry in _as_result_list(result, "workers"):
+                name, status = _extract_worker_name_status(entry)
+                if not name:
+                    continue
+                if status is None or status.lower() in {"running", "ready", "active", "connected", "ok", "unknown", "available"}:
+                    running.add(name)
+
+            missing = required_workers - running
+            if not missing:
+                return
+        except Exception:
+            # Engine worker inventory may not be ready yet.
+            pass
+
+        time.sleep(0.4)
+
+    print(
+        f"[nvent] WARNING: timed out waiting for workers to become ready before registration: {', '.join(sorted(required_workers))}",
+        flush=True,
+    )
+
+
+def _extract_trigger_type(entry: Any) -> str | None:
+    if isinstance(entry, str):
+        return entry
+    if not isinstance(entry, dict):
+        return None
+    trigger_type = entry.get("type") or entry.get("trigger_type") or entry.get("name") or entry.get("id")
+    return str(trigger_type) if trigger_type else None
+
+
+def _wait_for_required_trigger_types(client, required_trigger_types: set[str], timeout_s: float = 20.0) -> None:
+    if not required_trigger_types:
+        return
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            result = client.trigger({
+                "function_id": "engine::triggers::list",
+                "payload": {},
+                "timeout_ms": 5000,
+            })
+            available: set[str] = set()
+
+            for entry in _as_result_list(result, "triggers"):
+                trigger_type = _extract_trigger_type(entry)
+                if trigger_type:
+                    available.add(trigger_type)
+
+            missing = required_trigger_types - available
+            if not missing:
+                return
+        except Exception:
+            # Trigger inventory can be temporarily unavailable while engine starts.
+            pass
+
+        time.sleep(0.4)
+
+    print(
+        f"[nvent] WARNING: timed out waiting for trigger types before registration: {', '.join(sorted(required_trigger_types))}",
+        flush=True,
+    )
 
 
 def _register(client, mod, default_id: str) -> None:
@@ -1195,7 +1335,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
         wrapped = _make_wrapper_thin(handler_fn, is_http, client)
         iii_trigger_type = "durable:subscriber" if t_type == "queue" else t_type
         client.register_function(function_id, wrapped, metadata=metadata)
-        client.register_trigger({"type": iii_trigger_type, "function_id": function_id, "config": iii_cfg})
+        _register_trigger_with_retry(client, {"type": iii_trigger_type, "function_id": function_id, "config": iii_cfg})
     _register_workflow_subscriber(client, fn_id, workflow_cfg)
     print(f"[nvent] registered {fn_id!r} ({len(triggers)} trigger(s))", flush=True)
 
@@ -1481,7 +1621,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
             wrapped,
             metadata=metadata,
         )
-        client.register_trigger({
+        _register_trigger_with_retry(client, {
             "type": iii_trigger_type,
             "function_id": function_id,
             "config": iii_cfg,
@@ -1515,6 +1655,15 @@ if __name__ == "__main__":
         telemetry=_iii_sdk.TelemetryOptions(framework="nvent", project_name=_worker_name),
     )
     client = _iii_sdk.register_worker(_ws_url, options)
+
+    # Avoid startup races: queue/http trigger registration can fail if worker modules
+    # are still booting while Python handlers are being registered.
+    try:
+        _wait_for_required_workers(client, {"queue", "iii-http"}, timeout_s=25.0)
+        _wait_for_required_trigger_types(client, {"durable:subscriber", "http", "cron"}, timeout_s=25.0)
+    except Exception as _e:
+        print(f"[nvent] WARNING: worker readiness wait failed: {_e}", flush=True)
+
     for _path, _fn_id in _fn_pairs:
         _mod = _load(_path, _fn_id)
         _register(client, _mod, _fn_id)

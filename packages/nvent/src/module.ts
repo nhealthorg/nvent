@@ -29,11 +29,11 @@ import {
   hasNuxtModule,
   extendViteConfig
 } from '@nuxt/kit'
-import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs'
 import { rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { addCustomTab } from '@nuxt/devtools-kit'
-import { ensureIiiEngine } from './iii/install'
+import { ensureIiiEngine, ensureIiiWorker, assertSupportedIiiVersion } from './iii/install'
 import { ensureIiiConsole } from './iii/console'
 import {
   writeIiiConfig,
@@ -46,7 +46,7 @@ import type { NventIiiOptions } from './types'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
 import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
 import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
-import { WorkflowWorkerManager } from './runtime/nitro/utils/workers/workflow'
+import { WorkflowWorkerManager, resolveWorkflowBinaryFromPackageRoot } from './runtime/nitro/utils/workers/workflow'
 import { createEngineManager } from './runtime/nitro/utils/engine'
 import { ConsoleManager } from './runtime/nitro/utils/console'
 
@@ -64,6 +64,37 @@ const meta = {
 }
 
 const III_REGISTRY_TEMPLATE = 'iii-registry.mjs'
+
+function getWorkflowBinaryName(): string {
+  return process.platform === 'win32' ? 'workflow.exe' : 'workflow'
+}
+
+function pickFirstExistingPath(candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return candidates[0] ?? ''
+}
+
+function stageWorkflowBinary(targetBinDir: string, packageRootDir: string): string | undefined {
+  try {
+    const source = resolveWorkflowBinaryFromPackageRoot(packageRootDir)
+    if (!source) return undefined
+    if (!existsSync(source)) return undefined
+    mkdirSync(targetBinDir, { recursive: true })
+    const target = join(targetBinDir, getWorkflowBinaryName())
+    copyFileSync(source, target)
+    if (process.platform !== 'win32') {
+      chmodSync(target, 0o755)
+    }
+    return target
+  }
+  catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`[nvent] workflow worker binary could not be staged to .nvent/bin: ${message}`)
+    return undefined
+  }
+}
 
 export interface NventExtendedFunction {
   /** iii function ID (e.g. `fhir::terminology::lookup`) */
@@ -134,6 +165,16 @@ export default defineNuxtModule<NventIiiOptions>({
     const { resolve } = createResolver(import.meta.url)
     const PYTHON_RUNTIME_SRC = resolve('./runtime/python/worker_runtime.py')
     const PYTHON_NVENT_HELPER_SRC = resolve('./runtime/python/nvent.py')
+    const workflowPackageRoot = pickFirstExistingPath([
+      resolve('../../workflow-worker'),
+      resolve(nuxt.options.rootDir, '../packages/workflow-worker'),
+      resolve(nuxt.options.rootDir, '../../packages/workflow-worker'),
+    ])
+    const workflowRustRoot = pickFirstExistingPath([
+      resolve('../../../workers/workflow'),
+      resolve(nuxt.options.rootDir, '../workers/workflow'),
+      resolve(nuxt.options.rootDir, '../../workers/workflow'),
+    ])
 
     nuxt.hook('vite:extendConfig', (config, { isClient, isServer }) => {
       config.optimizeDeps = {
@@ -163,17 +204,25 @@ export default defineNuxtModule<NventIiiOptions>({
     // false for docker/remote modes where an external service runs the engine.
     const managed = iiiOpts.managed ?? (mode === 'local')
     const version = iiiOpts.version ?? 'latest'
+    assertSupportedIiiVersion(version)
     const logLevel = iiiOpts.logLevel ?? 'warn'
     const failOnInstallFailure = iiiOpts.failOnInstallFailure ?? false
     const consoleCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
 
+    // Dev artifact root: keep all nvent-managed files under node_modules/.nvent.
+    const packageRootDir = workflowPackageRoot
+    const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
+    const nventBinDir = join(nventDir, 'bin')
+    const stagedWorkflowBinary = stageWorkflowBinary(nventBinDir, packageRootDir)
+
     // Instantiate the WorkflowWorkerManager to allow iii config generation to use it.
-    // The actual process is managed by the iii-exec worker in the engine.
+    // Prefer a stable, relocatable command path from nvent's artifact bin dir.
     new WorkflowWorkerManager(
       wsUrl,
-      resolve(nuxt.options.rootDir, '../workers/workflow'),
-      resolve(nuxt.options.rootDir, '../packages/workflow-worker'),
-      iiiOpts.workflow
+      workflowRustRoot,
+      packageRootDir,
+      iiiOpts.workflow,
+      stagedWorkflowBinary ? join('.', 'bin', getWorkflowBinaryName()) : undefined,
     )
 
     // -------------------------------------------------------------------------
@@ -218,7 +267,6 @@ export default defineNuxtModule<NventIiiOptions>({
 
     // Write iii config.yaml into node_modules/.nvent so external tooling or
     // engine instances that inspect .nvent can find the generated config.
-    const nventDir = join(nuxt.options.rootDir, 'node_modules', '.nvent')
     // Ensure old per-service config directory is removed before writing
     // the new `config.yaml` so stale configs don't persist across restarts.
     const configDir = join(nventDir, 'config')
@@ -482,9 +530,11 @@ export default defineNuxtModule<NventIiiOptions>({
       if (managed && mode === 'local') {
         // Download binaries (idempotent — skipped when already at the right version).
         let binaryPath: string | undefined
+        let workerBinaryPath: string | undefined
         let consoleBinaryPath: string | undefined
         try {
           binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+          workerBinaryPath = await ensureIiiWorker({ binDir, version, logLevel })
           consoleBinaryPath = iiiOpts.console
             ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
             : undefined
@@ -618,9 +668,11 @@ export default defineNuxtModule<NventIiiOptions>({
         // Download binaries at build time so they can be embedded in the image.
         const binDir = join(nuxt.options.rootDir, 'node_modules', '.nvent', 'bin')
         let binaryPath: string | undefined
+        let workerBinaryPath: string | undefined
         let consoleBinaryPath: string | undefined
         try {
           binaryPath = await ensureIiiEngine({ binDir, version, logLevel })
+          workerBinaryPath = await ensureIiiWorker({ binDir, version, logLevel })
           consoleBinaryPath = iiiOpts.console
             ? await ensureIiiConsole({ binDir, version: consoleCfg.version ?? version, logLevel })
             : undefined
@@ -636,7 +688,15 @@ export default defineNuxtModule<NventIiiOptions>({
             const outputBinDir = join(outputNventDir, 'bin')
             mkdirSync(outputBinDir, { recursive: true })
             copyFileSync(binaryPath, join(outputBinDir, basename(binaryPath)))
+            if (workerBinaryPath) copyFileSync(workerBinaryPath, join(outputBinDir, basename(workerBinaryPath)))
             if (consoleBinaryPath) copyFileSync(consoleBinaryPath, join(outputBinDir, basename(consoleBinaryPath)))
+            if (stagedWorkflowBinary && existsSync(stagedWorkflowBinary)) {
+              const workflowTarget = join(outputBinDir, getWorkflowBinaryName())
+              copyFileSync(stagedWorkflowBinary, workflowTarget)
+              if (process.platform !== 'win32') {
+                chmodSync(workflowTarget, 0o755)
+              }
+            }
             writeFileSync(join(outputNventDir, 'config.yaml'), engineConfigYaml, 'utf-8')
             console.log('[nvent] Engine binaries + config copied to .output/nvent/')
           })
@@ -647,7 +707,9 @@ export default defineNuxtModule<NventIiiOptions>({
         ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
           const outputNventDir = join(nitro.options.output.dir, 'nvent')
           const workersDir = join(outputNventDir, 'workers')
+          const outputRequirementsDir = join(outputNventDir, 'requirements')
           mkdirSync(workersDir, { recursive: true })
+          mkdirSync(outputRequirementsDir, { recursive: true })
           copyFileSync(PYTHON_RUNTIME_SRC, join(workersDir, '_runtime.py'))
           copyFileSync(PYTHON_NVENT_HELPER_SRC, join(workersDir, 'nvent.py'))
 
@@ -664,6 +726,16 @@ export default defineNuxtModule<NventIiiOptions>({
             const dest = join(outputNventDir, 'functions', relativeDest)
             mkdirSync(join(dest, '..'), { recursive: true })
             copyFileSync(fn.absPath, dest)
+          }
+
+          const requirementsCandidates: Array<{ src: string, name: string }> = [
+            { src: join(nuxt.options.rootDir, 'requirements.txt'), name: 'requirements.txt' },
+            { src: join(nuxt.options.rootDir, 'server', 'requirements.txt'), name: 'server-requirements.txt' },
+          ]
+
+          for (const req of requirementsCandidates) {
+            if (!existsSync(req.src)) continue
+            copyFileSync(req.src, join(outputRequirementsDir, req.name))
           }
           console.log('[nvent] Python worker files copied to .output/nvent/')
         })

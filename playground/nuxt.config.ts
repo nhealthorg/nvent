@@ -32,7 +32,7 @@ export default defineNuxtConfig({
 
   nvent: {
     iii: {
-      version: 'iii/v0.21.4',
+      version: 'iii/v0.21.6',
       failOnInstallFailure: true,
       mode: 'local',
       console: true,
@@ -56,6 +56,9 @@ export default defineNuxtConfig({
       },
       queue: {
         queueConfigs: {
+          default: {
+            concurrency: 4,
+          },
           heartbeat: {
             type: 'standard',
             concurrency: 1,

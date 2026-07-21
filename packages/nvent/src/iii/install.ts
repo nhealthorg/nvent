@@ -16,6 +16,7 @@ const execAsync = promisify(exec)
 const logger = consola.withTag('nvent:iii-install')
 
 const GITHUB_RELEASE_BASE = 'https://github.com/iii-hq/iii/releases/download'
+export const MIN_SUPPORTED_III_VERSION = '0.21.5'
 
 interface PlatformAsset {
   url: string
@@ -50,12 +51,69 @@ function getPlatformAsset(version: string): PlatformAsset {
   throw new Error(`Unsupported platform: ${platform}/${arch}`)
 }
 
+function getWorkerPlatformAsset(version: string): PlatformAsset {
+  const platform = process.platform
+  const arch = process.arch
+
+  const tag = toReleaseTag(version)
+  const base = `${GITHUB_RELEASE_BASE}/${tag}`
+
+  if (platform === 'linux' && arch === 'x64') {
+    return { url: `${base}/iii-worker-x86_64-unknown-linux-gnu.tar.gz`, ext: 'tar.gz' }
+  }
+  if (platform === 'linux' && arch === 'arm64') {
+    return { url: `${base}/iii-worker-aarch64-unknown-linux-gnu.tar.gz`, ext: 'tar.gz' }
+  }
+  if (platform === 'darwin' && arch === 'x64') {
+    return { url: `${base}/iii-worker-x86_64-apple-darwin.tar.gz`, ext: 'tar.gz' }
+  }
+  if (platform === 'darwin' && arch === 'arm64') {
+    return { url: `${base}/iii-worker-aarch64-apple-darwin.tar.gz`, ext: 'tar.gz' }
+  }
+  if (platform === 'win32' && arch === 'x64') {
+    return { url: `${base}/iii-worker-x86_64-pc-windows-msvc.zip`, ext: 'zip' }
+  }
+  if (platform === 'win32' && arch === 'arm64') {
+    return { url: `${base}/iii-worker-aarch64-pc-windows-msvc.zip`, ext: 'zip' }
+  }
+
+  throw new Error(`Unsupported platform for iii-worker: ${platform}/${arch}`)
+}
+
 /**
  * Extracts the plain semver string from a GitHub tag_name.
  * 'iii/v0.8.2' → '0.8.2',  'v0.8.2' → '0.8.2',  '0.8.2' → '0.8.2'
  */
-function semverFromTag(tag: string): string {
+export function semverFromTag(tag: string): string {
   return tag.replace(/^.*\/v?/, '').replace(/^v/, '')
+}
+
+function parseSemver(version: string): [number, number, number] | null {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function compareSemver(a: string, b: string): number {
+  const parsedA = parseSemver(a)
+  const parsedB = parseSemver(b)
+  if (!parsedA || !parsedB) return 0
+  if (parsedA[0] !== parsedB[0]) return parsedA[0] - parsedB[0]
+  if (parsedA[1] !== parsedB[1]) return parsedA[1] - parsedB[1]
+  return parsedA[2] - parsedB[2]
+}
+
+export function assertSupportedIiiVersion(version: string): void {
+  if (!version || version === 'latest') return
+  const normalized = semverFromTag(version)
+  if (!parseSemver(normalized)) {
+    throw new Error(`[nvent] Invalid iii version '${version}'. Expected formats: latest, iii/vX.Y.Z, vX.Y.Z, or X.Y.Z.`)
+  }
+  if (compareSemver(normalized, MIN_SUPPORTED_III_VERSION) < 0) {
+    throw new Error(
+      `[nvent] iii version '${version}' is not supported. Minimum supported version is iii/v${MIN_SUPPORTED_III_VERSION}.`,
+    )
+  }
 }
 
 /**
@@ -305,5 +363,49 @@ export async function ensureIiiEngine(options: InstallOptions): Promise<string> 
   const installedVersion = await getCurrentVersion(binaryPath)
   if (logLevel === 'info') logger.info(`iii engine v${installedVersion} installed at ${binaryPath}`)
 
+  return binaryPath
+}
+
+/**
+ * Ensures the managed iii-worker binary is present for engine module workers
+ * like queue/state/cron/stream on newer iii releases.
+ */
+export async function ensureIiiWorker(options: InstallOptions): Promise<string> {
+  const { binDir } = options
+  const logLevel = options.logLevel ?? 'warn'
+  const binaryName = process.platform === 'win32' ? 'iii-worker.exe' : 'iii-worker'
+  const binaryPath = join(binDir, binaryName)
+
+  let version = options.version
+  if (!version || version === 'latest') {
+    if (logLevel === 'info') logger.info('Resolving latest iii-worker version...')
+    version = await fetchLatestVersion()
+  }
+
+  if (existsSync(binaryPath)) {
+    const currentVersion = await getCurrentVersion(binaryPath)
+    const wantedSemver = semverFromTag(version)
+    if (currentVersion === wantedSemver) {
+      if (logLevel === 'info') logger.info(`iii-worker v${wantedSemver} already installed at ${binaryPath}`)
+      return binaryPath
+    }
+  }
+
+  if (!existsSync(binDir)) {
+    mkdirSync(binDir, { recursive: true })
+  }
+
+  const asset = getWorkerPlatformAsset(version)
+  await downloadAndExtract(asset.url, asset.ext, binDir, logLevel)
+
+  if (!existsSync(binaryPath)) {
+    throw new Error(`iii-worker binary not found at ${binaryPath} after extraction`)
+  }
+
+  if (process.platform !== 'win32') {
+    chmodSync(binaryPath, 0o755)
+  }
+
+  if (logLevel === 'info') logger.info(`iii-worker ${version} installed at ${binaryPath}`)
   return binaryPath
 }

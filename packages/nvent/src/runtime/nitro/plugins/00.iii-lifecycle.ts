@@ -57,20 +57,28 @@ export default defineNitroPlugin(async (nitroApp) => {
     return
   }
 
-  // Resolve iii-config.yaml — placed in .output/nvent/ by nuxt build.
-  let configPath = findExisting(join(nventDir, 'iii-config.yaml'))
+  // Prefer the build-generated config.yaml. Keep iii-config.yaml as legacy fallback.
+  let configPath = findExisting(join(nventDir, 'config.yaml'), join(nventDir, 'iii-config.yaml'))
   if (!configPath) {
     // Fallback: write from the build-time YAML stored in runtimeConfig.
     if (!iiiCfg.engineConfigYaml) {
-      console.error('[nvent] iii-config.yaml not found and no stored config available. Skipping engine start.')
+      console.error('[nvent] config.yaml not found and no stored config available. Skipping engine start.')
       return
     }
     mkdirSync(nventDir, { recursive: true })
-    configPath = join(nventDir, 'iii-config.yaml')
+    configPath = join(nventDir, 'config.yaml')
     writeFileSync(configPath, iiiCfg.engineConfigYaml, 'utf-8')
   }
 
-  const engine = createEngineManager({ binaryPath, configPath, httpPort, wsPort, logLevel })
+  const engine = createEngineManager({
+    binaryPath,
+    configPath,
+    httpPort,
+    wsPort,
+    logLevel,
+    workingDir: nventDir,
+    allowPortReuse: false,
+  })
   await engine.start()
 
   let consoleManager: ConsoleManager | null = null

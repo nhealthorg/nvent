@@ -10,6 +10,7 @@ import { defineNitroPlugin, useRuntimeConfig } from '#imports'
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createConnection } from 'node:net'
 import { resolveNventDir } from '../utils/nventDir'
 import { registerWorker } from 'iii-sdk'
 import { registerNodeFunctions } from '../utils/workers/node'
@@ -31,6 +32,45 @@ function readProjectName(): string | undefined {
     return typeof pkg.name === 'string' ? pkg.name : undefined
   } catch {
     return undefined
+  }
+}
+
+function isLocalBridgeHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+}
+
+function probeTcp(host: string, port: number, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port }, () => {
+      socket.destroy()
+      resolve(true)
+    })
+    socket.once('error', () => resolve(false))
+    setTimeout(() => {
+      socket.destroy()
+      resolve(false)
+    }, timeoutMs)
+  })
+}
+
+async function waitForLocalBridge(wsUrl: string, timeoutMs = 20_000): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(wsUrl)
+  }
+  catch {
+    return
+  }
+
+  if (!isLocalBridgeHost(parsed.hostname)) return
+
+  const port = Number(parsed.port || '49134')
+  const host = parsed.hostname === '::1' ? '127.0.0.1' : parsed.hostname
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (await probeTcp(host, port)) return
+    await new Promise(resolve => setTimeout(resolve, 200))
   }
 }
 
@@ -106,6 +146,11 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   const fnCount = (registry.functions ?? []).length
   const triggerCount = (registry.triggers ?? []).length
+
+  await waitForLocalBridge(wsUrl).catch(() => {
+    // Best effort: SDK has reconnection; we just reduce noisy startup races.
+  })
+
   console.log(`[nvent] iii-worker: connecting to ${wsUrl} — ${fnCount} function(s), ${triggerCount} trigger(s)`)
 
   const iii = registerWorker(wsUrl, {
@@ -125,11 +170,16 @@ export default defineNitroPlugin(async (nitroApp) => {
       maxRetries: -1,
     },
   })
+
+  // Expose immediately so useIii() is available during startup while
+  // function/trigger registration is still in progress.
+  nitroApp.$iii = iii
+
   console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
 
   // Register all Node.js functions and triggers with the iii engine
   const nodeFunctions = (registry.functions ?? []).filter(f => f.runtime === 'nodejs')
-  registerNodeFunctions(iii, nodeFunctions)
+  await registerNodeFunctions(iii, nodeFunctions)
 
   // Built-in RBAC auth function used by the browser worker-manager.
   iii.registerFunction(
@@ -168,9 +218,6 @@ export default defineNitroPlugin(async (nitroApp) => {
     },
     { description: 'nvent browser RBAC auth function' },
   )
-
-  // Expose on nitroApp for useIii() composable
-  nitroApp.$iii = iii
 
   // Python workers — started here only in production.
   // In development, module.ts manages Python workers directly in the Nuxt process.

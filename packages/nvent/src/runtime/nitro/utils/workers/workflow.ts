@@ -9,6 +9,35 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { getBinaryPath } from '@nvent-addon/workflow-worker'
 
+export function getLocalWorkflowPackageDir(): string | null {
+  if (process.platform === 'linux' && process.arch === 'x64') return 'workflow-worker-linux-x64-gnu'
+  if (process.platform === 'linux' && process.arch === 'arm64') return 'workflow-worker-linux-arm64-gnu'
+  if (process.platform === 'darwin' && process.arch === 'x64') return 'workflow-worker-darwin-x64'
+  if (process.platform === 'darwin' && process.arch === 'arm64') return 'workflow-worker-darwin-arm64'
+  if (process.platform === 'win32' && process.arch === 'x64') return 'workflow-worker-win32-x64-msvc'
+  return null
+}
+
+export function resolveWorkflowPackagedBinaryPath(): string | null {
+  try {
+    const binaryPath = getBinaryPath()
+    return binaryPath && existsSync(binaryPath) ? binaryPath : null
+  }
+  catch {
+    return null
+  }
+}
+
+export function resolveWorkflowBinaryFromPackageRoot(packageRootDir: string): string | null {
+  const packageDir = getLocalWorkflowPackageDir()
+  if (packageDir) {
+    const binaryName = process.platform === 'win32' ? 'workflow.exe' : 'workflow'
+    const binaryPath = join(packageRootDir, packageDir, 'bin', binaryName)
+    if (existsSync(binaryPath)) return binaryPath
+  }
+  return resolveWorkflowPackagedBinaryPath()
+}
+
 export interface WorkflowWorkerBootConfig {
   defaultPendingTimeoutMs?: number
   sweepExpression?: string
@@ -26,6 +55,7 @@ export class WorkflowWorkerManager {
     private readonly rustProjectDir: string,
     private readonly packageRootDir: string,
     private readonly workflowConfig?: WorkflowWorkerBootConfig,
+    private readonly preferredCommand?: string,
   ) {
     WorkflowWorkerManager.instance = this
     ;(globalThis as any).__WorkflowWorkerManager = WorkflowWorkerManager
@@ -41,6 +71,15 @@ export class WorkflowWorkerManager {
    */
   getCommandArgs(): { command: string, args: string[] } {
     const workerConfigArg = this.buildWorkerConfigArg()
+    if (this.preferredCommand) {
+      return {
+        command: this.preferredCommand,
+        args: workerConfigArg
+          ? ['--url', this.wsUrl, '--config', workerConfigArg]
+          : ['--url', this.wsUrl],
+      }
+    }
+
     const packagedBinary = this.tryResolvePackagedBinary()
     if (packagedBinary) {
       return {
@@ -109,22 +148,6 @@ export class WorkflowWorkerManager {
   }
 
   private tryResolveLocalPackagedBinary(): string | null {
-    const packageDir = this.getLocalPackageDir()
-    if (!packageDir) {
-      return null
-    }
-
-    const binaryName = process.platform === 'win32' ? 'workflow.exe' : 'workflow'
-    const binaryPath = join(this.packageRootDir, packageDir, 'bin', binaryName)
-    return existsSync(binaryPath) ? binaryPath : null
-  }
-
-  private getLocalPackageDir(): string | null {
-    if (process.platform === 'linux' && process.arch === 'x64') return 'workflow-worker-linux-x64-gnu'
-    if (process.platform === 'linux' && process.arch === 'arm64') return 'workflow-worker-linux-arm64-gnu'
-    if (process.platform === 'darwin' && process.arch === 'x64') return 'workflow-worker-darwin-x64'
-    if (process.platform === 'darwin' && process.arch === 'arm64') return 'workflow-worker-darwin-arm64'
-    if (process.platform === 'win32' && process.arch === 'x64') return 'workflow-worker-win32-x64-msvc'
-    return null
+    return resolveWorkflowBinaryFromPackageRoot(this.packageRootDir)
   }
 }

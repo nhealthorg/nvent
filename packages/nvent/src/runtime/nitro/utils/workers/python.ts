@@ -12,6 +12,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createConnection } from 'node:net'
 import { consola } from 'consola'
 
 const logger = consola.withTag('nvent:python')
@@ -31,6 +32,54 @@ const LOG_LEVEL_RANK: Record<string, number> = { none: 0, error: 1, warn: 2, inf
 
 function shouldShow(lineLevel: LogLevel, minLevel: string): boolean {
   return (LOG_LEVEL_RANK[lineLevel] ?? 0) <= (LOG_LEVEL_RANK[minLevel] ?? 0)
+}
+
+function isLocalBridgeHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+}
+
+function probeTcp(host: string, port: number, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (result: boolean) => {
+      if (done) return
+      done = true
+      resolve(result)
+    }
+
+    const socket = createConnection({ host, port }, () => {
+      socket.destroy()
+      finish(true)
+    })
+    socket.once('error', () => finish(false))
+    setTimeout(() => {
+      socket.destroy()
+      finish(false)
+    }, timeoutMs)
+  })
+}
+
+async function waitForLocalBridge(wsUrl: string, timeoutMs = 20_000): Promise<boolean> {
+  let parsed: URL
+  try {
+    parsed = new URL(wsUrl)
+  }
+  catch {
+    return true
+  }
+
+  if (!isLocalBridgeHost(parsed.hostname)) return true
+
+  const port = Number(parsed.port || '49134')
+  const host = parsed.hostname === '::1' ? '127.0.0.1' : parsed.hostname
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (await probeTcp(host, port)) return true
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+
+  return false
 }
 
 const MAX_BACKOFF_MS = 30_000
@@ -185,6 +234,12 @@ export class PythonWorkersOrchestrator {
   async start(fns: PyFnInfo[]): Promise<void> {
     this.lastFns = fns
     if (fns.length === 0) return
+
+    const bridgeReady = await waitForLocalBridge(this.wsUrl)
+    if (!bridgeReady && this.logLevel !== 'none') {
+      logger.warn(`Engine bridge not reachable yet at ${this.wsUrl} (startup timeout). Starting Python workers anyway.`)
+    }
+
     this._prepareDir()
 
     const sharedFns = fns.filter(fn => !fn.standalone)

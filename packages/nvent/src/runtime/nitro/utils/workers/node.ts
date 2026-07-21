@@ -7,6 +7,174 @@ type IiiClient = ReturnType<typeof registerWorker>
 const WORKFLOW_STATE_SCOPE = 'workflow_run_state'
 const WORKFLOW_STREAM_NAME = 'workflow'
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isTransientTriggerRegistrationError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /worker\s+.+\s+is\s+missing|trigger\s+type\s+.+\s+not\s+found|not\s+active\s+in\s+your\s+project/i.test(msg)
+}
+
+function extractWorkerNameStatus(entry: unknown): { name?: string, status?: string } {
+  if (typeof entry === 'string') return { name: entry, status: 'unknown' }
+  if (!entry || typeof entry !== 'object') return {}
+  const raw = entry as Record<string, unknown>
+  const name = raw.name ?? raw.worker ?? raw.id
+  const status = raw.status ?? raw.state
+  return {
+    name: typeof name === 'string' ? name : undefined,
+    status: typeof status === 'string' ? status : undefined,
+  }
+}
+
+function isWorkerReadyStatus(status?: string): boolean {
+  if (!status) return true
+  return ['running', 'ready', 'active', 'connected', 'ok', 'unknown', 'available'].includes(status.toLowerCase())
+}
+
+function normalizeTriggerTypeEntry(entry: unknown): string | undefined {
+  if (typeof entry === 'string') return entry
+  if (!entry || typeof entry !== 'object') return undefined
+  const raw = entry as Record<string, unknown>
+  const type = raw.type ?? raw.trigger_type ?? raw.name ?? raw.id
+  return typeof type === 'string' ? type : undefined
+}
+
+function asArrayPayload(result: unknown, key: 'workers' | 'triggers'): unknown[] {
+  if (Array.isArray(result)) return result
+  if (result && typeof result === 'object') {
+    const value = (result as Record<string, unknown>)[key]
+    if (Array.isArray(value)) return value
+  }
+  return []
+}
+
+async function waitForRequiredWorkers(
+  iii: IiiClient,
+  requiredWorkers: Set<string>,
+  options?: { timeoutMs?: number, pollMs?: number },
+): Promise<void> {
+  if (requiredWorkers.size === 0) return
+  const timeoutMs = options?.timeoutMs ?? 25_000
+  const pollMs = options?.pollMs ?? 400
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    try {
+      const result = await iii.trigger({
+        function_id: 'engine::workers::list',
+        payload: {},
+        timeoutMs: 5_000,
+      })
+      const running = new Set<string>()
+      for (const entry of asArrayPayload(result, 'workers')) {
+        const { name, status } = extractWorkerNameStatus(entry)
+        if (!name) continue
+        if (isWorkerReadyStatus(status)) running.add(name)
+      }
+      const missing = Array.from(requiredWorkers).filter(name => !running.has(name))
+      if (missing.length === 0) return
+    }
+    catch {
+      // Engine inventory endpoint can fail briefly while modules are still initializing.
+    }
+    await sleep(pollMs)
+  }
+
+  const missing = Array.from(requiredWorkers).join(', ')
+  console.warn(`[nvent] worker readiness timeout before registration: ${missing}`)
+}
+
+async function waitForRequiredTriggerTypes(
+  iii: IiiClient,
+  requiredTriggerTypes: Set<string>,
+  options?: { timeoutMs?: number, pollMs?: number },
+): Promise<void> {
+  if (requiredTriggerTypes.size === 0) return
+  const timeoutMs = options?.timeoutMs ?? 25_000
+  const pollMs = options?.pollMs ?? 400
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    try {
+      const result = await iii.trigger({
+        function_id: 'engine::triggers::list',
+        payload: {},
+        timeoutMs: 5_000,
+      })
+      const available = new Set<string>()
+      for (const entry of asArrayPayload(result, 'triggers')) {
+        const triggerType = normalizeTriggerTypeEntry(entry)
+        if (triggerType) available.add(triggerType)
+      }
+      const missing = Array.from(requiredTriggerTypes).filter(type => !available.has(type))
+      if (missing.length === 0) return
+    }
+    catch {
+      // Trigger catalog endpoint can fail briefly while engine starts.
+    }
+    await sleep(pollMs)
+  }
+
+  const missing = Array.from(requiredTriggerTypes).join(', ')
+  console.warn(`[nvent] trigger-type readiness timeout before registration: ${missing}`)
+}
+
+async function registerTriggerWithRetry(
+  iii: IiiClient,
+  trigger: { type: string, function_id: string, config: Record<string, unknown> },
+  options?: { maxAttempts?: number, initialDelayMs?: number },
+): Promise<void> {
+  const maxAttempts = options?.maxAttempts ?? 25
+  const initialDelayMs = options?.initialDelayMs ?? 200
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await iii.registerTrigger(trigger)
+      return
+    }
+    catch (err) {
+      if (!isTransientTriggerRegistrationError(err) || attempt >= maxAttempts) {
+        throw err
+      }
+      const backoffMs = Math.min(initialDelayMs * Math.pow(1.35, attempt - 1), 3_000)
+      await sleep(backoffMs)
+    }
+  }
+}
+
+async function registerWorkflowQueueSubscriber(
+  iii: IiiClient,
+  functionId: string,
+  queue: string,
+): Promise<void> {
+  const maxAttempts = 40
+  const initialDelayMs = 250
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await iii.trigger({
+        function_id: 'engine::register_trigger',
+        payload: {
+          trigger_type: 'durable:subscriber',
+          function_id: functionId,
+          config: { queue },
+        },
+        timeoutMs: 10_000,
+      })
+      return
+    }
+    catch (err) {
+      if (!isTransientTriggerRegistrationError(err) || attempt >= maxAttempts) {
+        throw err
+      }
+      const backoffMs = Math.min(initialDelayMs * Math.pow(1.35, attempt - 1), 3_000)
+      await sleep(backoffMs)
+    }
+  }
+}
+
 export interface NodeFnInfo {
   /** iii function ID (e.g. 'greet' or 'orders::process') */
   id: string
@@ -281,7 +449,26 @@ function createContextLogger(iii: IiiClient, functionId: string, context: { run_
  * Auto-wraps handlers to emit workflow::node-completed events when _workflow metadata
  * is present in the input (workflow orchestration).
  */
-export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
+export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): Promise<void> {
+  const requiredWorkers = new Set<string>()
+  const requiredTriggerTypes = new Set<string>()
+
+  for (const fn of fns) {
+    for (const trigger of fn.triggers ?? []) {
+      if (trigger.type === 'http') requiredWorkers.add('iii-http')
+      if (trigger.type === 'cron') requiredWorkers.add('iii-cron')
+      if (trigger.type === 'durable:subscriber') requiredWorkers.add('queue')
+      requiredTriggerTypes.add(trigger.type)
+    }
+    if (fn.workflow) {
+      requiredWorkers.add('queue')
+      requiredTriggerTypes.add('durable:subscriber')
+    }
+  }
+
+  await waitForRequiredWorkers(iii, requiredWorkers)
+  await waitForRequiredTriggerTypes(iii, requiredTriggerTypes)
+
   for (const fn of fns) {
     // Wrap handler to auto-emit workflow completion events
     const wrappedHandler = async (input: unknown) => {
@@ -416,7 +603,7 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
     // Register all declared triggers
     for (const trigger of fn.triggers ?? []) {
       const cfg = trigger.config ?? {}
-      iii.registerTrigger({ type: trigger.type, function_id: fn.id, config: cfg })
+      await registerTriggerWithRetry(iii, { type: trigger.type, function_id: fn.id, config: cfg })
     }
 
     // Register workflow queue subscriber only when explicitly enabled via defineFunction({ workflow }).
@@ -425,11 +612,7 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
         ? fn.workflow.queue
         : 'default'
       console.log(`[nvent/workflow] subscribing workflow-enabled function ${fn.id} to queue ${queue}`)
-      iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: fn.id,
-        config: { queue },
-      })
+      await registerWorkflowQueueSubscriber(iii, fn.id, queue)
     }
   }
 }

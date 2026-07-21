@@ -8,6 +8,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createConnection } from 'node:net'
+import { delimiter, dirname } from 'node:path'
 import { consola } from 'consola'
 
 const logger = consola.withTag('nvent:iii-engine')
@@ -53,6 +54,12 @@ export interface EngineManagerOptions {
   workingDir?: string
   /** Minimum log level for engine output. Default: 'warn' */
   logLevel?: 'none' | 'error' | 'warn' | 'info'
+  /**
+   * When true and the child exits early but the expected ports are already open,
+   * assume another compatible iii engine is running and reuse it.
+   * Disable in strict production boot flows to avoid accidentally reusing a dev engine.
+   */
+  allowPortReuse?: boolean
 }
 
 type LogLevel = 'info' | 'warn' | 'error'
@@ -97,6 +104,7 @@ export class EngineManager {
       wsPort: 49134, 
       logLevel: 'warn', 
       workingDir: process.cwd(),
+      allowPortReuse: true,
       ...opts 
     }
   }
@@ -194,6 +202,10 @@ export class EngineManager {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
       cwd: this.opts.workingDir,
+      env: {
+        ...process.env,
+        PATH: `${dirname(binaryPath)}${delimiter}${process.env.PATH ?? ''}`,
+      },
     })
 
     this.process.stdout?.on('data', (chunk: Buffer) => {
@@ -229,6 +241,13 @@ export class EngineManager {
     if (earlyExitCode !== null && earlyExitCode !== 0) {
       const [httpOk, wsOk] = await Promise.all([isTcpPortOpen(httpPort), isTcpPortOpen(wsPort)])
       if (httpOk && wsOk) {
+        if (!this.opts.allowPortReuse) {
+          throw new Error(
+            `iii engine ports are already in use (HTTP:${httpPort}, WS:${wsPort}) and strict startup is enabled. `
+            + `Another engine instance is likely running (for example a dev run using node_modules/.nvent). `
+            + `Stop existing iii processes and restart.`,
+          )
+        }
         if (logLevel === 'info') logger.info(`iii engine already running on HTTP :${httpPort} / WS :${wsPort} — reusing`)
         return
       }
