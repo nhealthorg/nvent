@@ -25,7 +25,7 @@ const page = ref(Number(route.query.page) || 1)
 const limit = ref(20)
 
 const params = computed(() => ({
-  status: (route.query.status && status.value !== 'all') ? status.value : undefined,
+  status: (status.value && status.value !== 'all') ? status.value : undefined,
   workflow: (workflow.value && workflow.value !== 'all') ? workflow.value : undefined,
   limit: limit.value,
   offset: (page.value - 1) * limit.value
