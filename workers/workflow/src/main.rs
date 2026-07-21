@@ -22,12 +22,41 @@ use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 use workflow::configuration::{self, TriggerHandles};
 use workflow::functions::{self, ConfigCell};
 use workflow::locks::WorkflowLocks;
 use workflow::{manifest, state};
+
+fn apply_boot_config_override(
+    base: workflow::config::WorkerConfig,
+    raw_override: Option<&str>,
+) -> Result<workflow::config::WorkerConfig> {
+    let Some(raw_override) = raw_override else {
+        return Ok(base);
+    };
+
+    let override_value: Value = serde_json::from_str(raw_override)
+        .with_context(|| "parsing --config as JSON object")?;
+    let override_obj = override_value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("--config must be a JSON object"))?;
+
+    let mut merged = base.to_json();
+    let merged_obj = merged
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("internal error: WorkerConfig JSON is not an object"))?;
+
+    for (k, v) in override_obj {
+        merged_obj.insert(k.clone(), v.clone());
+    }
+
+    workflow::config::WorkerConfig::from_json(&merged)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| "applying --config override onto fetched worker config")
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -80,12 +109,6 @@ async fn main() -> Result<()> {
         },
     ));
 
-    // MVP: --config seeding not wired; authoritative value comes from the
-    // configuration worker.
-    if cli.config.is_some() {
-        tracing::warn!("--config seeding not wired in MVP; using stored/default config");
-    }
-
     configuration::register_config(&iii)
         .await
         .map_err(anyhow::Error::msg)
@@ -95,13 +118,15 @@ async fn main() -> Result<()> {
     // resilience stance as on_config_change keeping the previous config on a
     // fetch failure). Matches the warn-and-default convention of the other
     // worker binaries in this repo.
-    let cfg = match configuration::fetch_config(&iii).await {
+    let fetched_cfg = match configuration::fetch_config(&iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
             tracing::warn!(error = %e, "loading workflow configuration failed; using defaults");
             workflow::config::WorkerConfig::default()
         }
     };
+
+    let cfg = apply_boot_config_override(fetched_cfg, cli.config.as_deref())?;
 
     // Wire the state-layer RPC timeout from the authoritative config at boot
     // (kept in sync afterwards by configuration::apply_config on hot-reload).

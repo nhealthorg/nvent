@@ -27,6 +27,7 @@ pub mod state_list;
 pub mod stream_publish;
 pub mod stream_list;
 pub mod list_runs;
+pub mod config_get;
 
 pub type ConfigCell = Arc<tokio::sync::RwLock<Arc<WorkerConfig>>>;
 
@@ -216,6 +217,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { stream_list::handle(&d, req).await.map_err(Error::from) }
         })
         .description("List all known stream IDs for a run via registry."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::config",
+        RegisterFunction::new_async(move |req: config_get::ConfigRequest| {
+            let d = d.clone();
+            async move { config_get::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("Return the effective workflow worker configuration."),
     );
 
     let d = deps.clone();

@@ -172,6 +172,24 @@ export interface NventIiiOptions {
      */
     logLevel?: 'none' | 'error' | 'warn' | 'info'
     /**
+     * Workflow worker runtime config passed to the Rust worker at startup.
+     * These values override the worker's fetched config on boot.
+     */
+    workflow?: {
+      /** Default timeout for pending workflow nodes (ms). */
+      defaultPendingTimeoutMs?: number
+      /** Cron expression for workflow sweep scheduling. */
+      sweepExpression?: string
+      /** RPC dispatch timeout for workflow worker state/trigger calls (ms). */
+      dispatchTimeoutMs?: number
+      /** Maximum retry attempts per workflow node before fail-out. */
+      maxNodeRetries?: number
+      /** Retention window for terminal workflow runs (ms). */
+      runRetentionMs?: number
+      /** Retention window for workflow logs/traces (ms). */
+      observabilityRetentionMs?: number
+    }
+    /**
      * Enable the iii-console web UI (separate binary, http://localhost:3113).
      * Pass `true` for defaults or an object to customise.
      */

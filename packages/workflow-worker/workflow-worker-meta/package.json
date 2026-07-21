@@ -1,0 +1,31 @@
+{
+  "name": "@nvent-addon/workflow-worker",
+  "version": "1.0.0-alpha.12",
+  "description": "Platform-aware workflow worker binary resolver for nvent.",
+  "repository": "DevJoghurt/nvent",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.d.ts",
+    "index.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm -w run build:worker:package"
+  },
+  "optionalDependencies": {
+    "@nvent-addon/workflow-worker-linux-x64-gnu": "1.0.0-alpha.12",
+    "@nvent-addon/workflow-worker-linux-arm64-gnu": "1.0.0-alpha.12",
+    "@nvent-addon/workflow-worker-darwin-x64": "1.0.0-alpha.12",
+    "@nvent-addon/workflow-worker-darwin-arm64": "1.0.0-alpha.12",
+    "@nvent-addon/workflow-worker-win32-x64-msvc": "1.0.0-alpha.12"
+  }
+}

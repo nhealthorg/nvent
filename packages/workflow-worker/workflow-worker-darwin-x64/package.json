@@ -1,0 +1,20 @@
+{
+  "name": "@nvent-addon/workflow-worker-darwin-x64",
+  "version": "1.0.0-alpha.12",
+  "description": "macOS x64 binary for nvent workflow worker.",
+  "repository": "DevJoghurt/nvent",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/workflow",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/verify-workflow-worker-package.mjs --target darwin-x64"
+  }
+}

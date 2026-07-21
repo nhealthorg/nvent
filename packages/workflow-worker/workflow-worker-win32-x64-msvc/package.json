@@ -1,0 +1,20 @@
+{
+  "name": "@nvent-addon/workflow-worker-win32-x64-msvc",
+  "version": "1.0.0-alpha.12",
+  "description": "Windows x64 MSVC binary for nvent workflow worker.",
+  "repository": "DevJoghurt/nvent",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/workflow.exe",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/verify-workflow-worker-package.mjs --target win32-x64-msvc"
+  }
+}

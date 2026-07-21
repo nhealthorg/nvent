@@ -1,0 +1,23 @@
+{
+  "name": "@nvent-addon/workflow-worker-linux-x64-gnu",
+  "version": "1.0.0-alpha.12",
+  "description": "Linux x64 GNU binary for nvent workflow worker.",
+  "repository": "DevJoghurt/nvent",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "bin/workflow",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/verify-workflow-worker-package.mjs --target linux-x64-gnu"
+  }
+}

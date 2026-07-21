@@ -18,7 +18,85 @@ on:
         type: string
 
 jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # Strip leading 'v' from the pushed tag name (e.g. v1.0.0-alpha.0 → 1.0.0-alpha.0)
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
+  build-worker-platform-artifacts:
+    needs: resolve-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_key: linux-x64-gnu
+            package_dir: packages/workflow-worker/workflow-worker-linux-x64-gnu
+          - os: ubuntu-24.04-arm
+            target_key: linux-arm64-gnu
+            package_dir: packages/workflow-worker/workflow-worker-linux-arm64-gnu
+          - os: macos-13
+            target_key: darwin-x64
+            package_dir: packages/workflow-worker/workflow-worker-darwin-x64
+          - os: macos-14
+            target_key: darwin-arm64
+            package_dir: packages/workflow-worker/workflow-worker-darwin-arm64
+          - os: windows-latest
+            target_key: win32-x64-msvc
+            package_dir: packages/workflow-worker/workflow-worker-win32-x64-msvc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Set node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Bump versions
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          pnpm bumpp ${{ needs.resolve-version.outputs.version }} --recursive --no-commit --no-tag --no-push --yes
+
+      - name: Build worker binary package
+        run: pnpm run build:worker:package -- --target ${{ matrix.target_key }}
+
+      - name: Pack platform package
+        run: pnpm -C ${{ matrix.package_dir }} pack
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-worker-${{ matrix.target_key }}
+          path: ${{ matrix.package_dir }}/*.tgz
+
   release:
+    needs:
+      - resolve-version
+      - build-worker-platform-artifacts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,20 +116,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Resolve version
-        id: version
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            # Strip leading 'v' from the pushed tag name (e.g. v1.0.0-alpha.0 → 1.0.0-alpha.0)
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          fi
-
       - name: Bump versions
         if: github.event_name == 'workflow_dispatch'
         run: |
-          pnpm bumpp ${{ steps.version.outputs.version }} --recursive --no-commit --no-tag --no-push --yes
+          pnpm bumpp ${{ needs.resolve-version.outputs.version }} --recursive --no-commit --no-tag --no-push --yes
 
       - name: Build packages
         run: pnpm build
@@ -66,12 +134,12 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: release v${{ steps.version.outputs.version }}"
+            git commit -m "chore: release v${{ needs.resolve-version.outputs.version }}"
             git push
           fi
 
           # Create and push tag if it doesn't already exist
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v${{ needs.resolve-version.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists"
           else
@@ -89,9 +157,23 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Download worker artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: workflow-worker-*
+          path: .release-artifacts/workflow-worker
+          merge-multiple: true
+
+      - name: Publish workflow worker packages to npm
+        run: |
+          chmod +x ./scripts/release-workflow-worker.sh
+          ./scripts/release-workflow-worker.sh "${{ needs.resolve-version.outputs.version }}" ".release-artifacts/workflow-worker"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish packages to npm
         run: |
           chmod +x ./scripts/release.sh
-          ./scripts/release.sh "${{ steps.version.outputs.version }}"
+          ./scripts/release.sh "${{ needs.resolve-version.outputs.version }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

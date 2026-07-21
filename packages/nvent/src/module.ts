@@ -171,7 +171,9 @@ export default defineNuxtModule<NventIiiOptions>({
     // The actual process is managed by the iii-exec worker in the engine.
     new WorkflowWorkerManager(
       wsUrl,
-      resolve(nuxt.options.rootDir, '../packages/workflow-worker')
+      resolve(nuxt.options.rootDir, '../workers/workflow'),
+      resolve(nuxt.options.rootDir, '../packages/workflow-worker'),
+      iiiOpts.workflow
     )
 
     // -------------------------------------------------------------------------

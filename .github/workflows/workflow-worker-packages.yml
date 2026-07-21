@@ -1,0 +1,82 @@
+name: Workflow Worker Packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'workers/workflow/**'
+      - 'packages/workflow-worker/**'
+      - 'scripts/build-workflow-worker-package.mjs'
+      - 'scripts/verify-workflow-worker-package.mjs'
+      - 'scripts/workflow-worker-targets.mjs'
+
+jobs:
+  build-and-pack:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_key: linux-x64-gnu
+          - os: ubuntu-24.04-arm
+            target_key: linux-arm64-gnu
+          - os: macos-13
+            target_key: darwin-x64
+          - os: macos-14
+            target_key: darwin-arm64
+          - os: windows-latest
+            target_key: win32-x64-msvc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build platform package binary
+        run: pnpm run build:worker:package -- --target ${{ matrix.target_key }}
+
+      - name: Pack meta package
+        run: pnpm run pack:worker:meta
+
+      - name: Pack platform package
+        shell: bash
+        run: |
+          case "${{ matrix.target_key }}" in
+            linux-x64-gnu)
+              pnpm run pack:worker:linux-x64
+              ;;
+            linux-arm64-gnu)
+              pnpm -C packages/workflow-worker/workflow-worker-linux-arm64-gnu pack
+              ;;
+            darwin-x64)
+              pnpm -C packages/workflow-worker/workflow-worker-darwin-x64 pack
+              ;;
+            darwin-arm64)
+              pnpm -C packages/workflow-worker/workflow-worker-darwin-arm64 pack
+              ;;
+            win32-x64-msvc)
+              pnpm -C packages/workflow-worker/workflow-worker-win32-x64-msvc pack
+              ;;
+          esac
+
+      - name: Upload tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-worker-${{ matrix.target_key }}-tgz
+          path: |
+            packages/workflow-worker/workflow-worker-meta/*.tgz
+            packages/workflow-worker/workflow-worker-*/*.tgz
