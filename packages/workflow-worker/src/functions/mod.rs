@@ -26,6 +26,7 @@ pub mod state_delete;
 pub mod state_list;
 pub mod stream_publish;
 pub mod stream_list;
+pub mod list_runs;
 
 pub type ConfigCell = Arc<tokio::sync::RwLock<Arc<WorkerConfig>>>;
 
@@ -240,6 +241,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              long run to finish, that exhausts your turn budget. To be pushed the outcome when \
              the run reaches a terminal state, pass `notify` to workflow::start instead.",
         ),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::list-runs",
+        RegisterFunction::new_async(move |req: list_runs::ListRunsRequest| {
+            let d = d.clone();
+            async move { list_runs::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("List and filter workflow runs with pagination."),
     );
 
     let d = deps.clone();

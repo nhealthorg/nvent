@@ -411,6 +411,7 @@ export default defineNuxtModule<NventIiiOptions>({
     })
     const registryTemplatePath = resolve(nuxt.options.buildDir, III_REGISTRY_TEMPLATE)
     nuxt.options.alias['#nvent/iii-registry'] = registryTemplatePath
+    nuxt.options.alias['#nvent/types'] = resolve('./runtime/nitro/utils/workflow-types')
     // Transpile so Nitro bundles the registry + all function .ts files; without
     // this Node.js ESM tries to load them raw and virtual aliases like `#imports` break.
     nuxt.options.build.transpile.push(registryTemplatePath)
@@ -445,6 +446,11 @@ export default defineNuxtModule<NventIiiOptions>({
 
     // #nvent/server virtual module — single import for defineFunction, useIii, Logger, etc.
     nuxt.options.alias['#nvent/server'] = resolve('./runtime/nitro/server')
+
+    // Ensure types are available for aliases
+    nuxt.hook('prepare:types', ({ references }) => {
+      references.push({ path: resolve('./runtime/nitro/utils/workflow-types.ts') })
+    })
 
     // Client-side composables
     addImports([

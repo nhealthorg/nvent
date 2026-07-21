@@ -99,6 +99,7 @@ fn three_node_def() -> WorkflowDef {
 fn new_record(def_input: Value) -> WorkflowRunRecord {
     WorkflowRunRecord {
         run_id: "run_test".to_string(),
+        workflow_name: None,
         workflow_trace_id: Some("trace_test".to_string()),
         state_scope_id: Some("run_test".to_string()),
         stream_scope_id: Some("run_test".to_string()),
@@ -107,6 +108,8 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         abort: false,
         def_ref: "run_test".to_string(),
         input: def_input,
+        state_keys_map: BTreeMap::new(),
+        stream_ids: Vec::new(),
         nodes: BTreeMap::new(),
         fanout_src: BTreeMap::new(),
         result: None,

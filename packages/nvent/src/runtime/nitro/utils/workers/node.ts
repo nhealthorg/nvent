@@ -290,9 +290,6 @@ export function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): void {
       const workflow = isWorkflow ? (input as any)._workflow : null
       const hasWorkflowMeta = workflow?.run_id && workflow?.node_uid
       
-      if (hasWorkflowMeta) {
-        console.log(`[nvent/workflow] executing node ${workflow.node_uid} in run ${workflow.run_id} via function ${fn.id}`)
-      }
       
       // Extract actual input (unwrap from workflow envelope)
       const actualInput = hasWorkflowMeta && 'input' in (input as any)

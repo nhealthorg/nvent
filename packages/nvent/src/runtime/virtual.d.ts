@@ -17,7 +17,9 @@ declare module '#nvent/iii-registry' {
 }
 
 declare module '#nvent/server' {
-  export { defineFunction } from '../nitro/utils/defineFunction'
+  export { defineFunction } from './nitro/utils/defineFunction'
+  export { defineWorkflow } from './nitro/utils/defineWorkflow'
+  export * from './nitro/utils/workflow-types'
   export type {
     FunctionDef,
     FunctionHandler,
@@ -31,9 +33,20 @@ declare module '#nvent/server' {
     LogTriggerConfig,
     CustomTriggerConfig,
     HttpRequest,
-  } from '../nitro/utils/defineFunction'
-  export { useIii, useIiiHealth } from '../nitro/utils/useIii'
+  } from './nitro/utils/defineFunction'
+  export { useIii, useIiiHealth } from './nitro/utils/useIii'
   export { registerWorker, TriggerAction } from 'iii-sdk'
   export { Logger } from '@iii-dev/helpers/observability'
   export type { IIIClient, InitOptions} from 'iii-sdk'
+}
+
+declare module '#nvent/types' {
+  export {
+    RunStatus,
+    NodeState,
+    FunctionRuntime,
+    WorkflowMetadata,
+    NodeCheckpoint,
+    WorkflowRunRecord,
+  } from './nitro/utils/workflow-types'
 }

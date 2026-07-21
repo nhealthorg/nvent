@@ -675,6 +675,9 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 
     state::put_def(&deps.iii, &run_id, &req.definition).await?;
 
+    // Extract workflow name from metadata if present
+    let workflow_name = req.definition.metadata.as_ref().and_then(|m| m.name.clone());
+
     // Bound sub-workflow nesting: a node that opted into `workflow::start` could
     // otherwise recurse (sub-workflow → node → sub-workflow → …) without limit.
     let depth = caller_workflow_depth(deps, caller_session_id.as_deref()).await?;
@@ -685,8 +688,30 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     }
 
     let now = deps.now_ms();
+
+    // Pre-initialize nodes in Pending state to show progress in UI immediately
+    let mut nodes = BTreeMap::new();
+    for node_id in req.definition.nodes.keys() {
+        nodes.insert(
+            node_id.clone(),
+            crate::types::NodeCheckpoint {
+                state: crate::types::NodeState::Pending,
+                session_id: None,
+                turn_id: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                completed_at: None,
+                result_ref: None,
+                result_error: None,
+                retries: 0,
+                worker_name: None,
+            },
+        );
+    }
+
     let mut record = WorkflowRunRecord {
         run_id: run_id.clone(),
+        workflow_name,
         workflow_trace_id: Some(new_trace_id()),
         state_scope_id: Some(run_id.clone()),
         stream_scope_id: Some(run_id.clone()),
@@ -697,7 +722,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         input: req.input,
         state_keys_map: BTreeMap::new(),
         stream_ids: Vec::new(),
-        nodes: BTreeMap::new(),
+        nodes,
         fanout_src: BTreeMap::new(),
         result: None,
         result_error: None,

@@ -1,19 +1,34 @@
 <script setup lang="ts">
-import { useWorkflows, computed, useComponentRouter, ref } from '#imports'
+import { useWorkflows, computed, useComponentRouter, ref, useFetch, onMounted, onUnmounted } from '#imports'
 const { push } = useComponentRouter()
-const { definitions, activeRuns, loading, error } = useWorkflows()
+const { definitions, loading, error } = useWorkflows()
+
+const { data: activeRunsData, refresh: refreshActiveRuns } = useFetch<any>('/api/_workflows/runs', {
+  query: { status: 'awaiting_nodes', limit: 1 }
+})
 
 const stats = computed(() => [
   { label: 'Registered', count: definitions.value.length, icon: 'i-lucide-list' },
-  { label: 'Active Runs', count: activeRuns.value.length, icon: 'i-lucide-play', variant: 'blue' as const },
+  { label: 'Active Runs', count: activeRunsData.value?.pagination?.total || 0, icon: 'i-lucide-play', variant: 'blue' as const },
   { label: 'Triggers', count: definitions.value.reduce((acc, w) => acc + (w.triggers?.length || 0), 0), icon: 'i-lucide-zap', variant: 'amber' as const }
 ])
 
 const isTriggerOpen = ref(false)
 const selectedWorkflow = ref<any>(null)
 
+let refreshInterval: any = null
+onMounted(() => {
+  refreshInterval = setInterval(() => {
+    refreshActiveRuns()
+  }, 10000)
+})
+
+onUnmounted(() => {
+  if (refreshInterval) clearInterval(refreshInterval)
+})
+
 function openWorkflow(workflow: any) {
-  push(`/workflows/runs?filter=${workflow.id}`)
+  push(`/workflows/runs?workflow=${workflow.id}`)
 }
 
 function startTrigger(workflow: any) {
@@ -46,11 +61,6 @@ function onTriggered(event: { workflowId: string, runId: string }) {
             variant="outline"
             label="Workflow Runs"
             @click="push('/workflows/runs')"
-          />
-          <UButton
-            icon="i-heroicons-plus"
-            color="green"
-            label="New Workflow"
           />
         </div>
       </div>

@@ -305,7 +305,8 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
 ///   `Pending` (i.e. exists in `record.nodes` with state `Pending`).
 /// - For a fanout node not yet expanded: skip (expansion happens first via
 ///   `expand_ready_fanouts`).
-/// - For a normal node: the `node_id` itself if no checkpoint exists yet (never started).
+/// - For a normal node: the `node_id` itself if no checkpoint exists yet, or if it was
+///   pre-initialized as `Pending` by `workflow::start` (still not started).
 pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<String> {
     let mut frontier = Vec::new();
 
@@ -323,8 +324,12 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                 }
             }
         } else {
-            // Normal node: ready if no checkpoint yet and deps are done.
-            if !record.nodes.contains_key(node_id.as_str()) && deps_done(def, record, node_id) {
+            // Normal node: ready if still unstarted (missing or Pending) and deps are done.
+            let is_unstarted = match record.nodes.get(node_id.as_str()) {
+                None => true,
+                Some(cp) => cp.state == NodeState::Pending,
+            };
+            if is_unstarted && deps_done(def, record, node_id) {
                 frontier.push(node_id.clone());
             }
         }
@@ -613,6 +618,7 @@ mod tests {
     fn record() -> WorkflowRunRecord {
         WorkflowRunRecord {
             run_id: "run_test".to_string(),
+            workflow_name: None,
             workflow_trace_id: Some("trace_test".to_string()),
             state_scope_id: Some("run_test".to_string()),
             stream_scope_id: Some("run_test".to_string()),
@@ -656,6 +662,13 @@ mod tests {
     #[test]
     fn frontier_starts_with_root_node() {
         assert_eq!(ready_frontier(&def(), &record()), vec!["plan".to_string()]);
+    }
+
+    #[test]
+    fn frontier_treats_preinitialized_pending_root_as_unstarted() {
+        let (d, mut r) = (def(), record());
+        r.nodes.insert("plan".into(), pending_checkpoint());
+        assert_eq!(ready_frontier(&d, &r), vec!["plan".to_string()]);
     }
 
     #[test]

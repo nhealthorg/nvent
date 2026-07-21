@@ -1,5 +1,5 @@
 <template>
-  <div class="h-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden flex flex-col transition-all hover:shadow-md group">
+  <div @click.stop="$emit('details', workflow)" class="h-full cursor-pointer bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden flex flex-col transition-all hover:shadow-md group">
     <div class="p-6 flex-grow">
       <div class="flex items-start justify-between mb-2">
         <div class="flex items-center gap-3">
@@ -43,13 +43,6 @@
           icon="i-lucide-play"
           label="Trigger"
           @click.stop="$emit('trigger', workflow)"
-        />
-        <UButton
-          size="xs"
-          variant="ghost"
-          color="neutral"
-          icon="i-lucide-arrow-right"
-          @click.stop="$emit('details', workflow)"
         />
       </div>
     </div>

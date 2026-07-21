@@ -1,5 +1,5 @@
 {
-    "extends": "../../playground/.nuxt/tsconfig.json",
+  "extends": "../../playground/.nuxt/tsconfig.json",
   "compilerOptions": {
     "target": "ESNext",
     "module": "ESNext",
@@ -12,6 +12,9 @@
     "declaration": true,
     "composite": true
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*",
+    "../nvent/src/runtime/**/*"
+  ],
   "exclude": ["node_modules", "dist"]
 }

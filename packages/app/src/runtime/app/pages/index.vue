@@ -34,7 +34,6 @@
 
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
-import Dashboard from './dashboard.vue'
 import Workers from './workers.vue'
 import Workflows from './workflows/index.vue'
 import WorkflowRuns from './workflows/runs.vue'
@@ -42,14 +41,12 @@ import WorkflowRun from './workflows/[id].vue'
 
 const navItems: NavigationMenuItem[][] = [
   [
-    { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', path: '/' } as any,
     { label: 'Workflows', icon: 'i-lucide-workflow', path: '/workflows' } as any,
     { label: 'Workers', icon: 'i-lucide-server', path: '/workers' } as any,
   ]
 ]
 
 const routes = {
-  '/': Dashboard,
   '/workflows': Workflows,
   '/workflows/runs': WorkflowRuns,
   '/workflows/runs/:id': WorkflowRun,

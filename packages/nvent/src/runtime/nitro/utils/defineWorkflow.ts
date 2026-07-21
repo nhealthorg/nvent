@@ -1,5 +1,6 @@
 import { useIii } from '#imports'
 import type { TriggerConfig } from './defineFunction'
+import type { WorkflowRunRecord } from './workflow-types'
 
 /**
  * Lazy-loaded registry cache to avoid circular dependencies.

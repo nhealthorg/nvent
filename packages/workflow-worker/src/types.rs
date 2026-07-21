@@ -250,6 +250,8 @@ pub struct NotifySpec {
 pub struct WorkflowRunRecord {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_trace_id: Option<String>,
     /// Workflow state scope identifier used by runtime helpers and cleanup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -378,6 +380,7 @@ mod tests {
     fn record_round_trips_through_json() {
         let record = WorkflowRunRecord {
             run_id: "run_abc123".to_string(),
+            workflow_name: Some("demo".to_string()),
             workflow_trace_id: Some("trace_abc123".to_string()),
             state_scope_id: Some("run_abc123".to_string()),
             stream_scope_id: Some("run_abc123".to_string()),

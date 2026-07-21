@@ -10,6 +10,7 @@
 
 export { defineFunction } from './utils/defineFunction'
 export { defineWorkflow } from './utils/defineWorkflow'
+export * from './utils/workflow-types'
 export type {
   FunctionDef,
   FunctionHandler,
