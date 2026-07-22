@@ -114,7 +114,6 @@ export default defineNuxtModule<ModuleOptions>({
         config.optimizeDeps.include.push(
           '@vue/devtools-core', 
           '@vue/devtools-kit',
-          'vanilla-jsoneditor',
           '@vue-flow/core', 
           '@vue-flow/controls', 
           '@vue-flow/minimap', 
