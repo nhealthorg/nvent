@@ -1,6 +1,6 @@
 {
   "name": "nvent",
-  "version": "1.0.0-alpha.13",
+  "version": "1.0.0-alpha.14",
 
   "description": "Event-driven workflows for Nuxt",
   "repository": "nhealthorg/nvent",
@@ -23,7 +23,7 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
-    "@nvent-addon/workflow-worker": "1.0.0-alpha.13",
+    "@nvent-addon/workflow-worker": "1.0.0-alpha.14",
     "@nuxt/devtools-kit": "^3.2.4",
     "@nuxt/kit": "4.5.0",
     "chokidar": "^5.0.0",
