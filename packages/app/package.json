@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "@nuxt/module-builder": "^1.0.2",
-    "@nuxt/schema": "4.4.8",
+    "@nuxt/schema": "4.5.0",
     "@types/node": "^26.1.1",
     "typescript": "5.9.3",
     "vitest": "^4.1.10"
