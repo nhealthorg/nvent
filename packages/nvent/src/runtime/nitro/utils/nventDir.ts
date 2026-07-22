@@ -1,5 +1,6 @@
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, existsSync } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { existsSync as fsExistsSync } from 'node:fs'
 
 function isSentinelImportMetaUrl(importMetaUrl: string): boolean {
   return !importMetaUrl || importMetaUrl.endsWith('/_entry.js')
@@ -11,7 +12,9 @@ function resolveFromEntryArgv(): string | undefined {
   // Expected shape in production/preview: <outputDir>/server/index.mjs
   // We derive <outputDir>/nvent from the actual launched script path.
   const serverDir = dirname(entry)
-  return join(serverDir, '..', 'nvent')
+  const candidate = join(serverDir, '..', 'nvent')
+  if (fsExistsSync(candidate)) return candidate
+  return undefined
 }
 
 export function resolveNventDir(importMetaUrl: string): string {
@@ -24,8 +27,10 @@ export function resolveNventDir(importMetaUrl: string): string {
     try {
       const serverDir = dirname(fileURLToPath(importMetaUrl))
       const candidate = join(serverDir, '..', 'nvent')
-      // Reject root-level paths that indicate the sentinel was used
-      if (candidate !== '/nvent') {
+      // Reject root-level paths that indicate the sentinel was used.
+      // Also verify the directory exists to avoid resolving to .nuxt/nvent 
+      // when we actually want the node_modules location in dev.
+      if (candidate !== '/nvent' && fsExistsSync(candidate)) {
         console.log(`[nvent] resolveNventDir via importMetaUrl: ${candidate}`)
         return candidate
       }
@@ -41,8 +46,8 @@ export function resolveNventDir(importMetaUrl: string): string {
     return fromArgv
   }
 
-  // Fallback: nuxi preview runs node server/index.mjs with CWD = .output/
-  // so nvent/ is a direct child.
+  // Fallback for dev mode where imports might be symlinked or virtualized
+  // .nuxt/nvent is often a placeholder, we prefer the node_modules or output loc.
   const fromCwd = resolve(process.cwd(), 'nvent')
   console.log(`[nvent] resolveNventDir via CWD fallback: ${fromCwd} (importMetaUrl=${importMetaUrl})`)
   return fromCwd

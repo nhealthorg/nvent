@@ -1,6 +1,6 @@
 {
   "name": "@nvent-addon/workflow-worker-linux-arm64-gnu",
-  "version": "1.0.0-alpha.20",
+  "version": "1.0.0-alpha.21",
   "description": "Linux arm64 GNU binary for nvent workflow worker.",
   "repository": "DevJoghurt/nvent",
   "license": "MIT",
