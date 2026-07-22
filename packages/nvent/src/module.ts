@@ -176,13 +176,13 @@ export default defineNuxtModule<NventIiiOptions>({
       resolve(nuxt.options.rootDir, '../../workers/workflow'),
     ])
 
-    nuxt.hook('vite:extendConfig', (config, { isClient, isServer }) => {
-      config.optimizeDeps = {
-        include: [
-          '@vue/devtools-core',
-          '@vue/devtools-kit',
-        ]
-      };
+    nuxt.hook('vite:extendConfig', (config) => {
+      config.optimizeDeps = config.optimizeDeps || {}
+      config.optimizeDeps.include = config.optimizeDeps.include || []
+      config.optimizeDeps.include.push(
+        '@vue/devtools-core',
+        '@vue/devtools-kit'
+      )
     })
 
     // -------------------------------------------------------------------------

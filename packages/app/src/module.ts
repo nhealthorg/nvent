@@ -104,31 +104,40 @@ export default defineNuxtModule<ModuleOptions>({
         })
       })
     }
-    nuxt.hook('vite:extendConfig', (config, { isClient, isServer }) => {
-      config.optimizeDeps = {
-        include: [
-          '@vue/devtools-core',
-          '@vue/devtools-kit',
-          'vanilla-jsoneditor', 
-          '@vue-flow/core', 
-          '@vue-flow/controls', 
-          '@vue-flow/minimap', 
-          '@vue-flow/background',
-          'tailwind-merge',
-          'tailwind-variants',
-          'iii-browser-sdk',
-          'vue-router',
-        ],
-        exclude: [
-          'vue-demi',
-        ],
-        resolve: {
-          alias: {
-            'vue-demi': 'vue-demi/lib/v3/index.mjs',
-          },
-          dedupe: ['vue'],
-        },
-      };
+    nuxt.hook('vite:extendConfig', (config, { isClient }) => {
+      config.optimizeDeps = config.optimizeDeps || {}
+      config.optimizeDeps.include = config.optimizeDeps.include || []
+      config.optimizeDeps.include.push(
+        '@vue/devtools-core',
+        '@vue/devtools-kit',
+        'vanilla-jsoneditor',
+        '@vue-flow/core',
+        '@vue-flow/controls',
+        '@vue-flow/minimap',
+        '@vue-flow/background',
+        'tailwind-merge',
+        'tailwind-variants',
+        'iii-browser-sdk',
+        'vue-router',
+      )
+
+      config.optimizeDeps.exclude = config.optimizeDeps.exclude || []
+      if (!config.optimizeDeps.exclude.includes('vue-demi')) {
+        config.optimizeDeps.exclude.push('vue-demi')
+      }
+
+      config.resolve = config.resolve || {}
+      config.resolve.alias = config.resolve.alias || {}
+      if (Array.isArray(config.resolve.alias)) {
+        config.resolve.alias.push({ find: 'vue-demi', replacement: 'vue-demi/lib/v3/index.mjs' })
+      } else {
+        config.resolve.alias['vue-demi'] = 'vue-demi/lib/v3/index.mjs'
+      }
+
+      config.resolve.dedupe = config.resolve.dedupe || []
+      if (!config.resolve.dedupe.includes('vue')) {
+        config.resolve.dedupe.push('vue')
+      }
     })
   },
 })
