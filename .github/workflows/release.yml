@@ -45,10 +45,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target_key: linux-arm64-gnu
             package_dir: packages/workflow-worker/workflow-worker-linux-arm64-gnu
-          - os: macos-13
-            target_key: darwin-x64
-            package_dir: packages/workflow-worker/workflow-worker-darwin-x64
-          - os: macos-14
+          - os: macos-latest
             target_key: darwin-arm64
             package_dir: packages/workflow-worker/workflow-worker-darwin-arm64
           - os: windows-latest
@@ -68,13 +65,13 @@ jobs:
       - name: Set node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Bump versions
         if: github.event_name == 'workflow_dispatch'
@@ -110,11 +107,11 @@ jobs:
       - name: Set node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Bump versions
         if: github.event_name == 'workflow_dispatch'

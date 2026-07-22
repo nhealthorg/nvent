@@ -15,6 +15,6 @@
     "README.md"
   ],
   "scripts": {
-    "prepack": "node ../../scripts/verify-workflow-worker-package.mjs --target win32-x64-msvc"
+    "prepack": "node ../../../scripts/verify-workflow-worker-package.mjs --target win32-x64-msvc"
   }
 }

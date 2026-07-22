@@ -18,6 +18,6 @@
     "README.md"
   ],
   "scripts": {
-    "prepack": "node ../../scripts/verify-workflow-worker-package.mjs --target linux-x64-gnu"
+    "prepack": "node ../../../scripts/verify-workflow-worker-package.mjs --target linux-x64-gnu"
   }
 }

@@ -15,6 +15,6 @@
     "README.md"
   ],
   "scripts": {
-    "prepack": "node ../../scripts/verify-workflow-worker-package.mjs --target darwin-arm64"
+    "prepack": "node ../../../scripts/verify-workflow-worker-package.mjs --target darwin-arm64"
   }
 }
