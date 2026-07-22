@@ -28,7 +28,9 @@ publish_package() {
   local package_path=$2
 
   echo "⚡ Publishing $package_name"
-  cd "$package_path"
+  # Use absolute path to avoid directory jumping issues
+  local abs_path="$(pwd)/$package_path"
+  cd "$abs_path"
 
   if npm publish --access public --tag "$DIST_TAG" 2>&1; then
     echo "✅ $package_name published successfully"

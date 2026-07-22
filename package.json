@@ -29,6 +29,10 @@
     "cleanup": "rimraf dist*/ node_modules .nuxt* playground/.data playground/.output playground/node_modules packages/**/dist packages/**/node_modules",
     "bumpp": "bumpp --recursive"
   },
+  "resolutions": {
+		"@nvent-addon/app": "workspace:*",
+    "@nvent-addon/workflow-worker": "workspace:*"
+  },
   "devDependencies": {
     "@nuxt/devtools": "^3.2.4",
     "@nuxt/eslint-config": "1.16.0",
