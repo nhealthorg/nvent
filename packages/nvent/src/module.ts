@@ -29,7 +29,7 @@ import {
   hasNuxtModule,
   extendViteConfig
 } from '@nuxt/kit'
-import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs'
+import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync } from 'node:fs'
 import { rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { addCustomTab } from '@nuxt/devtools-kit'
@@ -81,8 +81,26 @@ function stageWorkflowBinary(targetBinDir: string, packageRootDir: string): stri
     const source = resolveWorkflowBinaryFromPackageRoot(packageRootDir)
     if (!source) return undefined
     if (!existsSync(source)) return undefined
+    
     mkdirSync(targetBinDir, { recursive: true })
     const target = join(targetBinDir, getWorkflowBinaryName())
+
+    // Check if the target is already modern and exists before copying.
+    // This prevents "Text file busy" errors if the engine is already running 
+    // or another process has the binary open.
+    if (existsSync(target)) {
+      try {
+        const sourceStat = statSync(source)
+        const targetStat = statSync(target)
+        // If the binary is current, skip the copy.
+        if (sourceStat.size === targetStat.size) {
+          return target
+        }
+      } catch {
+        // Fallback to copy if stat fails
+      }
+    }
+
     copyFileSync(source, target)
     if (process.platform !== 'win32') {
       chmodSync(target, 0o755)
