@@ -45,7 +45,7 @@ publish_tgz() {
 
 publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-linux-x64-gnu-$VERSION.tgz" "@nvent-addon/workflow-worker-linux-x64-gnu"
 publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-linux-arm64-gnu-$VERSION.tgz" "@nvent-addon/workflow-worker-linux-arm64-gnu"
-publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-darwin-x64-$VERSION.tgz" "@nvent-addon/workflow-worker-darwin-x64"
+# publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-darwin-x64-$VERSION.tgz" "@nvent-addon/workflow-worker-darwin-x64"
 publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-darwin-arm64-$VERSION.tgz" "@nvent-addon/workflow-worker-darwin-arm64"
 publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-win32-x64-msvc-$VERSION.tgz" "@nvent-addon/workflow-worker-win32-x64-msvc"
 
