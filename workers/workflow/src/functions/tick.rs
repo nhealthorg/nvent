@@ -130,7 +130,7 @@ pub(crate) async fn fire_node(
         "firing node via queue enqueue"
     );
 
-    deps
+    let trigger_res = deps
         .iii
         .trigger(iii_sdk::protocol::TriggerRequest {
             function_id: function.id.clone(),
@@ -138,33 +138,57 @@ pub(crate) async fn fire_node(
             action: Some(TriggerAction::Enqueue { queue }),
             timeout_ms: function.timeout_ms.or(Some(dispatch_timeout_ms)),
         })
-        .await
-        .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+        .await;
 
-    tracing::info!(
-        run_id = %record.run_id,
-        node_uid = %node_uid,
-        "node enqueued successfully, marking as Running"
-    );
+    match trigger_res {
+        Ok(_) => {
+            tracing::info!(
+                run_id = %record.run_id,
+                node_uid = %node_uid,
+                "node enqueued successfully, marking as Running"
+            );
 
-    // Mark node as Running. The function will write its result and emit
-    // workflow::node-completed when done (fast path), or the sweep will poll
-    // for completion (slow path).
-    record.nodes.insert(
-        node_uid.to_string(),
-        NodeCheckpoint {
-            state: NodeState::Running,
-            session_id: None,
-            turn_id: None,
-            result_ref: None, // Result written by function when complete
-            result_error: None,
-            pending_at: Some(deps.now_ms()),
-            pending_timeout_ms: prior_timeout,
-            retries: attempt,
-            completed_at: None,
-            worker_name: None,
-        },
-    );
+            record.nodes.insert(
+                node_uid.to_string(),
+                NodeCheckpoint {
+                    state: NodeState::Running,
+                    session_id: None,
+                    turn_id: None,
+                    result_ref: None, // Result written by function when complete
+                    result_error: None,
+                    pending_at: Some(deps.now_ms()),
+                    pending_timeout_ms: prior_timeout,
+                    retries: attempt,
+                    completed_at: None,
+                    worker_name: None,
+                },
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                run_id = %record.run_id,
+                node_uid = %node_uid,
+                error = %e,
+                "node fire failed (trigger error), marking as Failed"
+            );
+
+            record.nodes.insert(
+                node_uid.to_string(),
+                NodeCheckpoint {
+                    state: NodeState::Failed,
+                    session_id: None,
+                    turn_id: None,
+                    result_ref: None,
+                    result_error: Some(format!("Trigger failed: {}", e)),
+                    pending_at: Some(deps.now_ms()),
+                    pending_timeout_ms: None,
+                    retries: attempt,
+                    completed_at: Some(deps.now_ms()),
+                    worker_name: None,
+                },
+            );
+        }
+    }
 
     // Persist immediately to avoid race condition: if the function executes
     // synchronously (fast handler), it might emit node-completed before the
@@ -176,7 +200,7 @@ pub(crate) async fn fire_node(
     tracing::info!(
         run_id = %record.run_id,
         node_uid = %node_uid,
-        "node marked as Running and persisted"
+        "node state persisted"
     );
 
     Ok(())

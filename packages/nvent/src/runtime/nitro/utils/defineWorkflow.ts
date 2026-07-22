@@ -372,6 +372,11 @@ export function defineWorkflow<
             // Get runtime from registry instead of guessing
             if (!fnSpec.runtime || !fnSpec.queue || !fnSpec.engine_retry) {
               const execution = await getFunctionExecutionConfig(fnSpec.id)
+              
+              if (execution.runtime === 'unknown' && !fnSpec.id.startsWith('node:') && !fnSpec.id.startsWith('workflow:')) {
+                console.warn(`[nvent/workflow] Function ID '${fnSpec.id}' not found in registry. If this function does not exist in the engine, the workflow may hang.`)
+              }
+
               if (!fnSpec.runtime) fnSpec.runtime = execution.runtime
               if (!fnSpec.queue && execution.queue) fnSpec.queue = execution.queue
               if (!fnSpec.engine_retry && execution.engine_retry) fnSpec.engine_retry = execution.engine_retry

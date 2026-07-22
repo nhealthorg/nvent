@@ -42,7 +42,7 @@ pub struct WorkerConfig {
 }
 
 fn default_pending_timeout_ms() -> u64 {
-    1_800_000
+    300_000
 }
 fn default_sweep_expression() -> String {
     "0 * * * * *".to_string()
