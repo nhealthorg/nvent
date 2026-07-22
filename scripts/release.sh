@@ -41,5 +41,6 @@ publish_package() {
 
 publish_package "nvent" "packages/nvent"
 publish_package "@nvent-addon/app" "packages/app"
+publish_package "@nvent-addon/workflow-worker" "packages/workflow-worker/workflow-worker-meta"
 
 echo "✅ All packages published successfully"
