@@ -27,11 +27,17 @@ DIST_TAG=$(get_dist_tag "$VERSION")
 echo "📦 Publishing workflow-worker packages (dist-tag: ${DIST_TAG})"
 
 publish_tgz() {
-  local file="$1"
-  local package_name="$2"
+  local package_name="$1"
+  
+  # Normalize package name for file searching (e.g. @nvent-addon/worker -> nvent-addon-worker)
+  local file_pattern="${package_name//@/}"
+  file_pattern="${file_pattern//\//-}"
+  
+  # Find the file using a wildcard to be resilient against scope-to-filename mapping variations
+  local file=$(find "$ARTIFACT_DIR" -name "*${file_pattern}*${VERSION}.tgz" | head -n 1)
 
-  if [[ ! -f "$file" ]]; then
-    echo "❌ Missing artifact for $package_name: $file"
+  if [[ -z "$file" || ! -f "$file" ]]; then
+    echo "❌ Missing artifact for $package_name in $ARTIFACT_DIR (Pattern: *${file_pattern}*${VERSION}.tgz)"
     exit 1
   fi
 
@@ -43,11 +49,11 @@ publish_tgz() {
   fi
 }
 
-publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-linux-x64-gnu-$VERSION.tgz" "@nvent-addon/workflow-worker-linux-x64-gnu"
-publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-linux-arm64-gnu-$VERSION.tgz" "@nvent-addon/workflow-worker-linux-arm64-gnu"
-# publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-darwin-x64-$VERSION.tgz" "@nvent-addon/workflow-worker-darwin-x64"
-publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-darwin-arm64-$VERSION.tgz" "@nvent-addon/workflow-worker-darwin-arm64"
-publish_tgz "$ARTIFACT_DIR/nvent-addon-workflow-worker-win32-x64-msvc-$VERSION.tgz" "@nvent-addon/workflow-worker-win32-x64-msvc"
+publish_tgz "@nvent-addon/workflow-worker-linux-x64-gnu"
+publish_tgz "@nvent-addon/workflow-worker-linux-arm64-gnu"
+# publish_tgz "@nvent-addon/workflow-worker-darwin-x64"
+publish_tgz "@nvent-addon/workflow-worker-darwin-arm64"
+publish_tgz "@nvent-addon/workflow-worker-win32-x64-msvc"
 
 echo "⚡ Publishing @nvent-addon/workflow-worker"
 cd packages/workflow-worker/workflow-worker-meta
