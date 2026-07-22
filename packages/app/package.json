@@ -34,7 +34,6 @@
     "@vue-flow/core": "^1.48.2",
     "@vue-flow/minimap": "^1.5.4",
     "defu": "^6.1.7",
-    "json-editor-vue": "^0.19.1",
     "nuxt": "4.5.0",
     "pathe": "^2.0.3",
     "vue-demi": "^0.14.10",
