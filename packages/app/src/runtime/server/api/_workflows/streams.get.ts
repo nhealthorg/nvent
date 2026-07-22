@@ -1,4 +1,4 @@
-import { createError, defineEventHandler, getQuery } from 'h3'
+import { createError, defineEventHandler, getQuery, useIii } from '#imports'
 
 interface WorkflowStreamMessage {
   id: string
