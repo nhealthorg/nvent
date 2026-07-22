@@ -40,10 +40,10 @@ export default defineWorkflow({
       default: 5
     }
   },
-  handler: async (ctx, input: { 
+  handler: async (input: { 
     text: string,
     seconds: number
-   }) => {
+   }, ctx) => {
     // Step 1: Process the text
     const processed = await ctx.call('process-text', input)
 

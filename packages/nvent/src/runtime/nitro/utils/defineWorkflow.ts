@@ -205,8 +205,8 @@ function isCallOptions(value: unknown): value is CallOptions {
 }
 
 export type WorkflowHandler<TInput = any, TOutput = any> = (
+  input: TInput,
   ctx: WorkflowContext,
-  input: TInput
 ) => TOutput | Promise<TOutput>
 
 /** Any schema library with a parse method (Zod, Valibot, etc.) */
@@ -489,7 +489,7 @@ export function defineWorkflow<
         }
       }
 
-      const result = await options.handler(ctx, input)
+      const result = await options.handler(input, ctx)
       let outputNode = ''
       if (result && typeof result === 'object' && (result as any).$ref) {
         outputNode = (result as any).$ref.replace('node:', '')

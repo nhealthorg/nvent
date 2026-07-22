@@ -19,7 +19,7 @@ import { defineWorkflow } from '#nvent/server'
 export default defineWorkflow({
   name: 'pipeline::dag',
   description: 'Text analysis pipeline using Python function',
-  handler: async (ctx, payload: { text: string }) => {
+  handler: async (payload: { text: string }, ctx) => {
     // Node 1: Call the Python analyze function
     // The function expects: { text }
     // We use 'run_input' to pass the workflow input directly to the function

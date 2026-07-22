@@ -8,7 +8,7 @@ export default defineWorkflow({
       default: 'Hello World'
     }
   },
-  handler: async (ctx, input: { text: string }) => {
+  handler: async (input: { text: string }, ctx) => {
 
     const result = await ctx.call('process-text', input)
 

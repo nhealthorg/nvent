@@ -22,7 +22,7 @@ export default defineWorkflow({
       default: 'Hello World'
     }
   },
-  handler: async (ctx, input: { text: string }) => {
+  handler: async (input: { text: string }, ctx) => {
     // Single node that calls the process-text function
     const result = await ctx.node('process', {
       function: 'process-text',
