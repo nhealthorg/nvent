@@ -1,4 +1,4 @@
-import { dirname, join, resolve, existsSync } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync as fsExistsSync } from 'node:fs'
 
@@ -26,29 +26,45 @@ export function resolveNventDir(importMetaUrl: string): string {
   if (importMetaUrl && !isSentinelImportMetaUrl(importMetaUrl)) {
     try {
       const serverDir = dirname(fileURLToPath(importMetaUrl))
-      const candidate = join(serverDir, '..', 'nvent')
-      // Reject root-level paths that indicate the sentinel was used.
-      // Also verify the directory exists to avoid resolving to .nuxt/nvent 
-      // when we actually want the node_modules location in dev.
-      if (candidate !== '/nvent' && fsExistsSync(candidate)) {
-        console.log(`[nvent] resolveNventDir via importMetaUrl: ${candidate}`)
-        return candidate
+
+      // Robust search for the 'nvent' directory by walking up from the current chunk.
+      // In production, we expect .output/nvent to be a sibling of .output/server.
+      // If we are in .output/server/chunks/..., we need to walk up several levels.
+      let current = serverDir
+      for (let i = 0; i < 4; i++) {
+        const candidate = join(current, 'nvent')
+        if (fsExistsSync(candidate)) {
+          // Verify it's not a false positive at root level.
+          if (candidate !== '/nvent') {
+            return candidate
+          }
+        }
+        const parent = dirname(current)
+        if (parent === current) break
+        current = parent
       }
     }
     catch (e) {
-      console.warn(`[nvent] resolveNventDir: failed to parse importMetaUrl=${importMetaUrl}`, e)
+      // ignore
     }
   }
 
   const fromArgv = resolveFromEntryArgv()
-  if (fromArgv) {
-    console.log(`[nvent] resolveNventDir via process.argv[1]: ${fromArgv} (importMetaUrl=${importMetaUrl})`)
-    return fromArgv
+  if (fromArgv) return fromArgv
+
+  // Dev fallback: point to node_modules/.nvent if it exists in CWD or up-tree.
+  // This is where module.ts stages binaries in development.
+  let current = process.cwd()
+  for (let i = 0; i < 3; i++) {
+    const candidate = join(current, 'node_modules', '.nvent')
+    if (fsExistsSync(candidate)) return candidate
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
   }
 
-  // Fallback for dev mode where imports might be symlinked or virtualized
-  // .nuxt/nvent is often a placeholder, we prefer the node_modules or output loc.
-  const fromCwd = resolve(process.cwd(), 'nvent')
-  console.log(`[nvent] resolveNventDir via CWD fallback: ${fromCwd} (importMetaUrl=${importMetaUrl})`)
-  return fromCwd
+  // Final fallback: use a local 'nvent' directory if it exists, otherwise 
+  // default to CWD/nvent (even if missing) to let the caller handle errors.
+  const localNvent = resolve(process.cwd(), 'nvent')
+  return localNvent
 }

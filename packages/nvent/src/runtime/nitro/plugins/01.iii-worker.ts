@@ -208,6 +208,37 @@ export default defineNitroPlugin(async (nitroApp) => {
         throw new Error('Unauthorized: anonymous browser sessions are disabled')
       }
 
+  // Register all Node.js functions and triggers with the iii engine
+  const nodeFunctions = (registry.functions ?? []).filter(f => f.runtime === 'nodejs')
+  await registerNodeFunctions(iii, nodeFunctions)
+
+  // Built-in RBAC auth function used by the browser worker-manager.
+  iii.registerFunction(
+    browserAuthFnId,
+    async (input: any) => {
+      const queryParams = (input?.query_params ?? {}) as Record<string, string[]>
+      const tokenRaw = queryParams._nvent_token?.[0]
+      if (!tokenRaw) {
+        throw new Error('Unauthorized: missing browser auth token')
+      }
+
+      const token = verifyBrowserAuthToken(tokenRaw, String(browserAuthCfg.secret ?? ''))
+      if (!token) {
+        throw new Error('Unauthorized: invalid browser auth token')
+      }
+
+      const custom = browserAuthResolver
+        ? await browserAuthResolver({ token, queryParams })
+        : undefined
+
+      if (custom?.allow === false) {
+        throw new Error('Unauthorized')
+      }
+
+      if (custom?.allow === undefined && browserAuthCfg.allowAnonymous === false) {
+        throw new Error('Unauthorized: anonymous browser sessions are disabled')
+      }
+
       return {
         context: custom?.context,
         allowed_functions: custom?.allowedFunctions,
@@ -219,34 +250,36 @@ export default defineNitroPlugin(async (nitroApp) => {
     { description: 'nvent browser RBAC auth function' },
   )
 
-  // Python workers — started here only in production.
+  // Python workers — managed here only in production.
   // In development, module.ts manages Python workers directly in the Nuxt process.
-  // nventDir is always .output/nvent/ — the sibling of .output/server/ where
-  // import.meta.url (the Nitro entry) lives. CWD-independent, deploy-safe.
-  // Set NVENT_DIR env var to override for custom deploy layouts.
-  const nventArtifactsDir = resolveNventDir(import.meta.url)
-  const workersDir = join(nventArtifactsDir, 'workers')
-  // Read runtime files from disk (.output/nvent/workers/ — copied there by the build hook).
-  // Fall back to the runtimeConfig-embedded strings for environments where the files
-  // may not have been copied (e.g. custom deploys that strip non-JS assets).
-  const runtimeFilePath = join(workersDir, '_runtime.py')
-  const nventHelperFilePath = join(workersDir, 'nvent.py')
-  const runtimeContent = existsSync(runtimeFilePath)
-    ? readFileSync(runtimeFilePath, 'utf-8')
-    : (pythonCfg.runtimeContent ?? '')
-  const nventHelperContent = existsSync(nventHelperFilePath)
-    ? readFileSync(nventHelperFilePath, 'utf-8')
-    : (pythonCfg.nventHelperContent ?? '')
-  const orchestrator = new PythonWorkersOrchestrator(
-    workersDir,
-    runtimeContent,
-    nventHelperContent,
-    wsUrl,
-    pythonBin,
-    logLevel,
-  )
-
   if (process.env.NODE_ENV !== 'development' && !pythonCfg.skip) {
+    // nventDir is always .output/nvent/ — the sibling of .output/server/ where
+    // import.meta.url (the Nitro entry) lives. CWD-independent, deploy-safe.
+    // Set NVENT_DIR env var to override for custom deploy layouts.
+    const nventArtifactsDir = resolveNventDir(import.meta.url)
+    const workersDir = join(nventArtifactsDir, 'workers')
+
+    // Read runtime files from disk (.output/nvent/workers/ — copied there by the build hook).
+    // Fall back to the runtimeConfig-embedded strings for environments where the files
+    // may not have been copied (e.g. custom deploys that strip non-JS assets).
+    const runtimeFilePath = join(workersDir, '_runtime.py')
+    const nventHelperFilePath = join(workersDir, 'nvent.py')
+    const runtimeContent = fsExistsSync(runtimeFilePath)
+      ? readFileSync(runtimeFilePath, 'utf-8')
+      : (pythonCfg.runtimeContent ?? '')
+    const nventHelperContent = fsExistsSync(nventHelperFilePath)
+      ? readFileSync(nventHelperFilePath, 'utf-8')
+      : (pythonCfg.nventHelperContent ?? '')
+
+    const orchestrator = new PythonWorkersOrchestrator(
+      workersDir,
+      runtimeContent,
+      nventHelperContent,
+      wsUrl,
+      pythonBin,
+      logLevel,
+    )
+
     // Resolve relative absPath entries to absolute paths using nventArtifactsDir.
     // The registry stores a functions-dir-relative path (e.g. 'analyze.py') so that
     // the runtime CWD doesn't matter — we always produce a correct absolute path here.
@@ -256,12 +289,17 @@ export default defineNitroPlugin(async (nitroApp) => {
         ? fn.absPath
         : join(nventArtifactsDir, 'functions', fn.absPath),
     }))
+
     await orchestrator.start(resolvedPythonFunctions)
+
+    // Graceful shutdown
+    nitroApp.hooks.hookOnce('close', async () => {
+      await orchestrator.stop()
+    })
   }
 
   // Graceful shutdown
   nitroApp.hooks.hookOnce('close', async () => {
-    await orchestrator.stop()
     await iii.shutdown()
   })
 })
