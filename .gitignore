@@ -12,6 +12,7 @@ node_modules
 dump.rdb
 /data
 /examples
+/packages/workflow-worker/workflow-worker-*/bin
 
 # Python
 **/__pycache__
