@@ -167,6 +167,24 @@ export interface WorkflowContext {
   call: <T = any>(...args: any[]) => Promise<T>
 
   /**
+   * Declare one logical parallel branch that can contain sequential steps.
+   * Use with ctx.all to run several branches concurrently in the DAG.
+   *
+   * @example
+   * await ctx.all(c => [
+   *   c.branch(async b => {
+   *     const a = await b.call('step-a', input)
+   *     return b.call('step-b', a)
+   *   }),
+   *   c.branch(async b => {
+   *     const x = await b.call('step-x', input)
+   *     return b.call('step-y', x)
+   *   }),
+   * ] as const)
+   */
+  branch: <T = any>(fn: (ctx: WorkflowContext) => T | Promise<T>) => WorkflowParallelBranch<T>
+
+  /**
    * Fanout helper: run a function for each item in an array.
    * @param nodeId - ID of the foreach node
    * @param items - Array of items to process
@@ -188,7 +206,23 @@ export interface WorkflowContext {
    *   c.call('task2', input)
    * ])
    */
-  all: <T extends readonly unknown[]>(fn: (ctx: WorkflowContext) => T) => Promise<{ [K in keyof T]: T[K] extends Promise<infer R> ? R : T[K] }>
+  all: <T extends readonly unknown[]>(fn: (ctx: WorkflowContext) => T | Promise<T>) => Promise<{ [K in keyof T]: T[K] extends Promise<infer R> ? R : T[K] }>
+}
+
+const WORKFLOW_BRANCH = Symbol('workflow.branch')
+
+export type WorkflowParallelBranch<T = any> = {
+  [WORKFLOW_BRANCH]: true
+  run: (ctx: WorkflowContext) => T | Promise<T>
+}
+
+function isWorkflowParallelBranch(value: unknown): value is WorkflowParallelBranch<any> {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && (value as any)[WORKFLOW_BRANCH] === true
+    && typeof (value as any).run === 'function',
+  )
 }
 
 type CallOptions = {
@@ -282,6 +316,7 @@ export function defineWorkflow<
       let autoNodeCounter = 0
       let controlFrontier: string[] = []
       let parallelCollector: string[] | null = null
+      let parallelFixedFrontier: string[] | null = null
 
       const collectNodeRefs = (obj: any, refs: Set<string>) => {
         if (!obj || typeof obj !== 'object') return
@@ -333,7 +368,10 @@ export function defineWorkflow<
 
           const dataDeps = [...dataDepSet]
           const declaredDeps = Array.isArray(spec.depends_on) ? spec.depends_on : []
-          const combinedDeps = [...controlFrontier, ...declaredDeps, ...dataDeps]
+          const baseControlDeps = (parallelCollector && parallelFixedFrontier)
+            ? parallelFixedFrontier
+            : controlFrontier
+          const combinedDeps = [...baseControlDeps, ...declaredDeps, ...dataDeps]
           const dependsOn = reduceDependencies(combinedDeps)
 
           // Map to Rust NodeDef structure
@@ -372,10 +410,6 @@ export function defineWorkflow<
             // Get runtime from registry instead of guessing
             if (!fnSpec.runtime || !fnSpec.queue || !fnSpec.engine_retry) {
               const execution = await getFunctionExecutionConfig(fnSpec.id)
-              
-              if (execution.runtime === 'unknown' && !fnSpec.id.startsWith('node:') && !fnSpec.id.startsWith('workflow:')) {
-                console.warn(`[nvent/workflow] Function ID '${fnSpec.id}' not found in registry. If this function does not exist in the engine, the workflow may hang.`)
-              }
 
               if (!fnSpec.runtime) fnSpec.runtime = execution.runtime
               if (!fnSpec.queue && execution.queue) fnSpec.queue = execution.queue
@@ -449,6 +483,11 @@ export function defineWorkflow<
             input
           })
         },
+
+        branch: <T = any>(fn: (c: WorkflowContext) => T | Promise<T>): WorkflowParallelBranch<T> => ({
+          [WORKFLOW_BRANCH]: true,
+          run: fn,
+        }),
         
         foreach: async (nodeId: string, items: any, functionId: string) => {
           // Extract the 'from' reference from items if it's a node reference
@@ -468,19 +507,83 @@ export function defineWorkflow<
           })
         },
 
-        all: async <T extends readonly unknown[]>(fn: (c: WorkflowContext) => T) => {
+        all: async <T extends readonly unknown[]>(fn: (c: WorkflowContext) => T | Promise<T>) => {
           const previousCollector = parallelCollector
           const previousFrontier = [...controlFrontier]
+          const previousFixedFrontier = parallelFixedFrontier
 
+          // Activate collection BEFORE creating tasks so sibling calls inside
+          // fn(ctx) are compiled from the same frontier (true parallel leaves).
           parallelCollector = []
+          parallelFixedFrontier = [...previousFrontier]
+          const tasks = await fn(ctx)
+          const taskList = Array.from(tasks as readonly unknown[])
 
-          const tasks = fn(ctx)
-          const results = await Promise.all(tasks)
+          // Branch mode: each branch starts from the same pre-all frontier,
+          // but can advance sequentially inside the branch.
+          if (taskList.some(task => isWorkflowParallelBranch(task))) {
+            const branchResults: unknown[] = new Array(taskList.length)
 
+            // Resolve non-branch tasks first while collector is active.
+            // This avoids races where still-running legacy tasks would mutate
+            // collector while branch mode temporarily isolates frontier state.
+            for (let i = 0; i < taskList.length; i++) {
+              const task = taskList[i]
+              if (!isWorkflowParallelBranch(task)) {
+                branchResults[i] = await Promise.resolve(task)
+              }
+            }
+
+            const completedParallelNodes: string[] = [...(parallelCollector ?? [])]
+
+            for (let i = 0; i < taskList.length; i++) {
+              const task = taskList[i]
+              if (!isWorkflowParallelBranch(task)) {
+                continue
+              }
+
+              const savedCollector: string[] | null = parallelCollector
+              const savedFrontier = [...controlFrontier]
+              const savedFixedFrontier: string[] | null = parallelFixedFrontier
+
+              parallelCollector = null
+              parallelFixedFrontier = null
+              controlFrontier = [...previousFrontier]
+
+              const branchResult = await task.run(ctx)
+              branchResults[i] = branchResult
+
+              if (controlFrontier.length > 0) {
+                completedParallelNodes.push(...controlFrontier)
+              }
+
+              parallelCollector = savedCollector
+              parallelFixedFrontier = savedFixedFrontier
+              controlFrontier = savedFrontier
+            }
+
+            const mergedFrontier = completedParallelNodes.length > 0
+              ? reduceDependencies(completedParallelNodes)
+              : previousFrontier
+
+            parallelCollector = previousCollector
+            parallelFixedFrontier = previousFixedFrontier
+            if (parallelCollector) {
+              parallelCollector.push(...mergedFrontier)
+            } else {
+              controlFrontier = mergedFrontier
+            }
+
+            return branchResults as any
+          }
+
+          // Legacy mode: every task in this all() block is an independent parallel leaf.
+          const results = await Promise.all(taskList)
           const completedParallelNodes = parallelCollector
           parallelCollector = previousCollector
+          parallelFixedFrontier = previousFixedFrontier
 
-          if (completedParallelNodes.length > 0) {
+          if ((completedParallelNodes?.length ?? 0) > 0) {
             if (parallelCollector) {
               parallelCollector.push(...completedParallelNodes)
             } else {

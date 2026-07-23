@@ -761,6 +761,33 @@ const statusQueueReceiptCount = computed(() => statusQueueReceipts.value.length)
 const statusQueueReceiptQueueCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.queue)).size)
 const statusQueueReceiptNodeCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.node_uid)).size)
 
+const topologyStats = computed(() => {
+  const levelArrays = Array.isArray(flowMeta.value?.analyzed?.levels)
+    ? flowMeta.value?.analyzed?.levels as string[][]
+    : []
+  const levelCount = levelArrays.length
+  const maxParallelWidth = levelArrays.reduce((max, level) => Math.max(max, level.length), 0)
+  const activeParallelLevels = levelArrays.filter(level => level.length > 1).length
+
+  const nodeDefs = definition.value?.nodes || {}
+  const nodeEntries = Object.entries(nodeDefs) as Array<[string, any]>
+  const fanoutNodes = nodeEntries.filter(([, node]) => Boolean(node?.fanout)).length
+  const joinNodes = nodeEntries.filter(([, node]) => Array.isArray(node?.depends_on) && node.depends_on.length > 1).length
+  const terminalCandidates = nodeEntries.filter(([, node]) => {
+    const emits = Array.isArray((node as any)?.emits) ? (node as any).emits.length : 0
+    return emits > 0
+  }).length
+
+  return {
+    levelCount,
+    maxParallelWidth,
+    activeParallelLevels,
+    fanoutNodes,
+    joinNodes,
+    terminalCandidates,
+  }
+})
+
 const filteredWorkflowStates = computed(() => {
   return workflowStates.value?.states ?? []
 })
@@ -1003,6 +1030,45 @@ function exportStates() {
 
                   <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
                     Events {{ timelineEventCount }}. Receipt queues {{ statusQueueReceiptQueueCount }}, receipt nodes {{ statusQueueReceiptNodeCount }}.
+                  </div>
+                </div>
+
+                <div
+                  class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                      Execution Topology
+                    </div>
+                    <UBadge
+                      :label="`${topologyStats.maxParallelWidth}x max parallel`"
+                      color="info"
+                      size="xs"
+                      variant="soft"
+                    />
+                  </div>
+
+                  <div class="mt-3 grid grid-cols-2 gap-2">
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Depth (levels)</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.levelCount }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Parallel Levels</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.activeParallelLevels }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Join Nodes</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.joinNodes }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Fanout Nodes</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.fanoutNodes }}</div>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
+                    Potential terminal emitters: {{ topologyStats.terminalCandidates }}.
                   </div>
                 </div>
               </div>

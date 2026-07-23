@@ -23,7 +23,7 @@ describe('defineWorkflow compilation', () => {
   it('keeps control-flow deps separate from older data refs after a parallel block', async () => {
     const workflow = defineWorkflow({
       name: 'multi-step',
-      async handler(ctx, input: { text: string, seconds: number }) {
+      async handler(input: { text: string, seconds: number }, ctx) {
         const processed = await ctx.call('process-text', input)
 
         await ctx.all(c => [
@@ -47,7 +47,7 @@ describe('defineWorkflow compilation', () => {
   it('restores a single sequential frontier after a parallel block', async () => {
     const workflow = defineWorkflow({
       name: 'sequential-after-parallel',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         await ctx.call('first-step', input)
 
         await ctx.all(c => [
@@ -72,7 +72,7 @@ describe('defineWorkflow compilation', () => {
   it('uses only the most recent parallel frontier for later steps', async () => {
     const workflow = defineWorkflow({
       name: 'multiple-parallel-blocks',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         const original = await ctx.call('first-step', input)
 
         await ctx.all(c => [
@@ -100,7 +100,7 @@ describe('defineWorkflow compilation', () => {
   it('merges nested parallel branches into the active frontier', async () => {
     const workflow = defineWorkflow({
       name: 'nested-parallel-blocks',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         await ctx.call('seed-step', input)
 
         await ctx.all(c => [
@@ -126,7 +126,7 @@ describe('defineWorkflow compilation', () => {
   it('keeps foreach behind the latest parallel frontier while reading its fanout source', async () => {
     const workflow = defineWorkflow({
       name: 'foreach-after-parallel',
-      async handler(ctx, input: { text: string[] }) {
+      async handler(input: { text: string[] }, ctx) {
         const items = await ctx.call('load-items', input)
 
         await ctx.all(c => [
@@ -150,7 +150,7 @@ describe('defineWorkflow compilation', () => {
   it('merges explicit depends_on overrides with the active control frontier', async () => {
     const workflow = defineWorkflow({
       name: 'explicit-dep-override',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         const first = await ctx.call('first-step', input)
         const second = await ctx.call('second-step', input)
 
@@ -173,7 +173,7 @@ describe('defineWorkflow compilation', () => {
   it('keeps join inputs focused on the latest frontier after a parallel block', async () => {
     const workflow = defineWorkflow({
       name: 'join-after-parallel',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         const seed = await ctx.call('seed-step', input)
 
         const [branchA, branchB] = await ctx.all(c => [
@@ -196,7 +196,7 @@ describe('defineWorkflow compilation', () => {
   it('restores the previous frontier when a parallel block is empty', async () => {
     const workflow = defineWorkflow({
       name: 'empty-parallel-block',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         await ctx.call('first-step', input)
         await ctx.all(() => [] as const)
         return ctx.call('final-step', input)
@@ -209,6 +209,74 @@ describe('defineWorkflow compilation', () => {
     expect(plan.nodes['final-step'].depends_on).toEqual(['first-step'])
   })
 
+  it('supports sequential steps inside each parallel branch via ctx.branch', async () => {
+    const workflow = defineWorkflow({
+      name: 'parallel-branches-with-sequences',
+      async handler(input: { text: string }, ctx) {
+        await ctx.call('seed', input)
+
+        await ctx.all(c => [
+          c.branch(async b => {
+            const a1 = await b.call('branch-a-step-1', input)
+            return b.call('branch-a-step-2', a1)
+          }),
+          c.branch(async b => {
+            const b1 = await b.call('branch-b-step-1', input)
+            return b.call('branch-b-step-2', b1)
+          }),
+        ] as const)
+
+        return ctx.call('join', input)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes.seed.depends_on).toEqual([])
+
+    expect(plan.nodes['branch-a-step-1'].depends_on).toEqual(['seed'])
+    expect(plan.nodes['branch-a-step-2'].depends_on).toEqual(['branch-a-step-1'])
+
+    expect(plan.nodes['branch-b-step-1'].depends_on).toEqual(['seed'])
+    expect(plan.nodes['branch-b-step-2'].depends_on).toEqual(['branch-b-step-1'])
+
+    expect(plan.nodes.join.depends_on).toEqual(['branch-a-step-2', 'branch-b-step-2'])
+  })
+
+  it('allows nested all inside a branch and still merges at branch tip', async () => {
+    const workflow = defineWorkflow({
+      name: 'nested-all-inside-branch',
+      async handler(input: { text: string }, ctx) {
+        await ctx.call('seed', input)
+
+        await ctx.all(c => [
+          c.branch(async b => {
+            const first = await b.call('a1', input)
+            await b.all(inner => [
+              inner.call('a2_left', first),
+              inner.call('a2_right', first),
+            ] as const)
+            return b.call('a3', input)
+          }),
+          c.branch(async b => {
+            return b.call('b1', input)
+          }),
+        ] as const)
+
+        return ctx.call('final', input)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes.a1.depends_on).toEqual(['seed'])
+    expect(plan.nodes.a2_left.depends_on).toEqual(['a1'])
+    expect(plan.nodes.a2_right.depends_on).toEqual(['a1'])
+    expect(plan.nodes.a3.depends_on).toEqual(['a2_left', 'a2_right'])
+    expect(plan.nodes.b1.depends_on).toEqual(['seed'])
+    expect(plan.nodes.final.depends_on).toEqual(['a3', 'b1'])
+  })
+
   it('injects workflow queue from registry function metadata', async () => {
     registryMock.functions = [{
       id: 'queue-aware-fn',
@@ -218,7 +286,7 @@ describe('defineWorkflow compilation', () => {
 
     const workflow = defineWorkflow({
       name: 'queue-propagation',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         return ctx.call('queue-aware-fn', input)
       },
     })
@@ -242,7 +310,7 @@ describe('defineWorkflow compilation', () => {
 
     const workflow = defineWorkflow({
       name: 'retry-override',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         return ctx.call('queue-aware-fn', input, {
           engine_retry: { max_attempts: 1 },
           queue: 'heartbeat',
@@ -269,7 +337,7 @@ describe('defineWorkflow compilation', () => {
 
     const workflow = defineWorkflow({
       name: 'retry-node-override',
-      async handler(ctx, input: { text: string }) {
+      async handler(input: { text: string }, ctx) {
         return ctx.node('custom-node', {
           function: 'queue-aware-fn',
           input,

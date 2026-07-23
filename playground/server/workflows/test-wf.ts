@@ -9,11 +9,20 @@ export default defineWorkflow({
     }
   },
   handler: async (input: { text: string }, ctx) => {
+    const processed = await ctx.call('process-text', input)
 
-    const result = await ctx.call('process-text-2', input)
+    await ctx.all(c => [
+      c.branch(async b => {
+        const first = await b.call('process-item', processed)
+        return b.call('process-item', first)
+      }),
+      c.branch(async b => {
+        const third = await b.call('process-item', processed)
+        return b.call('process-item', third)
+      }),
+    ] as const)
 
-    await ctx.call('process-item', input)
-    await ctx.call('process-item', input)
+    const result = await ctx.call('analyze-text', input)
 
     return result
   }

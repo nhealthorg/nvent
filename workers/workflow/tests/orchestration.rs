@@ -768,3 +768,147 @@ fn sweep_refires_then_fails_after_budget() {
         TimeoutAction::FailOut
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Test 8: diamond_failed_branch_blocks_join_and_fails_run
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diamond_failed_branch_blocks_join_and_fails_run() {
+    let def = diamond_def();
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    // Step 1: a fires, then completes.
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["a".to_string()], "step 1 must fire a");
+        }
+        other => panic!("expected Fire([a]) at step 1, got {:?}", other),
+    }
+    complete(&mut record, &mut results, "a", json!({"x": 1}));
+
+    // Step 2: b and c fire as parallel siblings.
+    let step2 = drive_step(&def, &mut record, &results);
+    let fired2 = match &step2 {
+        TickDecision::Fire(uids) => uids.clone(),
+        other => panic!("expected Fire([b, c]) at step 2, got {:?}", other),
+    };
+    assert!(fired2.contains(&"b".to_string()));
+    assert!(fired2.contains(&"c".to_string()));
+
+    // One branch succeeds, one branch fails.
+    complete(&mut record, &mut results, "b", json!({"x": 2}));
+    complete_with_error(&mut record, "c", "branch c failed");
+
+    // Join d must NOT become ready when one dependency failed.
+    let frontier = dag::ready_frontier(&def, &record);
+    assert!(
+        frontier.is_empty(),
+        "join node d must stay blocked when a dependency failed; got {:?}",
+        frontier
+    );
+
+    // Run must finalize as Failed.
+    let decision = decide(&def, &record);
+    match decision {
+        TickDecision::Finalize(RunStatus::Failed) => {}
+        other => panic!("expected Finalize(Failed) after failed branch, got {:?}", other),
+    }
+
+    let q = dag::quiescence(&def, &record);
+    assert_eq!(q, RunStatus::Failed, "quiescence must return Failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: diamond_join_waits_while_other_branch_running
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diamond_join_waits_while_other_branch_running() {
+    let def = diamond_def();
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    // Step 1: a fires, then completes.
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["a".to_string()], "step 1 must fire a");
+        }
+        other => panic!("expected Fire([a]) at step 1, got {:?}", other),
+    }
+    complete(&mut record, &mut results, "a", json!({"x": 1}));
+
+    // Step 2: b and c fire.
+    let step2 = drive_step(&def, &mut record, &results);
+    let fired2 = match &step2 {
+        TickDecision::Fire(uids) => uids.clone(),
+        other => panic!("expected Fire([b, c]) at step 2, got {:?}", other),
+    };
+    assert!(fired2.contains(&"b".to_string()));
+    assert!(fired2.contains(&"c".to_string()));
+
+    // Only b completes; c remains Running.
+    complete(&mut record, &mut results, "b", json!({"x": 2}));
+
+    // No join yet; scheduler should park.
+    let frontier = dag::ready_frontier(&def, &record);
+    assert!(frontier.is_empty(), "join must not be ready while c is still running");
+
+    let decision = decide(&def, &record);
+    match decision {
+        TickDecision::Park => {}
+        other => panic!("expected Park while one branch still running, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: abort_while_diamond_branches_running_finalizes_cancelled
+// ---------------------------------------------------------------------------
+
+#[test]
+fn abort_while_diamond_branches_running_finalizes_cancelled() {
+    let def = diamond_def();
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    // Step 1: a fires, then completes so b and c can start.
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["a".to_string()], "step 1 must fire a");
+        }
+        other => panic!("expected Fire([a]) at step 1, got {:?}", other),
+    }
+    complete(&mut record, &mut results, "a", json!({"x": 1}));
+
+    // Step 2: b and c fire and become Running in the record.
+    let step2 = drive_step(&def, &mut record, &results);
+    let fired2 = match &step2 {
+        TickDecision::Fire(uids) => uids.clone(),
+        other => panic!("expected Fire([b, c]) at step 2, got {:?}", other),
+    };
+    assert!(fired2.contains(&"b".to_string()));
+    assert!(fired2.contains(&"c".to_string()));
+
+    // While both branch nodes are still running, abort must short-circuit.
+    record.abort = true;
+
+    let decision = decide(&def, &record);
+    match decision {
+        TickDecision::Finalize(RunStatus::Cancelled) => {}
+        other => panic!(
+            "expected Finalize(Cancelled) when abort=true with running branches, got {:?}",
+            other
+        ),
+    }
+
+    let q = dag::quiescence(&def, &record);
+    assert_eq!(
+        q,
+        RunStatus::Cancelled,
+        "quiescence must return Cancelled when abort=true"
+    );
+}
