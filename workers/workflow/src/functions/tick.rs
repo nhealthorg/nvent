@@ -111,6 +111,75 @@ pub(crate) async fn fire_node(
 
     // Fire the function asynchronously via queue (non-blocking)
     let function = &node.function;
+    let max_retries = node
+        .function
+        .engine_retry
+        .as_ref()
+        .and_then(|r| r.max_attempts)
+        .unwrap_or(deps.cfg().await.max_node_retries);
+
+    // Discovery check: if the function is not in the registry, fail immediately
+    // instead of enqueuing into a black hole.
+    if !crate::discovery::is_function_available(&deps.discovery, &function.id).await {
+        if attempt >= max_retries {
+            tracing::error!(
+                run_id = %record.run_id,
+                node_uid = %node_uid,
+                function_id = %function.id,
+                retries = attempt,
+                max_retries,
+                "node fire failed: function missing after discovery retries"
+            );
+
+            record.nodes.insert(
+                node_uid.to_string(),
+                NodeCheckpoint {
+                    state: NodeState::Failed,
+                    session_id: None,
+                    turn_id: None,
+                    result_ref: None,
+                    result_error: Some(format!("Function not found after retries: {}", function.id)),
+                    pending_at: Some(deps.now_ms()),
+                    pending_timeout_ms: None,
+                    retries: attempt,
+                    completed_at: Some(deps.now_ms()),
+                    worker_name: None,
+                },
+            );
+        } else {
+            // Discovery is eventually consistent across worker reconnects.
+            // Treat early misses as transient and re-drive via sweep timeout.
+            tracing::warn!(
+                run_id = %record.run_id,
+                node_uid = %node_uid,
+                function_id = %function.id,
+                retries = attempt,
+                max_retries,
+                "function missing in discovery snapshot; will retry"
+            );
+
+            record.nodes.insert(
+                node_uid.to_string(),
+                NodeCheckpoint {
+                    state: NodeState::Running,
+                    session_id: None,
+                    turn_id: None,
+                    result_ref: None,
+                    result_error: Some("function_missing_discovery_snapshot".to_string()),
+                    pending_at: Some(deps.now_ms()),
+                    pending_timeout_ms: Some(10_000),
+                    retries: attempt,
+                    completed_at: None,
+                    worker_name: None,
+                },
+            );
+        }
+
+        record.updated_at = deps.now_ms();
+        state::put_run(&deps.iii, record).await?;
+        return Ok(());
+    }
+
     let queue = dispatch_queue_for(function);
 
     // Wrap input with workflow metadata so functions can emit completion events
@@ -135,37 +204,91 @@ pub(crate) async fn fire_node(
         .trigger(iii_sdk::protocol::TriggerRequest {
             function_id: function.id.clone(),
             payload: wrapped_input,
-            action: Some(TriggerAction::Enqueue { queue }),
+            action: Some(TriggerAction::Enqueue { queue: queue.clone() }),
             timeout_ms: function.timeout_ms.or(Some(dispatch_timeout_ms)),
         })
         .await;
 
     match trigger_res {
-        Ok(_) => {
-            tracing::info!(
-                run_id = %record.run_id,
-                node_uid = %node_uid,
-                "node enqueued successfully, marking as Running"
-            );
+        Ok(v) => {
+            // Check if the engine returned a logic error (e.g. function not found)
+            // even though the RPC request itself was technically successful (Ok).
+            let logic_error = v.get("error").or_else(|| v.get("result_error"));
 
-            record.nodes.insert(
-                node_uid.to_string(),
-                NodeCheckpoint {
-                    state: NodeState::Running,
-                    session_id: None,
-                    turn_id: None,
-                    result_ref: None, // Result written by function when complete
-                    result_error: None,
-                    pending_at: Some(deps.now_ms()),
-                    pending_timeout_ms: prior_timeout,
-                    retries: attempt,
-                    completed_at: None,
-                    worker_name: None,
-                },
-            );
+            if let Some(err_val) = logic_error {
+                let err_msg = err_val.as_str().unwrap_or("Unknown trigger error").to_string();
+                tracing::warn!(
+                    run_id = %record.run_id,
+                    node_uid = %node_uid,
+                    error = %err_msg,
+                    response = ?v,
+                    "node fire returned logic error, marking as Failed"
+                );
+
+                record.nodes.insert(
+                    node_uid.to_string(),
+                    NodeCheckpoint {
+                        state: NodeState::Failed,
+                        session_id: None,
+                        turn_id: None,
+                        result_ref: None,
+                        result_error: Some(format!("Trigger logic error: {}", err_msg)),
+                        pending_at: Some(deps.now_ms()),
+                        pending_timeout_ms: None,
+                        retries: attempt,
+                        completed_at: Some(deps.now_ms()),
+                        worker_name: None,
+                    },
+                );
+            } else {
+                if let Some(receipt_id) = v.get("messageReceiptId").and_then(|x| x.as_str()) {
+                    if let Err(e) = state::put_queue_receipt(
+                        &deps.iii,
+                        &record.run_id,
+                        node_uid,
+                        &function.id,
+                        &queue,
+                        receipt_id,
+                        attempt,
+                        deps.now_ms(),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            run_id = %record.run_id,
+                            node_uid = %node_uid,
+                            error = %e,
+                            "failed to persist queue receipt"
+                        );
+                    }
+                }
+
+                tracing::info!(
+                    run_id = %record.run_id,
+                    node_uid = %node_uid,
+                    response = ?v,
+                    "node enqueued successfully, marking as Running"
+                );
+
+                record.nodes.insert(
+                    node_uid.to_string(),
+                    NodeCheckpoint {
+                        state: NodeState::Running,
+                        session_id: None,
+                        turn_id: None,
+                        result_ref: None, // Result written by function when complete
+                        result_error: None,
+                        pending_at: Some(deps.now_ms()),
+                        pending_timeout_ms: prior_timeout,
+                        retries: attempt,
+                        completed_at: None,
+                        worker_name: None,
+                    },
+                );
+            }
         }
         Err(e) => {
-            tracing::error!(
+            tracing::warn!(
                 run_id = %record.run_id,
                 node_uid = %node_uid,
                 error = %e,

@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     error::WorkflowError,
     state,
-    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef},
+    types::{NodeCheckpoint, RunStatus, WorkflowDef},
 };
 
 use super::Deps;
@@ -45,6 +45,9 @@ pub struct StatusResponse {
     /// `result` is only set on a Completed run). Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub node_results: BTreeMap<String, String>,
+    /// Queue enqueue receipts recorded for this run (for restart/cancel forensics).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue_receipts: Vec<state::QueueReceiptRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     /// Run-level failure summary (set when `status == failed`).
@@ -97,6 +100,8 @@ pub async fn handle(
         })
         .collect();
 
+    let queue_receipts = state::list_queue_receipts(&deps.iii, &req.run_id).await?;
+
     Ok(Some(StatusResponse {
         run_id: record.run_id,
         status: record.status,
@@ -104,6 +109,7 @@ pub async fn handle(
         node_errors,
         definition,
         node_results,
+        queue_receipts,
         result: record.result,
         result_error: record.result_error,
         created_at: record.created_at,
@@ -148,6 +154,17 @@ mod tests {
             "workflow_node_result/r_abc123/plan".to_string(),
         );
 
+        let queue_receipts = vec![state::QueueReceiptRecord {
+            id: "r_abc123:plan:receipt-1".to_string(),
+            run_id: "r_abc123".to_string(),
+            node_uid: "plan".to_string(),
+            function_id: "plan_function".to_string(),
+            queue: "default".to_string(),
+            receipt_id: "receipt-1".to_string(),
+            attempt: 0,
+            ts_unix_ms: 12345,
+        }];
+
         let resp = StatusResponse {
             run_id: "r_abc123".to_string(),
             status: RunStatus::AwaitingNodes,
@@ -163,6 +180,7 @@ mod tests {
                 },
             },
             node_results,
+            queue_receipts,
             result: Some(json!({"summary": "hello"})),
             result_error: Some("node 'read': boom".to_string()),
             created_at: 12345,
@@ -178,6 +196,7 @@ mod tests {
         assert_eq!(decoded.nodes, resp.nodes);
         assert_eq!(decoded.node_errors, resp.node_errors);
         assert_eq!(decoded.node_results, resp.node_results);
+        assert_eq!(decoded.queue_receipts, resp.queue_receipts);
         assert_eq!(decoded.result, resp.result);
         assert_eq!(decoded.result_error, resp.result_error);
         assert_eq!(decoded.created_at, resp.created_at);
@@ -201,6 +220,7 @@ mod tests {
                 },
             },
             node_results: BTreeMap::new(),
+            queue_receipts: Vec::new(),
             result: None,
             result_error: None,
             created_at: 0,
@@ -219,6 +239,10 @@ mod tests {
         assert!(
             serialized.get("node_results").is_none(),
             "node_results omitted when empty"
+        );
+        assert!(
+            serialized.get("queue_receipts").is_none(),
+            "queue_receipts omitted when empty"
         );
         assert!(
             serialized.get("node_errors").is_none(),

@@ -132,11 +132,14 @@ async fn main() -> Result<()> {
     // (kept in sync afterwards by configuration::apply_config on hot-reload).
     state::set_dispatch_timeout_ms(cfg.dispatch_timeout_ms);
 
+    let discovery = workflow::discovery::init(&iii).await;
+
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
     let deps = functions::Deps {
         iii: iii.clone(),
         cfg: cell.clone(),
         locks: WorkflowLocks::default(),
+        discovery,
     };
 
     functions::register_all(&iii, &deps);
@@ -160,6 +163,17 @@ async fn main() -> Result<()> {
             }
         }
         Err(e) => tracing::error!(error = %e, "resume-scan: list_runs failed"),
+    }
+
+    // Immediate one-shot sweep after resume-scan so a reboot doesn't wait for
+    // the next cron minute to reconcile stale Running nodes / overdue timeouts.
+    if let Err(e) = workflow::functions::sweep::handle(
+        &deps,
+        workflow::functions::sweep::SweepEvent::default(),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "boot-sweep failed");
     }
 
     // LAST: bind the configuration-change trigger.

@@ -36,6 +36,7 @@ pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub cfg: ConfigCell,
     pub locks: WorkflowLocks,
+    pub discovery: crate::discovery::DiscoveryRegistry,
 }
 
 impl Deps {

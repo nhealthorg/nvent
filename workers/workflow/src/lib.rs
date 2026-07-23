@@ -1,6 +1,7 @@
 pub mod config;
 pub mod configuration;
 pub mod dag;
+pub mod discovery;
 pub mod error;
 pub mod events;
 pub mod functions;

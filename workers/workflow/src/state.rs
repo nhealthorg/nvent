@@ -23,6 +23,7 @@ pub const SCOPE_INDEX: &str = "workflow_session_index";
 pub const SCOPE_RUN_LOG: &str = "workflow_run_log";
 pub const SCOPE_RUN_TRACE: &str = "workflow_run_trace";
 pub const SCOPE_RUN_STATE: &str = "workflow_run_state";
+pub const SCOPE_RUN_QUEUE_RECEIPTS: &str = "workflow_run_queue_receipts";
 pub const SCOPE_IDEM: &str = "workflow_idem";
 pub const STREAM_NAME_WORKFLOW: &str = "workflow";
 pub const RUN_SCOPED_KEY_SEPARATOR: &str = "_";
@@ -375,7 +376,66 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
     state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
     state_delete(iii, SCOPE_RUN_LOG, &record.run_id).await?;
     state_delete(iii, SCOPE_RUN_TRACE, &record.run_id).await?;
+    delete_run_queue_receipts(iii, &record.run_id).await?;
     state_delete(iii, SCOPE_RUN, &record.run_id).await
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct QueueReceiptRecord {
+    pub id: String,
+    pub run_id: String,
+    pub node_uid: String,
+    pub function_id: String,
+    pub queue: String,
+    pub receipt_id: String,
+    pub attempt: u32,
+    pub ts_unix_ms: i64,
+}
+
+pub async fn put_queue_receipt(
+    iii: &IIIClient,
+    run_id: &str,
+    node_uid: &str,
+    function_id: &str,
+    queue: &str,
+    receipt_id: &str,
+    attempt: u32,
+    ts_unix_ms: i64,
+) -> Result<(), WorkflowError> {
+    let id = format!("{}:{}:{}", run_id, node_uid, receipt_id);
+    let record = QueueReceiptRecord {
+        id: id.clone(),
+        run_id: run_id.to_string(),
+        node_uid: node_uid.to_string(),
+        function_id: function_id.to_string(),
+        queue: queue.to_string(),
+        receipt_id: receipt_id.to_string(),
+        attempt,
+        ts_unix_ms,
+    };
+    let value = serde_json::to_value(record)?;
+    state_set(iii, SCOPE_RUN_QUEUE_RECEIPTS, &id, value).await
+}
+
+pub async fn list_queue_receipts(
+    iii: &IIIClient,
+    run_id: &str,
+) -> Result<Vec<QueueReceiptRecord>, WorkflowError> {
+    let v = state_list(iii, SCOPE_RUN_QUEUE_RECEIPTS).await?;
+    let out = parse_state_list_values(&v)
+        .into_iter()
+        .filter_map(|item| from_value::<QueueReceiptRecord>(item).ok())
+        .filter(|r| r.run_id == run_id)
+        .collect();
+    Ok(out)
+}
+
+pub async fn delete_run_queue_receipts(iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
+    let receipts = list_queue_receipts(iii, run_id).await?;
+    for receipt in receipts {
+        state_delete(iii, SCOPE_RUN_QUEUE_RECEIPTS, &receipt.id).await?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
