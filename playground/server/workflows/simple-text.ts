@@ -28,6 +28,8 @@ export default defineWorkflow({
       function: 'process-text',
       input: 'run_input'  // Pass workflow input directly to the function
     })
+
+    await ctx.call('wait-error')
     
     return result
   }

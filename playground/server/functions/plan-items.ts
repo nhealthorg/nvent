@@ -2,7 +2,9 @@ import { defineFunction } from '#nvent/server'
 
 export default defineFunction({
   description: 'Builds loop items from processed text for workflow loop tests',
-  workflow: true,
+  workflow: {
+    queue: 'heartbeat'
+  },
   handler: async (input: any, ctx) => {
     const baseText = (input?.original || input?.text || '').toString().trim()
     const words = baseText

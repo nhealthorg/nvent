@@ -114,6 +114,16 @@ fn resolve_node_input(
     dag::gather_input(def, record, base_id, results)
 }
 
+fn effective_pending_timeout_ms(
+    prior_timeout: Option<u64>,
+    function_timeout_ms: Option<u64>,
+    dispatch_timeout_ms: u64,
+) -> Option<u64> {
+    prior_timeout
+        .or(function_timeout_ms)
+        .or(Some(dispatch_timeout_ms))
+}
+
 pub(crate) async fn fire_node(
     deps: &Deps,
     record: &mut WorkflowRunRecord,
@@ -152,6 +162,11 @@ pub(crate) async fn fire_node(
 
     // Fire the function asynchronously via queue (non-blocking)
     let function = &node.function;
+    let node_pending_timeout_ms = effective_pending_timeout_ms(
+        prior_timeout,
+        function.timeout_ms,
+        dispatch_timeout_ms,
+    );
     let max_retries = node
         .function
         .engine_retry
@@ -320,7 +335,7 @@ pub(crate) async fn fire_node(
                         result_ref: None, // Result written by function when complete
                         result_error: None,
                         pending_at: Some(deps.now_ms()),
-                        pending_timeout_ms: prior_timeout,
+                        pending_timeout_ms: node_pending_timeout_ms,
                         retries: attempt,
                         completed_at: None,
                         worker_name: None,
@@ -912,6 +927,22 @@ mod tests {
 
         assert_eq!(dispatch_queue_for(&none), "default");
         assert_eq!(dispatch_queue_for(&empty), "default");
+    }
+
+    #[test]
+    fn effective_pending_timeout_prefers_prior_then_function_then_dispatch() {
+        assert_eq!(
+            effective_pending_timeout_ms(Some(5_000), Some(10_000), 30_000),
+            Some(5_000)
+        );
+        assert_eq!(
+            effective_pending_timeout_ms(None, Some(10_000), 30_000),
+            Some(10_000)
+        );
+        assert_eq!(
+            effective_pending_timeout_ms(None, None, 30_000),
+            Some(30_000)
+        );
     }
 
     #[test]

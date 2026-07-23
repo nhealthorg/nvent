@@ -440,33 +440,33 @@ fn gather_one(
 ///
 /// Evaluation order (first matching rule wins):
 /// 1. `record.abort` → `Cancelled`
-/// 2. Any node *in the required set* (or a fanned item of one) is `Failed`/`Cancelled` → `Failed`
-/// 3. Every required node (and every `#i` of a required fanned node) is `Done` → `Completed`
+/// 2. Any declared node (or fanned item) is `Failed`/`Cancelled` → `Failed`
+/// 3. Every declared node (and every `#i` of each fanned node) is `Done` → `Completed`
 /// 4. Otherwise → `AwaitingNodes`
 ///
-/// Orphan-branch state (nodes not in the transitive closure of the output node) never
-/// blocks or fails the run.
+/// This preserves imperative workflow semantics from the JS DSL: if a step is
+/// declared in the handler, it must run before the workflow can complete,
+/// even when the returned output references an earlier node.
 pub fn quiescence(def: &WorkflowDef, record: &WorkflowRunRecord) -> RunStatus {
     if record.abort {
         return RunStatus::Cancelled;
     }
-    let required = required_set(def);
 
     let mut all_done = true;
-    for node_id in &required {
+    for node_id in def.nodes.keys() {
         let is_fanout = def
             .nodes
             .get(node_id.as_str())
             .map(|n| n.fanout.is_some())
             .unwrap_or(false);
-        // Expand a required node to the uids that actually carry state: a fanout
+        // Expand a node to the uids that actually carry state: a fanout
         // node contributes all its #i items, a normal node is itself.
         let uids = if is_fanout {
             fanned_uids(record, node_id.as_str())
         } else {
             vec![node_id.to_string()]
         };
-        // A required fanout that hasn't expanded yet is not done. An expanded-empty fanout
+        // A fanout that hasn't expanded yet is not done. An expanded-empty fanout
         // (fanout_src entry present, zero items) is vacuously Done, so only an *un-expanded*
         // fanout blocks completion.
         if is_fanout {
@@ -1257,14 +1257,15 @@ mod tests {
 
     #[test]
     fn quiescence_ignores_orphan_branch_failure() {
-        // required: a->b->d (all Done). orphan Failed. Run should be Completed, not Failed.
+        // All declared steps participate in quiescence. If an orphan-like branch
+        // fails, the whole run is Failed (it is not ignored anymore).
         let d = def_with_orphan();
         let mut r = record();
         for n in ["a", "b", "d"] {
             r.nodes.insert(n.into(), done_checkpoint());
         }
         r.nodes.insert("orphan".into(), failed_checkpoint());
-        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+        assert_eq!(quiescence(&d, &r), RunStatus::Failed);
     }
 
     #[test]

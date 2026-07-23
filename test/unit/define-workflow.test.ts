@@ -410,4 +410,25 @@ describe('defineWorkflow compilation', () => {
     expect(plan.nodes['audit'].depends_on).toEqual(['load-items'])
     expect([...plan.nodes['done'].depends_on].sort()).toEqual(['audit', 'branch-a-item-final'])
   })
+
+  it('allows returning an earlier result while executing later side-effect steps', async () => {
+    const workflow = defineWorkflow({
+      name: 'stale-output-node-regression',
+      async handler(input: { text: string }, ctx) {
+        const result = await ctx.node('process', {
+          function: 'process-text',
+          input: 'run_input',
+        })
+
+        await ctx.call('wait-error')
+        return result
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.output).toEqual({ from: 'process' })
+    expect(plan.nodes.process.depends_on).toEqual([])
+    expect(plan.nodes['wait-error'].depends_on).toEqual(['process'])
+  })
 })

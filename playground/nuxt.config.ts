@@ -61,7 +61,7 @@ export default defineNuxtConfig({
           },
           heartbeat: {
             type: 'standard',
-            concurrency: 1,
+            concurrency: 5,
             maxRetries: 1,
           },
         }

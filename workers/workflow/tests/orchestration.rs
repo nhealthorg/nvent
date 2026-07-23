@@ -914,3 +914,84 @@ fn abort_while_diamond_branches_running_finalizes_cancelled() {
         "quiescence must return Cancelled when abort=true"
     );
 }
+
+fn orphan_after_output_def() -> WorkflowDef {
+    let mut nodes = BTreeMap::new();
+
+    nodes.insert(
+        "process".to_string(),
+        function_node(
+            "process-text",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+
+    nodes.insert(
+        "wait-error".to_string(),
+        function_node(
+            "wait-error",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+            },
+            vec!["process".to_string()],
+            None,
+        ),
+    );
+
+    WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:process".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    }
+}
+
+#[test]
+fn output_node_done_still_runs_later_declared_steps() {
+    let def = orphan_after_output_def();
+    let mut record = new_record(json!({ "text": "Hello" }));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["process".to_string()], "step 1 must fire process");
+        }
+        other => panic!("expected Fire([process]) at step 1, got {:?}", other),
+    }
+
+    complete(&mut record, &mut results, "process", json!({ "ok": true }));
+
+    let frontier = dag::ready_frontier(&def, &record);
+    assert_eq!(
+        frontier,
+        vec!["wait-error".to_string()],
+        "wait-error is technically ready after process"
+    );
+
+    let step2 = drive_step(&def, &mut record, &results);
+    match step2 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(
+                uids,
+                vec!["wait-error".to_string()],
+                "decide must fire later declared step before finalizing"
+            );
+        }
+        other => panic!("expected Fire([wait-error]) after process done, got {:?}", other),
+    }
+
+    complete(&mut record, &mut results, "wait-error", json!({ "ok": true }));
+
+    let q = dag::quiescence(&def, &record);
+    assert_eq!(q, RunStatus::Completed, "run should complete after wait-error");
+}

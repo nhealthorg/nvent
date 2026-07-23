@@ -152,6 +152,7 @@ async fn sweep_one_run(
     let node_uids: Vec<String> = record.nodes.keys().cloned().collect();
     for uid in node_uids {
         let cp = record.nodes.get(&uid).cloned().unwrap();
+        let effective_timeout_ms = cp.pending_timeout_ms.unwrap_or(default_timeout_ms);
         match crate::timeout::timeout_action(
             &cp,
             default_timeout_ms,
@@ -170,7 +171,11 @@ async fn sweep_one_run(
             crate::timeout::TimeoutAction::FailOut => {
                 if let Some(c) = record.nodes.get_mut(&uid) {
                     c.state = NodeState::Failed;
-                    c.result_error = Some("node_timeout".to_string());
+                    c.result_error = Some(format!(
+                        "engine_missing_completion_timeout: no completion/result observed before timeout_ms={} (retries={}); possible causes: invalid function return payload (e.g. bare/undefined), completion state write failure, or worker crash before completion event",
+                        effective_timeout_ms,
+                        c.retries,
+                    ));
                 }
                 crate::telemetry::record_timeout(false);
                 // FailOut is terminal for this node, but reconcile only polls
