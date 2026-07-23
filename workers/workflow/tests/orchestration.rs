@@ -63,6 +63,7 @@ fn three_node_def() -> WorkflowDef {
             vec!["plan".to_string()],
             Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
+                mode: None,
             }),
         ),
     );
@@ -660,6 +661,7 @@ fn fanout_empty_def() -> WorkflowDef {
             vec!["a".to_string()],
             Some(FanoutSpec {
                 over: "node:a.result.items".to_string(),
+                mode: None,
             }),
         ),
     );

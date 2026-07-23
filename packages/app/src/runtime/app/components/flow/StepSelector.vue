@@ -41,6 +41,27 @@
           <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">
             {{ getStepDisplayName(item.step.key) }}
           </h4>
+          <UBadge
+            v-if="item.step.isLoop"
+            size="xs"
+            color="info"
+            variant="subtle"
+            class="flex items-center gap-1"
+          >
+            <UIcon
+              name="i-heroicons-arrow-path-rounded-square-20-solid"
+              class="w-3 h-3"
+            />
+            <span>For Loop</span>
+          </UBadge>
+          <UBadge
+            v-if="item.step.isLoop"
+            size="xs"
+            :color="getLoopModeColor(item.step.loopMode)"
+            variant="outline"
+          >
+            {{ getLoopModeLabel(item.step.loopMode) }}
+          </UBadge>
           <!-- Await Badge with Type Icon -->
           <UBadge
             v-if="isAwaitStep(item.step.key)"
@@ -55,6 +76,13 @@
             />
             <span>{{ getAwaitTypeLabel(item.step.awaitType) }}</span>
           </UBadge>
+        </div>
+        <div
+          v-if="item.step.isLoop && item.step.loopOver"
+          class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 font-mono truncate"
+          :title="item.step.loopOver"
+        >
+          over {{ item.step.loopOver }}
         </div>
         <div
           v-if="!item.step.showAllIndicator"
@@ -528,6 +556,14 @@ const getStepDisplayName = (key: string) => {
     return key.split(':await-')[0]
   }
   return key
+}
+
+const getLoopModeLabel = (mode?: string) => {
+  return mode === 'sequential' ? 'Sequential' : 'Parallel'
+}
+
+const getLoopModeColor = (mode?: string) => {
+  return mode === 'sequential' ? 'warning' : 'success'
 }
 
 const getAwaitTypeIcon = (type?: string) => {

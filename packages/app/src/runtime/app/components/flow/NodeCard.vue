@@ -152,6 +152,40 @@
         />
       </div>
       <div
+        v-if="data?.isLoop"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-arrow-path-rounded-square-20-solid"
+            class="size-3"
+          />
+          Loop
+        </span>
+        <UBadge
+          :label="`for-each (${data?.loopMode || 'parallel'})`"
+          size="xs"
+          color="info"
+          variant="soft"
+        />
+      </div>
+      <div
+        v-if="data?.isLoop && data?.loopOver"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-heroicons-bars-arrow-down-20-solid"
+            class="size-3"
+          />
+          Loop Source
+        </span>
+        <span
+          class="truncate ml-2 font-mono text-[10px]"
+          :title="data.loopOver"
+        >{{ data.loopOver }}</span>
+      </div>
+      <div
         v-if="data?.subscribes && data.subscribes.length > 0"
         class="flex items-start justify-between gap-2"
       >
@@ -299,7 +333,9 @@ const props = defineProps<{
 
 const headerClass = computed(() => props.kind === 'entry'
   ? 'px-3 py-2 bg-gradient-to-br from-emerald-800 to-emerald-700 text-emerald-50 rounded-t'
-  : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
+  : props.data?.isLoop
+    ? 'px-3 py-2 bg-gradient-to-br from-cyan-800 to-sky-700 text-cyan-50 rounded-t'
+    : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
 
 const runnerIcon = computed(() => {
   // Use explicit runtime field if available

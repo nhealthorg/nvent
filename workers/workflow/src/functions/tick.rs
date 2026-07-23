@@ -7,7 +7,10 @@ use crate::{
     dag,
     error::WorkflowError,
     ids, state,
-    types::{FunctionSpec, NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{
+        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeState, RunStatus, WorkflowDef,
+        WorkflowRunRecord,
+    },
 };
 
 use super::Deps;
@@ -61,6 +64,56 @@ fn dispatch_queue_for(function: &FunctionSpec) -> String {
 // fire_node
 // ---------------------------------------------------------------------------
 
+fn resolve_node_input(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    node_uid: &str,
+    base_id: &str,
+    node: &NodeDef,
+    results: &BTreeMap<String, Value>,
+) -> Value {
+    if node_uid.contains('#') {
+        // Per-item binding: parse the index i after '#'
+        let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
+        let i: usize = idx_str.parse().unwrap_or(0);
+
+        if node.input.from.is_literal("fanout_item") {
+            return record
+                .fanout_src
+                .get(base_id)
+                .and_then(|items| items.get(i))
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
+
+        // Loop/fanout chaining: for fanout child node `curr#i` reading from
+        // `node:dep` where `dep` is also a fanout, feed the matched dep item
+        // `dep#i` instead of the whole dep array.
+        let maybe_item_from_dep = match &node.input.from {
+            InputFrom::One(src) if src.starts_with("node:") && node.fanout.is_some() => {
+                let dep = src.strip_prefix("node:").unwrap_or(src.as_str());
+                let dep_is_fanout = def
+                    .nodes
+                    .get(dep)
+                    .and_then(|n| n.fanout.as_ref())
+                    .is_some();
+
+                if dep_is_fanout {
+                    let dep_uid = format!("{}#{}", dep, i);
+                    results.get(dep_uid.as_str()).cloned()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        return maybe_item_from_dep.unwrap_or_else(|| dag::gather_input(def, record, base_id, results));
+    }
+
+    dag::gather_input(def, record, base_id, results)
+}
+
 pub(crate) async fn fire_node(
     deps: &Deps,
     record: &mut WorkflowRunRecord,
@@ -93,19 +146,7 @@ pub(crate) async fn fire_node(
 
     // Resolve the input value. Read everything from `node`/`record` into owned values
     // BEFORE the .await so we don't hold a borrow across the await point.
-    let input_val: Value = if node_uid.contains('#') && node.input.from.is_literal("fanout_item") {
-        // Per-item binding: parse the index i after '#'
-        let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
-        let i: usize = idx_str.parse().unwrap_or(0);
-        record
-            .fanout_src
-            .get(base_id)
-            .and_then(|items| items.get(i))
-            .cloned()
-            .unwrap_or(Value::Null)
-    } else {
-        dag::gather_input(def, record, base_id, results)
-    };
+    let input_val = resolve_node_input(def, record, node_uid, base_id, node, results);
 
     let dispatch_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
 
@@ -587,6 +628,7 @@ mod tests {
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
+                    mode: None,
                 }),
             },
         );
@@ -870,5 +912,65 @@ mod tests {
 
         assert_eq!(dispatch_queue_for(&none), "default");
         assert_eq!(dispatch_queue_for(&empty), "default");
+    }
+
+    #[test]
+    fn resolve_node_input_fanout_chain_uses_matching_dep_item() {
+        let mut def = three_node_def();
+
+        // Override read as fanout over plan docs and synthesize as fanout over same docs,
+        // reading each matching read#i item via input.from = node:read.
+        if let Some(read) = def.nodes.get_mut("read") {
+            read.fanout = Some(FanoutSpec {
+                over: "node:plan.result.docs".to_string(),
+                mode: None,
+            });
+            read.input = InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+            };
+        }
+        if let Some(synth) = def.nodes.get_mut("synthesize") {
+            synth.fanout = Some(FanoutSpec {
+                over: "node:plan.result.docs".to_string(),
+                mode: None,
+            });
+            synth.input = InputSpec {
+                from: "node:read".into(),
+                template: None,
+            };
+        }
+
+        let mut record = fresh_record();
+        record
+            .fanout_src
+            .insert("synthesize".to_string(), vec![json!("a"), json!("b")]);
+
+        let mut results: BTreeMap<String, Value> = BTreeMap::new();
+        results.insert("read#0".to_string(), json!({ "summary": "A" }));
+        results.insert("read#1".to_string(), json!({ "summary": "B" }));
+
+        let node = def.nodes.get("synthesize").expect("synthesize node present");
+        let val = resolve_node_input(&def, &record, "synthesize#1", "synthesize", node, &results);
+
+        assert_eq!(val, json!({ "summary": "B" }));
+    }
+
+    #[test]
+    fn resolve_node_input_falls_back_when_dep_is_not_fanout() {
+        let def = three_node_def();
+        let mut record = fresh_record();
+        record.fanout_src.insert("read".to_string(), vec![json!("x")]);
+
+        let mut results: BTreeMap<String, Value> = BTreeMap::new();
+        results.insert("plan".to_string(), json!({ "docs": ["x"] }));
+        results.insert("read#0".to_string(), json!({ "summary": "X" }));
+
+        // synthesize#0 reads node:read, but dep fanout behavior for this non-fanout node
+        // should fall back to gather_input and return array of read child results.
+        let node = def.nodes.get("synthesize").expect("synthesize node present");
+        let val = resolve_node_input(&def, &record, "synthesize#0", "synthesize", node, &results);
+
+        assert_eq!(val, json!([{ "summary": "X" }]));
     }
 }

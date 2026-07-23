@@ -380,7 +380,7 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
     state_delete(iii, SCOPE_RUN, &record.run_id).await
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueueReceiptRecord {
     pub id: String,
     pub run_id: String,

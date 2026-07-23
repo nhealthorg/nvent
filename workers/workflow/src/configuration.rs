@@ -264,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn apply_config_swaps_snapshot() {
         let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
-        assert_eq!(cell.read().await.default_pending_timeout_ms, 1_800_000);
+        assert_eq!(cell.read().await.default_pending_timeout_ms, 300_000);
         apply_config(
             &cell,
             WorkerConfig {

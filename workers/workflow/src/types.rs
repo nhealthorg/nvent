@@ -225,6 +225,18 @@ pub struct FanoutSpec {
     /// reading its element via `input.from = "fanout_item"`. The group's result
     /// is the array of child results, in order.
     pub over: String,
+    /// Fanout execution mode.
+    /// - `parallel` (default): all items can run concurrently.
+    /// - `sequential`: process one item at a time in index order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<FanoutMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FanoutMode {
+    Parallel,
+    Sequential,
 }
 
 /// Caller-supplied completion callback. When a run reaches a terminal state the

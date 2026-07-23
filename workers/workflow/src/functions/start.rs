@@ -783,6 +783,7 @@ mod tests {
             depends_on: vec![],
             fanout: fanout_over.map(|over| FanoutSpec {
                 over: over.to_string(),
+                mode: None,
             }),
         }
     }

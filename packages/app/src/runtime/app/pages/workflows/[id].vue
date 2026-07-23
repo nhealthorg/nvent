@@ -296,6 +296,9 @@ const flowMeta = computed(() => {
       engineRetryMax: node.function?.engine_retry?.max_attempts,
       runtype: (node as any).runtype || 'task',
       emits: (node as any).emits || [],
+      isLoop: Boolean((node as any).fanout),
+      loopOver: (node as any).fanout?.over,
+      loopMode: (node as any).fanout?.mode || 'parallel',
     }
   })
 
@@ -582,11 +585,14 @@ const timelineStreams = computed(() => {
 
 const stepStates = computed(() => {
   const out: Record<string, any> = {}
-  Object.entries(status.value?.nodes ?? {}).forEach(([id, nodeStatus]: [string, any]) => {
+  const nodeStates = status.value?.nodes ?? {}
+
+  Object.entries(nodeStates).forEach(([id, nodeStatus]: [string, any]) => {
     let uiStatus = nodeStatus.state || nodeStatus
     if (typeof uiStatus === 'string') {
       if (uiStatus === 'done') uiStatus = 'completed'
       else if (uiStatus === 'error' || uiStatus === 'failed') uiStatus = 'failed'
+      else if (uiStatus === 'cancelled' || uiStatus === 'canceled') uiStatus = 'canceled'
       else if (uiStatus === 'active' || uiStatus === 'queued' || uiStatus === 'running') uiStatus = 'running'
     }
 
@@ -600,6 +606,44 @@ const stepStates = computed(() => {
       retries: nodeStatus.retries,
     }
   })
+
+  // For fanout/loop nodes, aggregate child `node#i` checkpoints into the base step
+  // so overview and diagram show one logical loop step state.
+  Object.entries(definition.value?.nodes ?? {}).forEach(([baseId, nodeDef]: [string, any]) => {
+    if (!nodeDef?.fanout) return
+
+    const children = Object.entries(nodeStates).filter(([id]) => id.startsWith(`${baseId}#`))
+    if (children.length === 0) return
+
+    const childStates = children.map(([, cp]: any) => String(cp?.state || '').toLowerCase())
+    const childErrors = children
+      .map(([, cp]: any) => cp?.result_error)
+      .filter((msg: any) => typeof msg === 'string' && msg.length > 0)
+    const retries = children.reduce((sum, [, cp]: any) => sum + Number(cp?.retries || 0), 0)
+
+    let aggregated: 'running' | 'completed' | 'failed' | 'canceled' | 'idle' = 'idle'
+    if (childStates.some(s => s === 'failed' || s === 'error')) aggregated = 'failed'
+    else if (childStates.some(s => s === 'running' || s === 'active' || s === 'queued' || s === 'pending')) aggregated = 'running'
+    else if (childStates.some(s => s === 'cancelled' || s === 'canceled')) aggregated = 'canceled'
+    else if (childStates.length > 0 && childStates.every(s => s === 'done' || s === 'completed')) aggregated = 'completed'
+
+    const childPending = children
+      .map(([, cp]: any) => Number(cp?.pending_at || 0))
+      .filter(v => v > 0)
+    const childCompleted = children
+      .map(([, cp]: any) => Number(cp?.completed_at || 0))
+      .filter(v => v > 0)
+
+    out[baseId] = {
+      ...(out[baseId] || {}),
+      status: aggregated,
+      retries,
+      error: childErrors[0],
+      pending_at: childPending.length > 0 ? Math.min(...childPending) : out[baseId]?.pending_at,
+      completed_at: childCompleted.length > 0 ? Math.max(...childCompleted) : out[baseId]?.completed_at,
+    }
+  })
+
   return out
 })
 
@@ -608,17 +652,26 @@ const stepList = computed(() => {
 
   return sortNodesByLevel(definition.value.nodes).map(id => {
     const state = stepStates.value[id]
+    const node = definition.value.nodes[id]
     return {
       key: id,
       status: state?.status || 'idle',
       error: state?.error,
       result: state?.result,
       retries: state?.retries,
+      isLoop: Boolean(node?.fanout),
+      loopOver: node?.fanout?.over,
+      loopMode: node?.fanout?.mode || 'parallel',
     }
   })
 })
 
 const selectedStep = ref<string | null>(null)
+
+function baseStepName(stepName?: string | null): string | null {
+  if (!stepName) return null
+  return String(stepName).split('#')[0] || null
+}
 
 const filteredTimelineEvents = computed(() => {
   if (!selectedStep.value) return timelineEvents.value
@@ -627,23 +680,23 @@ const filteredTimelineEvents = computed(() => {
     if (!item.stepName) {
       return item.type === 'flow.start' || item.type === 'flow.completed' || item.type === 'flow.failed'
     }
-    return item.stepName === selectedStep.value
+    return baseStepName(item.stepName) === selectedStep.value
   })
 })
 
 const filteredTimelineLogs = computed(() => {
   if (!selectedStep.value) return timelineLogs.value
-  return timelineLogs.value.filter((item: any) => item.stepName === selectedStep.value)
+  return timelineLogs.value.filter((item: any) => baseStepName(item.stepName) === selectedStep.value)
 })
 
 const filteredTimelineStates = computed(() => {
   if (!selectedStep.value) return timelineStates.value
-  return timelineStates.value.filter((item: any) => item.stepName === selectedStep.value)
+  return timelineStates.value.filter((item: any) => baseStepName(item.stepName) === selectedStep.value)
 })
 
 const filteredTimelineStreams = computed(() => {
   if (!selectedStep.value) return timelineStreams.value
-  return timelineStreams.value.filter((item: any) => item.stepName === selectedStep.value)
+  return timelineStreams.value.filter((item: any) => baseStepName(item.stepName) === selectedStep.value)
 })
 
 async function refreshAll() {

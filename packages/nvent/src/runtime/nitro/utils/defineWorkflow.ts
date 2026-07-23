@@ -137,7 +137,7 @@ export interface WorkflowContext {
     input?: any
     retry?: { max_attempts?: number }
     depends_on?: string[]
-    fanout?: string | { over: string }
+    fanout?: string | { over: string, mode?: 'parallel' | 'sequential' }
     agent?: any
     executor?: any
   }) => Promise<T>
@@ -165,6 +165,22 @@ export interface WorkflowContext {
    * const result2 = await ctx.call('analyze', result1)
    */
   call: <T = any>(...args: any[]) => Promise<T>
+
+  /**
+   * Loop over a runtime array source and execute one or more calls per item.
+   *
+   * The array source may come from a previous node (dynamic at runtime).
+   * Inside the callback, `loop.item` represents the current item value.
+   *
+   * @example
+   * const items = await ctx.call('load-items', input)
+   *
+   * await ctx.loop(items, async loop => {
+   *   const prepared = await loop.call('prepare-item', loop.item)
+   *   return loop.call('process-item', prepared)
+   * })
+   */
+  loop: <T = any>(items: any, fn: (ctx: WorkflowLoopContext) => T | Promise<T>, options?: WorkflowLoopOptions) => Promise<T>
 
   /**
    * Declare one logical parallel branch that can contain sequential steps.
@@ -209,11 +225,32 @@ export interface WorkflowContext {
   all: <T extends readonly unknown[]>(fn: (ctx: WorkflowContext) => T | Promise<T>) => Promise<{ [K in keyof T]: T[K] extends Promise<infer R> ? R : T[K] }>
 }
 
+export interface WorkflowLoopContext extends WorkflowContext {
+  /** Current loop item token (maps to fanout_item at runtime). */
+  item: WorkflowLoopItemRef
+}
+
+export type WorkflowLoopMode = 'parallel' | 'sequential'
+
+export interface WorkflowLoopOptions {
+  /**
+   * Loop execution mode:
+   * - parallel (default): all items can run concurrently
+   * - sequential: process one item at a time in index order
+   */
+  mode?: WorkflowLoopMode
+}
+
 const WORKFLOW_BRANCH = Symbol('workflow.branch')
+const WORKFLOW_LOOP_ITEM = Symbol('workflow.loop.item')
 
 export type WorkflowParallelBranch<T = any> = {
   [WORKFLOW_BRANCH]: true
   run: (ctx: WorkflowContext) => T | Promise<T>
+}
+
+export type WorkflowLoopItemRef = {
+  [WORKFLOW_LOOP_ITEM]: true
 }
 
 function isWorkflowParallelBranch(value: unknown): value is WorkflowParallelBranch<any> {
@@ -223,6 +260,10 @@ function isWorkflowParallelBranch(value: unknown): value is WorkflowParallelBran
     && (value as any)[WORKFLOW_BRANCH] === true
     && typeof (value as any).run === 'function',
   )
+}
+
+function isWorkflowLoopItemRef(value: unknown): value is WorkflowLoopItemRef {
+  return Boolean(value && typeof value === 'object' && (value as any)[WORKFLOW_LOOP_ITEM] === true)
 }
 
 type CallOptions = {
@@ -236,6 +277,66 @@ function isCallOptions(value: unknown): value is CallOptions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const v = value as Record<string, unknown>
   return 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
+}
+
+type ParsedCall = {
+  nodeId: string
+  functionId: string
+  input: any
+  callOptions?: CallOptions
+}
+
+function parseCallArguments(args: any[]): ParsedCall {
+  const work = [...args]
+  let callOptions: CallOptions | undefined
+  if (work.length > 0 && isCallOptions(work[work.length - 1])) {
+    callOptions = work.pop()
+  }
+
+  let nodeId: string
+  let functionId: string
+  let input: any
+
+  if (work.length === 1) {
+    functionId = work[0]
+    nodeId = functionId.replace(/::/g, '_')
+    input = 'run_input'
+  }
+  else if (work.length === 2) {
+    if (typeof work[0] === 'string' && typeof work[1] === 'string') {
+      nodeId = work[0]
+      functionId = work[1]
+      input = 'run_input'
+    } else {
+      functionId = work[0]
+      nodeId = functionId.replace(/::/g, '_')
+      input = work[1]
+    }
+  }
+  else {
+    nodeId = work[0]
+    functionId = work[1]
+    input = work[2]
+  }
+
+  return {
+    nodeId,
+    functionId,
+    input,
+    callOptions,
+  }
+}
+
+function buildFunctionSpec(functionId: string, callOptions?: CallOptions) {
+  if (!callOptions) return functionId
+  return {
+    id: functionId,
+    ...(callOptions.runtime ? { runtime: callOptions.runtime } : {}),
+    ...(callOptions.queue ? { queue: callOptions.queue } : {}),
+    ...((callOptions.engine_retry || callOptions.retry)
+      ? { engine_retry: callOptions.engine_retry ?? callOptions.retry }
+      : {}),
+  }
 }
 
 export type WorkflowHandler<TInput = any, TOutput = any> = (
@@ -361,6 +462,26 @@ export function defineWorkflow<
         })
       }
 
+      const resolveFanoutOver = (items: any): string => {
+        if (items && typeof items === 'object' && '$ref' in items && typeof items.$ref === 'string') {
+          return items.$ref
+        }
+        if (typeof items === 'string') {
+          return items
+        }
+        throw new Error(`loop requires a node reference or string path, got: ${typeof items}`)
+      }
+
+      const resolveLoopMode = (options?: WorkflowLoopOptions): WorkflowLoopMode => {
+        if (options?.mode === 'sequential') return 'sequential'
+        return 'parallel'
+      }
+
+      const applyAutoNodeSuffix = (id: string): string => {
+        if (nodes[id]) return `${id}_${++autoNodeCounter}`
+        return id
+      }
+
       const ctx: WorkflowContext = {
         node: async (id, spec) => {
           const dataDepSet = new Set<string>()
@@ -428,60 +549,55 @@ export function defineWorkflow<
         },
         
         call: async (...args: any[]) => {
-          let callOptions: CallOptions | undefined
-          if (args.length > 0 && isCallOptions(args[args.length - 1])) {
-            callOptions = args.pop()
-          }
-
-          // Parse arguments: call(functionId, input) OR call(nodeId, functionId, input)
-          let nodeId: string
-          let functionId: string
-          let input: any
-          
-          if (args.length === 1) {
-            // call(functionId) - auto-generate node ID, use run_input
-            functionId = args[0]
-            nodeId = functionId.replace(/::/g, '_')
-            input = 'run_input'
-          } else if (args.length === 2) {
-            if (typeof args[0] === 'string' && typeof args[1] === 'string') {
-              // call(nodeId, functionId) - explicit IDs, use run_input
-              nodeId = args[0]
-              functionId = args[1]
-              input = 'run_input'
-            } else {
-              // call(functionId, input) - auto-generate node ID
-              functionId = args[0]
-              nodeId = functionId.replace(/::/g, '_')
-              input = args[1]
-            }
-          } else {
-            // call(nodeId, functionId, input) - all explicit
-            nodeId = args[0]
-            functionId = args[1]
-            input = args[2]
-          }
-          
-          // If nodeId collision, append counter
-          if (nodes[nodeId]) {
-            nodeId = `${nodeId}_${++autoNodeCounter}`
-          }
-
-          const functionSpec = callOptions
-            ? {
-                id: functionId,
-                ...(callOptions.runtime ? { runtime: callOptions.runtime } : {}),
-                ...(callOptions.queue ? { queue: callOptions.queue } : {}),
-                ...((callOptions.engine_retry || callOptions.retry)
-                  ? { engine_retry: callOptions.engine_retry ?? callOptions.retry }
-                  : {}),
-              }
-            : functionId
+          const parsed = parseCallArguments(args)
+          const nodeId = applyAutoNodeSuffix(parsed.nodeId)
+          const functionSpec = buildFunctionSpec(parsed.functionId, parsed.callOptions)
           
           return ctx.node(nodeId, {
             function: functionSpec,
-            input
+            input: parsed.input
           })
+        },
+
+        loop: async <T = any>(items: any, fn: (loopCtx: WorkflowLoopContext) => T | Promise<T>, options?: WorkflowLoopOptions): Promise<T> => {
+          const fanoutOver = resolveFanoutOver(items)
+          const loopMode = resolveLoopMode(options)
+          const loopItemRef: WorkflowLoopItemRef = {
+            [WORKFLOW_LOOP_ITEM]: true,
+          }
+
+          const loopCtx: WorkflowLoopContext = {
+            ...ctx,
+            item: loopItemRef,
+            call: async (...args: any[]) => {
+              const parsed = parseCallArguments(args)
+              const nodeId = applyAutoNodeSuffix(parsed.nodeId)
+              const functionSpec = buildFunctionSpec(parsed.functionId, parsed.callOptions)
+              const isItemInput = isWorkflowLoopItemRef(parsed.input)
+
+              return ctx.node(nodeId, {
+                function: functionSpec,
+                input: isItemInput ? 'fanout_item' : parsed.input,
+                fanout: {
+                  over: fanoutOver,
+                  ...(loopMode !== 'parallel' ? { mode: loopMode } : {}),
+                },
+              })
+            },
+            foreach: async (nodeId: string, nestedItems: any, functionId: string) => {
+              const nestedOver = resolveFanoutOver(nestedItems)
+              return ctx.node(applyAutoNodeSuffix(nodeId), {
+                function: functionId,
+                input: 'fanout_item',
+                fanout: { over: nestedOver },
+              })
+            },
+            loop: async <U = any>(nestedItems: any, nestedFn: (nestedCtx: WorkflowLoopContext) => U | Promise<U>, nestedOptions?: WorkflowLoopOptions): Promise<U> => {
+              return ctx.loop(nestedItems, nestedFn, nestedOptions)
+            },
+          }
+
+          return await fn(loopCtx)
         },
 
         branch: <T = any>(fn: (c: WorkflowContext) => T | Promise<T>): WorkflowParallelBranch<T> => ({

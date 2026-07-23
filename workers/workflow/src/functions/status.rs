@@ -125,6 +125,7 @@ pub async fn handle(
 mod tests {
     use super::*;
     use serde_json::json;
+    use crate::types::NodeState;
 
     #[test]
     fn status_response_serde_round_trip() {

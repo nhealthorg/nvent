@@ -10,15 +10,22 @@ export default defineWorkflow({
   },
   handler: async (input: { text: string }, ctx) => {
     const processed = await ctx.call('process-text', input)
+    const items = await ctx.call('plan-items', processed)
 
     await ctx.all(c => [
       c.branch(async b => {
-        const first = await b.call('process-item', processed)
-        return b.call('process-item', first)
+        const loopResult = await b.loop(items, async loopCtx => {
+          const first = await loopCtx.call('process-item', loopCtx.item)
+          return loopCtx.call('enrich-item', first)
+        })
+        return b.call('summarize-branch-a', loopResult)
       }),
       c.branch(async b => {
-        const third = await b.call('process-item', processed)
-        return b.call('process-item', third)
+        const loopResult = await b.loop(items, async loopCtx => {
+          const transformed = await loopCtx.call('transform-item', loopCtx.item)
+          return loopCtx.call('score-item', transformed)
+        }, { mode: 'sequential' })
+        return b.call('summarize-branch-b', loopResult)
       }),
     ] as const)
 

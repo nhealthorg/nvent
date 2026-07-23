@@ -66,8 +66,14 @@ export default defineWorkflow({
     const user = await ctx.call('users::create', input)
     
     await ctx.all(c => [
-      c.call('email::send-welcome', user),
-      c.call('crm::add-lead', user)
+      c.branch(async b => {
+        const mail = await b.call('email::prepare', user)
+        return b.call('email::send-welcome', mail)
+      }),
+      c.branch(async b => {
+        await b.call('crm::enrich-lead', user)
+        return b.call('crm::add-lead', user)
+      }),
     ])
     
     return user

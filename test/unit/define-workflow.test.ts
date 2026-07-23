@@ -355,4 +355,59 @@ describe('defineWorkflow compilation', () => {
       engine_retry: { max_attempts: 2 },
     })
   })
+
+  it('compiles loop with sequential per-item calls', async () => {
+    const workflow = defineWorkflow({
+      name: 'loop-sequential',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('load-items', input)
+
+        const processed = await ctx.loop(items, async loop => {
+          const prepared = await loop.call('prepare-item', loop.item)
+          return loop.call('process-item', prepared)
+        }, { mode: 'sequential' })
+
+        return ctx.call('finalize', processed)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['prepare-item'].fanout).toEqual({ over: 'node:load-items', mode: 'sequential' })
+    expect(plan.nodes['prepare-item'].input).toEqual({ from: 'fanout_item' })
+    expect(plan.nodes['prepare-item'].depends_on).toEqual(['load-items'])
+
+    expect(plan.nodes['process-item'].fanout).toEqual({ over: 'node:load-items', mode: 'sequential' })
+    expect(plan.nodes['process-item'].input).toEqual({ from: 'node:prepare-item' })
+    expect(plan.nodes['process-item'].depends_on).toEqual(['prepare-item'])
+
+    expect(plan.nodes['finalize'].depends_on).toEqual(['process-item'])
+  })
+
+  it('supports loops inside parallel all blocks', async () => {
+    const workflow = defineWorkflow({
+      name: 'loop-in-all',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('load-items', input)
+
+        await ctx.all(c => [
+          c.loop(items, async loop => {
+            const a = await loop.call('branch-a-item', loop.item)
+            return loop.call('branch-a-item-final', a)
+          }),
+          c.call('audit', input),
+        ] as const)
+
+        return ctx.call('done', input)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['branch-a-item'].fanout).toEqual({ over: 'node:load-items' })
+    expect(plan.nodes['branch-a-item-final'].fanout).toEqual({ over: 'node:load-items' })
+    expect(plan.nodes['branch-a-item'].depends_on).toEqual(['load-items'])
+    expect(plan.nodes['audit'].depends_on).toEqual(['load-items'])
+    expect([...plan.nodes['done'].depends_on].sort()).toEqual(['audit', 'branch-a-item-final'])
+  })
 })

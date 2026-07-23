@@ -108,7 +108,7 @@ mod tests {
     fn defaults_from_empty_object() {
         let cfg = WorkerConfig::from_json(&json!({})).expect("parse ok");
         assert_eq!(cfg, WorkerConfig::default());
-        assert_eq!(cfg.default_pending_timeout_ms, 1_800_000);
+        assert_eq!(cfg.default_pending_timeout_ms, 300_000);
         assert_eq!(cfg.sweep_expression, "0 * * * * *");
         assert_eq!(cfg.dispatch_timeout_ms, 30_000);
         assert_eq!(cfg.max_node_retries, 3);

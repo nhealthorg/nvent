@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use serde_json::Value;
 
 use crate::ids::node_uid;
-use crate::types::{NodeCheckpoint, NodeDef, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord};
+use crate::types::{
+    FanoutMode, NodeCheckpoint, NodeDef, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord,
+};
 
 // ponytail: generous cap so a runaway `over` array can't materialize unbounded
 // per-item state/sessions; tighten if abused.
@@ -314,11 +316,39 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
         if node_def.fanout.is_some() {
             // Fanout node: only emit already-materialized Pending items.
             if let Some(items) = record.fanout_src.get(node_id.as_str()) {
-                for i in 0..items.len() {
-                    let uid = node_uid(node_id, Some(i as u32));
-                    if let Some(cp) = record.nodes.get(&uid) {
-                        if cp.state == NodeState::Pending && deps_done(def, record, node_id) {
-                            frontier.push(uid);
+                if !deps_done(def, record, node_id) {
+                    continue;
+                }
+
+                let sequential = matches!(
+                    node_def.fanout.as_ref().and_then(|f| f.mode),
+                    Some(FanoutMode::Sequential)
+                );
+
+                if sequential {
+                    // Only one item at a time: first pending item whose predecessors are Done.
+                    for i in 0..items.len() {
+                        let uid = node_uid(node_id, Some(i as u32));
+                        let state = record.nodes.get(&uid).map(|cp| cp.state);
+
+                        if state == Some(NodeState::Pending) {
+                            let prev_done = (0..i).all(|j| {
+                                let prev_uid = node_uid(node_id, Some(j as u32));
+                                matches!(record.nodes.get(&prev_uid).map(|cp| cp.state), Some(NodeState::Done))
+                            });
+                            if prev_done {
+                                frontier.push(uid);
+                            }
+                            break;
+                        }
+                    }
+                } else {
+                    for i in 0..items.len() {
+                        let uid = node_uid(node_id, Some(i as u32));
+                        if let Some(cp) = record.nodes.get(&uid) {
+                            if cp.state == NodeState::Pending {
+                                frontier.push(uid);
+                            }
                         }
                     }
                 }
@@ -581,6 +611,7 @@ mod tests {
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
+                    mode: None,
                 }),
             },
         );
@@ -845,6 +876,32 @@ mod tests {
         let frontier = ready_frontier(&d, &r);
         assert!(frontier.contains(&"read#0".to_string()));
         assert!(frontier.contains(&"read#1".to_string()));
+    }
+
+    #[test]
+    fn frontier_sequential_fanout_releases_one_item_at_a_time() {
+        let (mut d, mut r) = (def(), record());
+        if let Some(read) = d.nodes.get_mut("read") {
+            if let Some(fanout) = read.fanout.as_mut() {
+                fanout.mode = Some(FanoutMode::Sequential);
+            }
+        }
+
+        r.nodes.insert("plan".into(), done_checkpoint());
+        let mut results = BTreeMap::new();
+        results.insert("plan".to_string(), json!({"docs":["a","b","c"]}));
+        expand_ready_fanouts(&d, &mut r, &results);
+
+        let frontier1 = ready_frontier(&d, &r);
+        assert_eq!(frontier1, vec!["read#0".to_string()]);
+
+        r.nodes.insert("read#0".into(), done_checkpoint());
+        let frontier2 = ready_frontier(&d, &r);
+        assert_eq!(frontier2, vec!["read#1".to_string()]);
+
+        r.nodes.insert("read#1".into(), done_checkpoint());
+        let frontier3 = ready_frontier(&d, &r);
+        assert_eq!(frontier3, vec!["read#2".to_string()]);
     }
 
     // -----------------------------------------------------------------------
