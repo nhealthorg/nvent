@@ -14,6 +14,10 @@ const runId = computed(() => props.runId || (route.value.params.id as string))
 
 const isStateSlideoverOpen = ref(false)
 const isStreamSlideoverOpen = ref(false)
+const isCancelSlideoverOpen = ref(false)
+const cancelPending = ref(false)
+const cancelError = ref<string | null>(null)
+const cancelResult = ref<WorkflowStopResponse | null>(null)
 
 interface WorkflowRunStatusResponse {
   status: string
@@ -21,7 +25,27 @@ interface WorkflowRunStatusResponse {
   nodes: Record<string, any>
   created_at: number
   updated_at: number
+  queue_receipts?: Array<{
+    run_id: string
+    node_uid: string
+    queue: string
+    receipt_id: string
+    enqueued_at?: number
+  }>
   result?: any
+  result_error?: string
+}
+
+interface WorkflowStopResponse {
+  stopping: boolean
+  stopped_sessions?: number
+  queue_fragments_detected?: number
+  checked_queues?: string[]
+  tracked_receipt_count?: number
+  tracked_receipt_ids?: string[]
+  queue_cleanup_attempted?: number
+  queue_cleanup_succeeded?: number
+  queue_cleanup_errors?: Record<string, string>
 }
 
 interface WorkflowTimelineResponse {
@@ -636,6 +660,107 @@ async function openStreamSlideover() {
   await refreshStreams()
 }
 
+function openCancelSlideover() {
+  isCancelSlideoverOpen.value = true
+}
+
+async function cancelRun() {
+  cancelPending.value = true
+  cancelError.value = null
+  try {
+    cancelResult.value = await $fetch<WorkflowStopResponse>('/api/_workflows/stop', {
+      method: 'POST',
+      body: { run_id: runId.value },
+    })
+    await refreshAll()
+  }
+  catch (error: any) {
+    cancelError.value = error?.data?.statusMessage || error?.message || 'Cancel failed'
+  }
+  finally {
+    cancelPending.value = false
+  }
+}
+
+const cancelCleanupAttempted = computed(() => cancelResult.value?.queue_cleanup_attempted ?? 0)
+const cancelCleanupSucceeded = computed(() => cancelResult.value?.queue_cleanup_succeeded ?? 0)
+const cancelCleanupErrors = computed(() => cancelResult.value?.queue_cleanup_errors ?? {})
+const cancelCleanupErrorEntries = computed(() => Object.entries(cancelCleanupErrors.value))
+const cancelCleanupHasErrors = computed(() => cancelCleanupErrorEntries.value.length > 0)
+const cancelCleanupRate = computed(() => {
+  const attempted = cancelCleanupAttempted.value
+  if (attempted <= 0) return 100
+  return Math.round((cancelCleanupSucceeded.value / attempted) * 100)
+})
+const cancelCheckedQueues = computed(() => cancelResult.value?.checked_queues ?? [])
+const cancelTrackedReceiptIds = computed(() => cancelResult.value?.tracked_receipt_ids ?? [])
+const isRunCancelled = computed(() => normalizedStatus.value === 'cancelled')
+const isRunTerminal = computed(() => {
+  const current = String(normalizedStatus.value || '')
+  return current === 'completed' || current === 'failed' || current === 'cancelled'
+})
+const showCancelAction = computed(() => !isRunTerminal.value)
+const cancelDisplay = computed(() => ({
+  stopped_sessions: cancelResult.value?.stopped_sessions ?? 0,
+  queue_fragments_detected: cancelResult.value?.queue_fragments_detected ?? 0,
+  tracked_receipt_count: cancelResult.value?.tracked_receipt_count ?? 0,
+}))
+
+function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0s'
+  const totalSeconds = Math.floor(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+const runDurationMs = computed(() => {
+  const createdAt = Number(status.value?.created_at || 0)
+  const updatedAt = Number(status.value?.updated_at || 0)
+  if (createdAt <= 0 || updatedAt <= 0) return 0
+  return Math.max(0, updatedAt - createdAt)
+})
+const runDurationLabel = computed(() => formatDurationMs(runDurationMs.value))
+
+const nodeStats = computed(() => {
+  const nodes = Object.values(status.value?.nodes ?? {}) as any[]
+  const stats = {
+    total: nodes.length,
+    completed: 0,
+    failed: 0,
+    running: 0,
+    cancelled: 0,
+    waiting: 0,
+    retries: 0,
+  }
+
+  for (const node of nodes) {
+    const stateRaw = String(node?.state || '').toLowerCase()
+    if (stateRaw === 'done' || stateRaw === 'completed') stats.completed += 1
+    else if (stateRaw === 'error' || stateRaw === 'failed') stats.failed += 1
+    else if (stateRaw === 'cancelled' || stateRaw === 'canceled') stats.cancelled += 1
+    else if (stateRaw === 'running' || stateRaw === 'active' || stateRaw === 'queued') stats.running += 1
+    else stats.waiting += 1
+
+    const retries = Number(node?.retries || 0)
+    if (Number.isFinite(retries) && retries > 0) stats.retries += retries
+  }
+
+  return stats
+})
+
+const timelineSpanCount = computed(() => timeline.value?.spans?.length ?? 0)
+const timelineLogCount = computed(() => timeline.value?.logs?.length ?? 0)
+const timelineEventCount = computed(() => timelineEvents.value.length)
+
+const statusQueueReceipts = computed(() => status.value?.queue_receipts ?? [])
+const statusQueueReceiptCount = computed(() => statusQueueReceipts.value.length)
+const statusQueueReceiptQueueCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.queue)).size)
+const statusQueueReceiptNodeCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.node_uid)).size)
+
 const filteredWorkflowStates = computed(() => {
   return workflowStates.value?.states ?? []
 })
@@ -715,13 +840,175 @@ function exportStates() {
               />
             </template>
           </USlideover>
-           <UBadge
-             v-if="normalizedStatus"
-             :label="normalizedStatus.toUpperCase()"
-             size="lg"
-             :color="normalizedStatus === 'completed' ? 'success' : normalizedStatus === 'failed' ? 'error' : 'neutral'"
-             variant="outline"
-           />
+
+          <USlideover
+            v-model="isCancelSlideoverOpen"
+            title="Run Controls"
+          >
+            <UButton
+              icon="i-lucide-shield-alert"
+              color="neutral"
+              variant="outline"
+              :label="normalizedStatus ? `Controls: ${String(normalizedStatus).toUpperCase()}` : 'Controls'"
+              @click="openCancelSlideover"
+            />
+            <template #content>
+              <div class="h-full flex flex-col p-4 gap-4 bg-white dark:bg-zinc-950 overflow-y-auto">
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/40 p-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">Workflow Cancel</div>
+                      <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">Run controls and queue cleanup diagnostics.</div>
+                    </div>
+                    <UBadge
+                      v-if="normalizedStatus"
+                      :label="String(normalizedStatus).toUpperCase()"
+                      size="xs"
+                      :color="normalizedStatus === 'completed' ? 'success' : normalizedStatus === 'failed' ? 'error' : 'neutral'"
+                      variant="soft"
+                    />
+                  </div>
+
+                  <div v-if="showCancelAction" class="mt-3">
+                    <UButton
+                      icon="i-lucide-x-circle"
+                      color="error"
+                      variant="solid"
+                      :loading="cancelPending"
+                      label="Cancel Run Now"
+                      @click="cancelRun"
+                    />
+                  </div>
+                  <div v-else class="mt-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-[11px] text-zinc-600 dark:text-zinc-300">
+                    This run is terminal ({{ String(normalizedStatus || '').toUpperCase() }}). Cancel action is no longer available.
+                  </div>
+                </div>
+
+                <div v-if="cancelError" class="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
+                  {{ cancelError }}
+                </div>
+
+                <div
+                  v-else-if="cancelResult || isRunCancelled"
+                  class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                      Cancel Execution Summary
+                    </div>
+                    <UBadge
+                      :label="cancelResult ? (cancelCleanupHasErrors ? 'Partial Cleanup' : 'Cleanup OK') : 'Already Cancelled'"
+                      :color="cancelResult ? (cancelCleanupHasErrors ? 'warning' : 'success') : 'neutral'"
+                      size="xs"
+                      variant="soft"
+                    />
+                  </div>
+
+                  <div class="mt-3 grid grid-cols-2 gap-2">
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Sessions Stopped</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelDisplay.stopped_sessions }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Queue Fragments</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelDisplay.queue_fragments_detected }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Receipts Tracked</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelDisplay.tracked_receipt_count }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Cleanup Success</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelCleanupRate }}%</div>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
+                    <template v-if="cancelResult">
+                      Attempted {{ cancelCleanupAttempted }}, succeeded {{ cancelCleanupSucceeded }}, failed {{ cancelCleanupErrorEntries.length }}.
+                    </template>
+                    <template v-else>
+                      No cleanup diagnostics available from this session.
+                    </template>
+                  </div>
+
+                  <details v-if="cancelCheckedQueues.length > 0 || cancelTrackedReceiptIds.length > 0 || cancelCleanupHasErrors" class="mt-3 group">
+                    <summary class="cursor-pointer text-xs font-medium text-zinc-700 dark:text-zinc-200 list-none flex items-center gap-2">
+                      <span class="inline-block transition-transform group-open:rotate-90">▶</span>
+                      Show Cleanup Details
+                    </summary>
+                    <div class="mt-2 space-y-2">
+                      <div v-if="cancelCheckedQueues.length > 0" class="text-[11px] text-zinc-600 dark:text-zinc-300">
+                        <span class="font-medium">Queues:</span>
+                        {{ cancelCheckedQueues.join(', ') }}
+                      </div>
+                      <div v-if="cancelTrackedReceiptIds.length > 0" class="text-[11px] text-zinc-600 dark:text-zinc-300">
+                        <span class="font-medium">Receipt IDs:</span>
+                        {{ cancelTrackedReceiptIds.join(', ') }}
+                      </div>
+                      <div v-if="cancelCleanupHasErrors" class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-2">
+                        <div class="text-[11px] font-semibold text-amber-800 dark:text-amber-300">Cleanup Errors</div>
+                        <ul class="mt-1 space-y-1 text-[11px] text-amber-800/90 dark:text-amber-200/90 max-h-28 overflow-auto">
+                          <li v-for="[receiptId, err] in cancelCleanupErrorEntries" :key="receiptId">
+                            <span class="font-medium">{{ receiptId }}:</span> {{ err }}
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+
+                <div
+                  v-if="isRunTerminal"
+                  class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                      Run Snapshot
+                    </div>
+                    <UBadge
+                      :label="String(normalizedStatus || 'terminal').toUpperCase()"
+                      color="neutral"
+                      size="xs"
+                      variant="soft"
+                    />
+                  </div>
+
+                  <div class="mt-3 grid grid-cols-2 gap-2">
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Duration</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ runDurationLabel }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Nodes Total</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.total }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Nodes OK / Failed</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.completed }} / {{ nodeStats.failed }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Retries</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.retries }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Spans / Logs</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ timelineSpanCount }} / {{ timelineLogCount }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Queue Receipts</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ statusQueueReceiptCount }}</div>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
+                    Events {{ timelineEventCount }}. Receipt queues {{ statusQueueReceiptQueueCount }}, receipt nodes {{ statusQueueReceiptNodeCount }}.
+                  </div>
+                </div>
+              </div>
+            </template>
+          </USlideover>
+
            <UButton
              icon="i-heroicons-arrow-path"
              color="neutral"
@@ -775,7 +1062,7 @@ function exportStates() {
             :result="status.result"
             :flow-def="flowMeta"
             @select-step="selectedStep = $event"
-            @cancel-flow="() => {}"
+            @cancel-flow="cancelRun"
             @restart-flow="() => {}"
           />
           <div v-else-if="pending" class="p-8 space-y-4">

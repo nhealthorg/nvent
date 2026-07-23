@@ -6,6 +6,7 @@ import { type WorkflowRunRecord, RunStatus, type NodeCheckpoint } from '#nvent/t
 
 const UBadge = resolveComponent('UBadge')
 const UProgress = resolveComponent('UProgress')
+const UButton = resolveComponent('UButton')
 
 interface RunsResponse {
   runs: WorkflowRunRecord[]
@@ -54,6 +55,8 @@ watch([status, workflow], () => {
 
 const runs = computed(() => data.value?.runs || [])
 const total = computed(() => data.value?.pagination?.total || 0)
+const cancelingRunIds = ref<string[]>([])
+const cancelError = ref<string | null>(null)
 
 // Auto-refresh only if on first page and no specific search active
 let refreshInterval: any = null
@@ -87,6 +90,29 @@ function statusColor(status: string) {
   if (status === 'failed' || status === 'error' || status === 'cancelled') return 'error'
   if (status === 'running' || status === 'active' || status === 'awaiting_nodes' || status === 'awaiting') return 'info'
   return 'neutral'
+}
+
+function isLiveStatus(status: string) {
+  return status === 'running' || status === 'active' || status === 'awaiting_nodes' || status === 'awaiting'
+}
+
+async function cancelRun(runId: string) {
+  if (cancelingRunIds.value.includes(runId)) return
+  cancelError.value = null
+  cancelingRunIds.value = [...cancelingRunIds.value, runId]
+  try {
+    await $fetch('/api/_workflows/stop', {
+      method: 'POST',
+      body: { run_id: runId },
+    })
+    await refresh()
+  }
+  catch (error: any) {
+    cancelError.value = error?.data?.statusMessage || error?.message || 'Cancel failed'
+  }
+  finally {
+    cancelingRunIds.value = cancelingRunIds.value.filter(id => id !== runId)
+  }
 }
 
 const columns: TableColumn<WorkflowRunRecord>[]  = [
@@ -151,9 +177,30 @@ const columns: TableColumn<WorkflowRunRecord>[]  = [
   {
     id: 'actions',
     header: '',
-    cell: () => h('div', { class: 'flex justify-end pr-2' }, [
-      h('span', { class: 'text-zinc-300 dark:text-zinc-700' }, '›')
-    ])
+    cell: ({ row }) => {
+      const run = row.original
+      const currentStatus = String(run.status || '')
+      const isLive = isLiveStatus(currentStatus)
+      const isCancelling = cancelingRunIds.value.includes(run.run_id)
+
+      return h('div', { class: 'flex items-center justify-end gap-2 pr-2' }, [
+        isLive
+          ? h(UButton, {
+              size: 'xs',
+              color: 'error',
+              variant: 'ghost',
+              icon: 'i-lucide-x-circle',
+              label: 'Cancel',
+              loading: isCancelling,
+              onClick: async (event: Event) => {
+                event.stopPropagation()
+                await cancelRun(run.run_id)
+              },
+            })
+          : null,
+        h('span', { class: 'text-zinc-300 dark:text-zinc-700' }, '›'),
+      ])
+    }
   }
 ]
 
@@ -242,6 +289,9 @@ function formatDuration(run: WorkflowRunRecord) {
     <!-- Content -->
     <div class="flex-1 min-h-0 overflow-y-auto">
       <div class="max-w-7xl mx-auto p-6">
+        <div v-if="cancelError" class="mb-3 text-xs text-red-600 dark:text-red-400">
+          {{ cancelError }}
+        </div>
         <div class="bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
           <UTable
             ref="table"

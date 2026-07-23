@@ -27,9 +27,8 @@ import {
   addTemplate,
   updateTemplates,
   hasNuxtModule,
-  extendViteConfig
 } from '@nuxt/kit'
-import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync } from 'node:fs'
+import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync, utimesSync } from 'node:fs'
 import { rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { addCustomTab } from '@nuxt/devtools-kit'
@@ -92,8 +91,8 @@ function stageWorkflowBinary(targetBinDir: string, packageRootDir: string): stri
       try {
         const sourceStat = statSync(source)
         const targetStat = statSync(target)
-        // If the binary is current, skip the copy.
-        if (sourceStat.size === targetStat.size) {
+        // If the binary is current (size AND mtime), skip the copy.
+        if (sourceStat.size === targetStat.size && sourceStat.mtimeMs === targetStat.mtimeMs) {
           return target
         }
       } catch {
@@ -102,6 +101,7 @@ function stageWorkflowBinary(targetBinDir: string, packageRootDir: string): stri
     }
 
     copyFileSync(source, target)
+    utimesSync(target, statSync(source).atime, statSync(source).mtime)
     if (process.platform !== 'win32') {
       chmodSync(target, 0o755)
     }
