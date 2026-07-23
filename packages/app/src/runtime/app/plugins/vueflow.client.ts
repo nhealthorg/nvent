@@ -10,4 +10,4 @@ export default defineNuxtPlugin((nuxtApp) => {
   nuxtApp.vueApp.component('Controls', Controls)
   nuxtApp.vueApp.component('MiniMap', MiniMap)
   nuxtApp.vueApp.component('Background', Background)
-})
+}) as any
