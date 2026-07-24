@@ -8,13 +8,3 @@ services:
       - "6379:6379"
       - "8001:8001" # For RedisStack GUI (optional)
     restart: unless-stopped
-  postgres:
-    image: postgres:18.1
-    container_name: nvent-postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: nvent
-    ports:
-      - "5432:5432"
-    restart: unless-stopped

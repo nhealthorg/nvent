@@ -365,7 +365,7 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
   // state
   if (cfg.modules.state !== false) {
     const adapter = cfg.state?.adapter ?? defaultStateAdapter()
-    workers.push({ name: 'iii-state', config: { adapter } })
+    workers.push({ name: 'state', config: { adapter } })
   }
 
   // queue

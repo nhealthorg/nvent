@@ -288,8 +288,43 @@ pub fn parse_record_list(v: &Value) -> Vec<WorkflowRunRecord> {
 
     items
         .into_iter()
+        .map(normalize_numeric_object_arrays)
         .filter_map(|item| from_value::<WorkflowRunRecord>(item).ok())
         .collect()
+}
+
+fn normalize_numeric_object_arrays(value: Value) -> Value {
+    match value {
+        Value::Array(arr) => Value::Array(arr.into_iter().map(normalize_numeric_object_arrays).collect()),
+        Value::Object(obj) => {
+            let normalized: BTreeMap<String, Value> = obj
+                .into_iter()
+                .map(|(k, v)| (k, normalize_numeric_object_arrays(v)))
+                .collect();
+
+            if normalized.is_empty() {
+                return Value::Object(normalized.into_iter().collect());
+            }
+
+            let mut indexed: Vec<(usize, Value)> = Vec::with_capacity(normalized.len());
+            for (k, v) in &normalized {
+                let Ok(idx) = k.parse::<usize>() else {
+                    return Value::Object(normalized.into_iter().collect());
+                };
+                indexed.push((idx, v.clone()));
+            }
+
+            indexed.sort_by_key(|(idx, _)| *idx);
+            for (position, (idx, _)) in indexed.iter().enumerate() {
+                if *idx != position {
+                    return Value::Object(normalized.into_iter().collect());
+                }
+            }
+
+            Value::Array(indexed.into_iter().map(|(_, v)| v).collect())
+        }
+        other => other,
+    }
 }
 
 pub fn parse_state_list_values(v: &Value) -> Vec<Value> {
@@ -322,7 +357,7 @@ pub async fn get_run(
     if v.is_null() {
         Ok(None)
     } else {
-        Ok(Some(from_value(v)?))
+        Ok(Some(from_value(normalize_numeric_object_arrays(v))?))
     }
 }
 
@@ -458,7 +493,7 @@ pub async fn get_def(iii: &IIIClient, run_id: &str) -> Result<Option<WorkflowDef
     if v.is_null() {
         Ok(None)
     } else {
-        Ok(Some(from_value(v)?))
+        Ok(Some(from_value(normalize_numeric_object_arrays(v))?))
     }
 }
 
@@ -860,6 +895,26 @@ mod tests {
         let list3 = parse_record_list(&v3);
         assert_eq!(list3.len(), 1, "key→value map should yield 1 record");
         assert_eq!(list3[0].run_id, "r_1");
+    }
+
+    #[test]
+    fn parse_record_list_normalizes_numeric_keyed_sequence_objects() {
+        let mut rec = minimal_record_json();
+        rec["stream_ids"] = json!({
+            "0": "workflow",
+            "1": "timeline"
+        });
+        rec["fanout_src"] = json!({
+            "classify": {
+                "0": { "id": "a" },
+                "1": { "id": "b" }
+            }
+        });
+
+        let list = parse_record_list(&json!([rec]));
+        assert_eq!(list.len(), 1, "numeric-keyed sequence object should parse");
+        assert_eq!(list[0].stream_ids, vec!["workflow", "timeline"]);
+        assert_eq!(list[0].fanout_src.get("classify").map(|items| items.len()), Some(2));
     }
 
     #[test]
