@@ -13,7 +13,7 @@ use workflow::{
     reconcile::{classify_terminal, NodeOutcome},
     types::{
         FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef,
-        RunStatus, WorkflowDef, WorkflowRunRecord,
+        RunStatus, WorkflowDef, WorkflowRunRecord, FanoutMode,
     },
 };
 
@@ -994,4 +994,512 @@ fn output_node_done_still_runs_later_declared_steps() {
 
     let q = dag::quiescence(&def, &record);
     assert_eq!(q, RunStatus::Completed, "run should complete after wait-error");
+}
+
+fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
+    let mut nodes = BTreeMap::new();
+
+    nodes.insert(
+        "plan".to_string(),
+        function_node(
+            "plan-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+
+    nodes.insert(
+        "transform-item".to_string(),
+        function_node(
+            "transform-item-fn",
+            InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+            },
+            vec!["plan".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(mode),
+            }),
+        ),
+    );
+
+    nodes.insert(
+        "score-item".to_string(),
+        function_node(
+            "score-item-fn",
+            InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+            },
+            vec!["transform-item".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(mode),
+            }),
+        ),
+    );
+
+    WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:score-item".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    }
+}
+
+#[test]
+fn sequential_loop_pipeline_enforces_item_order() {
+    let def = loop_pipeline_def(FanoutMode::Sequential);
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["plan".to_string()], "step 1 must fire plan");
+        }
+        other => panic!("expected Fire([plan]) at step 1, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "plan",
+        json!({"items": ["a", "b"]}),
+    );
+
+    let step2 = drive_step(&def, &mut record, &results);
+    match &step2 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["transform-item#0".to_string()]);
+        }
+        other => panic!("expected Fire([transform-item#0]) at step 2, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "transform-item#0",
+        json!({"ok": true}),
+    );
+
+    let step3 = drive_step(&def, &mut record, &results);
+    match &step3 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["score-item#0".to_string()]);
+        }
+        other => panic!("expected Fire([score-item#0]) at step 3, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "score-item#0",
+        json!({"score": 1}),
+    );
+
+    let step4 = drive_step(&def, &mut record, &results);
+    match &step4 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["transform-item#1".to_string()]);
+        }
+        other => panic!("expected Fire([transform-item#1]) at step 4, got {:?}", other),
+    }
+}
+
+#[test]
+fn parallel_loop_pipeline_releases_matching_items_without_global_barrier() {
+    let def = loop_pipeline_def(FanoutMode::Parallel);
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["plan".to_string()], "step 1 must fire plan");
+        }
+        other => panic!("expected Fire([plan]) at step 1, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "plan",
+        json!({"items": ["a", "b"]}),
+    );
+
+    let step2 = drive_step(&def, &mut record, &results);
+    let fired2 = match &step2 {
+        TickDecision::Fire(uids) => uids.clone(),
+        other => panic!("expected Fire([transform-item#0, transform-item#1]) at step 2, got {:?}", other),
+    };
+    assert!(fired2.contains(&"transform-item#0".to_string()));
+    assert!(fired2.contains(&"transform-item#1".to_string()));
+
+    complete(
+        &mut record,
+        &mut results,
+        "transform-item#0",
+        json!({"ok": true}),
+    );
+
+    let step3 = drive_step(&def, &mut record, &results);
+    match &step3 {
+        TickDecision::Fire(uids) => {
+            assert!(uids.contains(&"score-item#0".to_string()));
+            assert!(
+                !uids.contains(&"score-item#1".to_string()),
+                "score-item#1 must wait for transform-item#1"
+            );
+        }
+        other => panic!("expected Fire including score-item#0 at step 3, got {:?}", other),
+    }
+}
+
+fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
+    let mut nodes = BTreeMap::new();
+
+    nodes.insert(
+        "plan".to_string(),
+        function_node(
+            "plan-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+
+    nodes.insert(
+        "transform-item".to_string(),
+        function_node(
+            "transform-item-fn",
+            InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+            },
+            vec!["plan".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(FanoutMode::Sequential),
+            }),
+        ),
+    );
+
+    nodes.insert(
+        "score-a".to_string(),
+        function_node(
+            "score-a-fn",
+            InputSpec {
+                from: "node:transform-item".into(),
+                template: None,
+            },
+            vec!["transform-item".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(FanoutMode::Sequential),
+            }),
+        ),
+    );
+
+    nodes.insert(
+        "score-b".to_string(),
+        function_node(
+            "score-b-fn",
+            InputSpec {
+                from: "node:transform-item".into(),
+                template: None,
+            },
+            vec!["transform-item".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(FanoutMode::Sequential),
+            }),
+        ),
+    );
+
+    nodes.insert(
+        "merge-item".to_string(),
+        function_node(
+            "merge-item-fn",
+            InputSpec {
+                from: workflow::types::InputFrom::Many(vec![
+                    "node:score-a".to_string(),
+                    "node:score-b".to_string(),
+                ]),
+                template: None,
+            },
+            vec!["score-a".to_string(), "score-b".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(FanoutMode::Sequential),
+            }),
+        ),
+    );
+
+    WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:merge-item".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    }
+}
+
+#[test]
+fn sequential_loop_allows_parallel_all_within_same_item() {
+    let def = sequential_loop_with_parallel_all_def();
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["plan".to_string()], "step 1 must fire plan");
+        }
+        other => panic!("expected Fire([plan]) at step 1, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "plan",
+        json!({"items": ["a", "b"]}),
+    );
+
+    let step2 = drive_step(&def, &mut record, &results);
+    match &step2 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["transform-item#0".to_string()]);
+        }
+        other => panic!("expected Fire([transform-item#0]) at step 2, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "transform-item#0",
+        json!({"v": 1}),
+    );
+
+    let step3 = drive_step(&def, &mut record, &results);
+    let fired3 = match &step3 {
+        TickDecision::Fire(uids) => uids.clone(),
+        other => panic!("expected Fire([score-a#0, score-b#0]) at step 3, got {:?}", other),
+    };
+    assert!(fired3.contains(&"score-a#0".to_string()));
+    assert!(fired3.contains(&"score-b#0".to_string()));
+    assert_eq!(
+        fired3.len(),
+        2,
+        "both all-branches for item #0 must fire in parallel"
+    );
+
+    complete(&mut record, &mut results, "score-a#0", json!({"sa": 1}));
+
+    let step4 = drive_step(&def, &mut record, &results);
+    match step4 {
+        TickDecision::Park => {}
+        other => panic!(
+            "expected Park while score-b#0 is still pending before item #1 can advance, got {:?}",
+            other
+        ),
+    }
+
+    complete(&mut record, &mut results, "score-b#0", json!({"sb": 1}));
+
+    let step5 = drive_step(&def, &mut record, &results);
+    match &step5 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["merge-item#0".to_string()]);
+        }
+        other => panic!("expected Fire([merge-item#0]) at step 5, got {:?}", other),
+    }
+
+    complete(&mut record, &mut results, "merge-item#0", json!({"m": 1}));
+
+    let step6 = drive_step(&def, &mut record, &results);
+    match &step6 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["transform-item#1".to_string()]);
+        }
+        other => panic!("expected Fire([transform-item#1]) at step 6, got {:?}", other),
+    }
+}
+
+fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
+    let mut nodes = BTreeMap::new();
+
+    nodes.insert(
+        "plan".to_string(),
+        function_node(
+            "plan-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+
+    nodes.insert(
+        "transform-item".to_string(),
+        function_node(
+            "transform-item-fn",
+            InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+            },
+            vec!["plan".to_string()],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(FanoutMode::Sequential),
+            }),
+        ),
+    );
+
+    for branch in ["score-a", "score-b", "score-c"] {
+        nodes.insert(
+            branch.to_string(),
+            function_node(
+                &format!("{}-fn", branch),
+                InputSpec {
+                    from: "node:transform-item".into(),
+                    template: None,
+                },
+                vec!["transform-item".to_string()],
+                Some(FanoutSpec {
+                    over: "node:plan.result.items".to_string(),
+                    mode: Some(FanoutMode::Sequential),
+                }),
+            ),
+        );
+    }
+
+    nodes.insert(
+        "merge-item".to_string(),
+        function_node(
+            "merge-item-fn",
+            InputSpec {
+                from: workflow::types::InputFrom::Many(vec![
+                    "node:score-a".to_string(),
+                    "node:score-b".to_string(),
+                    "node:score-c".to_string(),
+                ]),
+                template: None,
+            },
+            vec![
+                "score-a".to_string(),
+                "score-b".to_string(),
+                "score-c".to_string(),
+            ],
+            Some(FanoutSpec {
+                over: "node:plan.result.items".to_string(),
+                mode: Some(FanoutMode::Sequential),
+            }),
+        ),
+    );
+
+    WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:merge-item".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    }
+}
+
+#[test]
+fn sequential_loop_parallel_all_three_branches_fails_if_one_branch_fails() {
+    let def = sequential_loop_with_parallel_all_three_branches_def();
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["plan".to_string()], "step 1 must fire plan");
+        }
+        other => panic!("expected Fire([plan]) at step 1, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "plan",
+        json!({"items": ["a", "b"]}),
+    );
+
+    let step2 = drive_step(&def, &mut record, &results);
+    match &step2 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["transform-item#0".to_string()]);
+        }
+        other => panic!("expected Fire([transform-item#0]) at step 2, got {:?}", other),
+    }
+
+    complete(
+        &mut record,
+        &mut results,
+        "transform-item#0",
+        json!({"v": 1}),
+    );
+
+    let step3 = drive_step(&def, &mut record, &results);
+    let fired3 = match &step3 {
+        TickDecision::Fire(uids) => uids.clone(),
+        other => panic!(
+            "expected Fire([score-a#0, score-b#0, score-c#0]) at step 3, got {:?}",
+            other
+        ),
+    };
+    assert!(fired3.contains(&"score-a#0".to_string()));
+    assert!(fired3.contains(&"score-b#0".to_string()));
+    assert!(fired3.contains(&"score-c#0".to_string()));
+    assert_eq!(
+        fired3.len(),
+        3,
+        "all three branches for item #0 must fire in parallel"
+    );
+
+    complete(&mut record, &mut results, "score-a#0", json!({"sa": 1}));
+    complete_with_error(&mut record, "score-b#0", "score-b failed");
+    complete(&mut record, &mut results, "score-c#0", json!({"sc": 1}));
+
+    let frontier = dag::ready_frontier(&def, &record);
+    assert!(
+        !frontier.contains(&"merge-item#0".to_string()),
+        "merge-item#0 must not become ready if one all-branch failed"
+    );
+    assert!(
+        !frontier.contains(&"transform-item#1".to_string()),
+        "sequential loop must not advance to item #1 when item #0 failed"
+    );
+
+    let decision = decide(&def, &record);
+    match decision {
+        TickDecision::Finalize(RunStatus::Failed) => {}
+        other => panic!(
+            "expected Finalize(Failed) after one all-branch failed, got {:?}",
+            other
+        ),
+    }
+
+    let q = dag::quiescence(&def, &record);
+    assert_eq!(q, RunStatus::Failed, "quiescence must return Failed");
 }

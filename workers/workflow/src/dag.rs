@@ -164,8 +164,20 @@ pub fn expand_ready_fanouts(
         .collect();
 
     for (node_id, node_def) in candidates {
-        // All direct depends_on must be Done before we can snapshot the over array.
-        if !deps_done(def, record, node_id) {
+        let fanout_spec = node_def.fanout.as_ref().unwrap();
+
+        // Expansion readiness is driven by `fanout.over` source availability, not
+        // by the full depends_on barrier. This allows downstream fanout nodes in a
+        // loop pipeline to materialize their #i checkpoints early, so readiness can
+        // be decided item-wise (`dep#i -> curr#i`) instead of waiting for all dep#*.
+        let over_source_ready = fanout_spec
+            .over
+            .strip_prefix("node:")
+            .and_then(|path| path.split('.').next())
+            .map(|source_node_id| results.contains_key(source_node_id))
+            .unwrap_or_else(|| deps_done(def, record, node_id));
+
+        if !over_source_ready {
             continue;
         }
 
@@ -173,7 +185,6 @@ pub fn expand_ready_fanouts(
         // to an array (missing path / wrong shape) or is oversized, the fanout
         // can never expand — fail it fast (base-id Failed checkpoint) so the run
         // fails instead of parking in AwaitingNodes forever.
-        let fanout_spec = node_def.fanout.as_ref().unwrap();
         let items = match resolve_over_path(&fanout_spec.over, results) {
             Ok(v) if v.len() <= MAX_FANOUT_ITEMS => v,
             outcome => {
@@ -239,6 +250,150 @@ pub fn expand_ready_fanouts(
     }
 
     expanded
+}
+
+fn fanout_dep_item_done(record: &WorkflowRunRecord, dep_id: &str, item_idx: usize) -> bool {
+    if matches!(
+        record.nodes.get(dep_id).map(|c| c.state),
+        Some(NodeState::Failed) | Some(NodeState::Cancelled)
+    ) {
+        return false;
+    }
+
+    let Some(items) = record.fanout_src.get(dep_id) else {
+        return false;
+    };
+
+    if item_idx >= items.len() {
+        return false;
+    }
+
+    let dep_uid = node_uid(dep_id, Some(item_idx as u32));
+    matches!(
+        record.nodes.get(&dep_uid).map(|cp| cp.state),
+        Some(NodeState::Done)
+    )
+}
+
+fn deps_done_for_fanout_item(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    node_id: &str,
+    item_idx: usize,
+) -> bool {
+    let node_def = match def.nodes.get(node_id) {
+        Some(n) => n,
+        None => return false,
+    };
+
+    for dep_id in &node_def.depends_on {
+        let dep_is_fanout = def
+            .nodes
+            .get(dep_id.as_str())
+            .and_then(|n| n.fanout.as_ref())
+            .is_some();
+
+        if dep_is_fanout {
+            if !fanout_dep_item_done(record, dep_id, item_idx) {
+                return false;
+            }
+        } else {
+            match record.nodes.get(dep_id.as_str()) {
+                Some(cp) if cp.state == NodeState::Done => {}
+                _ => return false,
+            }
+        }
+    }
+
+    true
+}
+
+fn same_sequential_fanout_group(def: &WorkflowDef, a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+
+    let Some(a_def) = def.nodes.get(a) else {
+        return false;
+    };
+    let Some(b_def) = def.nodes.get(b) else {
+        return false;
+    };
+    let Some(a_fanout) = a_def.fanout.as_ref() else {
+        return false;
+    };
+    let Some(b_fanout) = b_def.fanout.as_ref() else {
+        return false;
+    };
+
+    if a_fanout.mode != Some(FanoutMode::Sequential) || b_fanout.mode != Some(FanoutMode::Sequential) {
+        return false;
+    }
+
+    if a_fanout.over != b_fanout.over {
+        return false;
+    }
+
+    // Keep unrelated loops independent: only nodes connected by a dependency edge
+    // are considered part of one sequential loop execution group.
+    a_def.depends_on.iter().any(|dep| dep == b) || b_def.depends_on.iter().any(|dep| dep == a)
+}
+
+fn sequential_group_members(def: &WorkflowDef, seed: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut queue = vec![seed.to_string()];
+    let mut seen = BTreeSet::new();
+
+    while let Some(current) = queue.pop() {
+        if !seen.insert(current.clone()) {
+            continue;
+        }
+        out.push(current.clone());
+
+        for candidate in def.nodes.keys() {
+            if seen.contains(candidate) {
+                continue;
+            }
+            if same_sequential_fanout_group(def, &current, candidate) {
+                queue.push(candidate.clone());
+            }
+        }
+    }
+
+    out.sort();
+    out
+}
+
+fn sequential_group_active_index(def: &WorkflowDef, record: &WorkflowRunRecord, seed: &str) -> Option<usize> {
+    let members = sequential_group_members(def, seed);
+    if members.is_empty() {
+        return None;
+    }
+
+    let mut max_len = 0usize;
+    for member in &members {
+        let len = record.fanout_src.get(member).map(|v| v.len()).unwrap_or(0);
+        max_len = max_len.max(len);
+    }
+
+    for idx in 0..max_len {
+        let mut all_done = true;
+        for member in &members {
+            let uid = node_uid(member, Some(idx as u32));
+            match record.nodes.get(&uid).map(|cp| cp.state) {
+                Some(NodeState::Done) => {}
+                _ => {
+                    all_done = false;
+                    break;
+                }
+            }
+        }
+        if !all_done {
+            return Some(idx);
+        }
+    }
+
+    None
 }
 
 /// Returns `true` when every dependency of `node_id` is fully Done:
@@ -316,14 +471,16 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
         if node_def.fanout.is_some() {
             // Fanout node: only emit already-materialized Pending items.
             if let Some(items) = record.fanout_src.get(node_id.as_str()) {
-                if !deps_done(def, record, node_id) {
-                    continue;
-                }
-
                 let sequential = matches!(
                     node_def.fanout.as_ref().and_then(|f| f.mode),
                     Some(FanoutMode::Sequential)
                 );
+
+                let active_index = if sequential {
+                    sequential_group_active_index(def, record, node_id.as_str())
+                } else {
+                    None
+                };
 
                 if sequential {
                     // Only one item at a time: first pending item whose predecessors are Done.
@@ -332,11 +489,16 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                         let state = record.nodes.get(&uid).map(|cp| cp.state);
 
                         if state == Some(NodeState::Pending) {
+                            if !deps_done_for_fanout_item(def, record, node_id, i) {
+                                continue;
+                            }
+
                             let prev_done = (0..i).all(|j| {
                                 let prev_uid = node_uid(node_id, Some(j as u32));
                                 matches!(record.nodes.get(&prev_uid).map(|cp| cp.state), Some(NodeState::Done))
                             });
-                            if prev_done {
+                            let in_active_slice = active_index.map(|idx| idx == i).unwrap_or(true);
+                            if prev_done && in_active_slice {
                                 frontier.push(uid);
                             }
                             break;
@@ -346,7 +508,9 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                     for i in 0..items.len() {
                         let uid = node_uid(node_id, Some(i as u32));
                         if let Some(cp) = record.nodes.get(&uid) {
-                            if cp.state == NodeState::Pending {
+                            if cp.state == NodeState::Pending
+                                && deps_done_for_fanout_item(def, record, node_id, i)
+                            {
                                 frontier.push(uid);
                             }
                         }

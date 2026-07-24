@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     error::WorkflowError,
     state,
-    types::{NodeCheckpoint, RunStatus, WorkflowDef},
+    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
 };
 
 use super::Deps;
@@ -48,6 +48,9 @@ pub struct StatusResponse {
     /// Queue enqueue receipts recorded for this run (for restart/cancel forensics).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue_receipts: Vec<state::QueueReceiptRecord>,
+    /// Per-loop execution metrics keyed by fanout node id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub loop_stats: BTreeMap<String, LoopStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     /// Run-level failure summary (set when `status == failed`).
@@ -55,6 +58,82 @@ pub struct StatusResponse {
     pub result_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct LoopStats {
+    pub mode: String,
+    pub over: String,
+    pub expanded: bool,
+    pub total_items: usize,
+    pub completed_items: usize,
+    pub running_items: usize,
+    pub failed_items: usize,
+    pub cancelled_items: usize,
+    pub pending_items: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_index: Option<usize>,
+}
+
+fn collect_loop_stats(definition: &WorkflowDef, record: &WorkflowRunRecord) -> BTreeMap<String, LoopStats> {
+    let mut out = BTreeMap::new();
+
+    for (node_id, node_def) in &definition.nodes {
+        let Some(fanout) = node_def.fanout.as_ref() else {
+            continue;
+        };
+
+        let items = record.fanout_src.get(node_id).cloned().unwrap_or_default();
+        let total_items = items.len();
+
+        let mut completed_items = 0usize;
+        let mut running_items = 0usize;
+        let mut failed_items = 0usize;
+        let mut cancelled_items = 0usize;
+        let mut pending_items = 0usize;
+
+        for idx in 0..total_items {
+            let uid = format!("{}#{}", node_id, idx);
+            match record.nodes.get(&uid).map(|cp| cp.state) {
+                Some(NodeState::Done) => completed_items += 1,
+                Some(NodeState::Running) => running_items += 1,
+                Some(NodeState::Failed) => failed_items += 1,
+                Some(NodeState::Cancelled) => cancelled_items += 1,
+                Some(NodeState::Pending) | None => pending_items += 1,
+            }
+        }
+
+        let active_index = if fanout.mode == Some(crate::types::FanoutMode::Sequential) {
+            (0..total_items).find(|idx| {
+                let uid = format!("{}#{}", node_id, idx);
+                !matches!(record.nodes.get(&uid).map(|cp| cp.state), Some(NodeState::Done))
+            })
+        } else {
+            None
+        };
+
+        out.insert(
+            node_id.clone(),
+            LoopStats {
+                mode: if fanout.mode == Some(crate::types::FanoutMode::Sequential) {
+                    "sequential".to_string()
+                } else {
+                    "parallel".to_string()
+                },
+                over: fanout.over.clone(),
+                expanded: record.fanout_src.contains_key(node_id),
+                total_items,
+                completed_items,
+                running_items,
+                failed_items,
+                cancelled_items,
+                pending_items,
+                active_index,
+            },
+        );
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +180,7 @@ pub async fn handle(
         .collect();
 
     let queue_receipts = state::list_queue_receipts(&deps.iii, &req.run_id).await?;
+    let loop_stats = collect_loop_stats(&definition, &record);
 
     Ok(Some(StatusResponse {
         run_id: record.run_id,
@@ -110,6 +190,7 @@ pub async fn handle(
         definition,
         node_results,
         queue_receipts,
+        loop_stats,
         result: record.result,
         result_error: record.result_error,
         created_at: record.created_at,
@@ -182,6 +263,7 @@ mod tests {
             },
             node_results,
             queue_receipts,
+            loop_stats: BTreeMap::new(),
             result: Some(json!({"summary": "hello"})),
             result_error: Some("node 'read': boom".to_string()),
             created_at: 12345,
@@ -222,6 +304,7 @@ mod tests {
             },
             node_results: BTreeMap::new(),
             queue_receipts: Vec::new(),
+            loop_stats: BTreeMap::new(),
             result: None,
             result_error: None,
             created_at: 0,
@@ -246,8 +329,116 @@ mod tests {
             "queue_receipts omitted when empty"
         );
         assert!(
+            serialized.get("loop_stats").is_none(),
+            "loop_stats omitted when empty"
+        );
+        assert!(
             serialized.get("node_errors").is_none(),
             "node_errors omitted when empty"
         );
+    }
+
+    #[test]
+    fn collect_loop_stats_reports_item_progress() {
+        use crate::types::{FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowRunRecord};
+
+        let mut def_nodes = BTreeMap::new();
+        def_nodes.insert(
+            "loop-node".to_string(),
+            NodeDef {
+                function: FunctionSpec {
+                    id: "test-fn".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                },
+                input: InputSpec {
+                    from: "fanout_item".into(),
+                    template: None,
+                },
+                depends_on: vec![],
+                fanout: Some(FanoutSpec {
+                    over: "node:plan.result.items".to_string(),
+                    mode: Some(FanoutMode::Sequential),
+                }),
+            },
+        );
+
+        let def = WorkflowDef {
+            version: 1,
+            nodes: def_nodes,
+            output: OutputRef {
+                from: "node:loop-node".to_string(),
+            },
+            default_functions: None,
+            metadata: None,
+        };
+
+        let mut record = WorkflowRunRecord {
+            run_id: "r_loop".to_string(),
+            workflow_name: None,
+            workflow_trace_id: None,
+            state_scope_id: None,
+            stream_scope_id: None,
+            step: 0,
+            status: RunStatus::Running,
+            abort: false,
+            def_ref: "r_loop".to_string(),
+            input: json!({}),
+            state_keys_map: BTreeMap::new(),
+            stream_ids: Vec::new(),
+            nodes: BTreeMap::new(),
+            fanout_src: BTreeMap::new(),
+            result: None,
+            result_error: None,
+            notify: None,
+            caller_session_id: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        record.fanout_src.insert("loop-node".to_string(), vec![json!("a"), json!("b"), json!("c")]);
+        record.nodes.insert(
+            "loop-node#0".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+        record.nodes.insert(
+            "loop-node#1".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Running,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+
+        let stats = collect_loop_stats(&def, &record);
+        let loop_stats = stats.get("loop-node").expect("loop stats present");
+
+        assert_eq!(loop_stats.mode, "sequential");
+        assert!(loop_stats.expanded);
+        assert_eq!(loop_stats.total_items, 3);
+        assert_eq!(loop_stats.completed_items, 1);
+        assert_eq!(loop_stats.running_items, 1);
+        assert_eq!(loop_stats.pending_items, 1);
+        assert_eq!(loop_stats.active_index, Some(1));
     }
 }
