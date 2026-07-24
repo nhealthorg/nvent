@@ -22,6 +22,38 @@
           class="h-full w-full"
           @node-click="onNodeClick"
         >
+          <template #node-flow-loop-group="{ data }">
+            <div class="loop-group-node">
+              <div class="loop-group-header">
+                <UIcon
+                  name="i-heroicons-arrow-path-rounded-square-20-solid"
+                  class="size-3.5"
+                />
+                <span>{{ data?.title || 'For Loop' }}</span>
+                <UBadge
+                  size="xs"
+                  color="info"
+                  variant="soft"
+                  :label="data?.mode || 'parallel'"
+                />
+              </div>
+              <div
+                v-if="data?.over"
+                class="loop-group-line"
+                :title="String(data.over)"
+              >
+                over {{ data.over }}
+              </div>
+              <div
+                v-if="data?.pipeline"
+                class="loop-group-line"
+                :title="String(data.pipeline)"
+              >
+                {{ data.pipeline }}
+              </div>
+            </div>
+          </template>
+
           <template #node-flow-step="{ id, data }">
             <FlowNodeCard
               :id="id"
@@ -132,6 +164,13 @@ interface FlowMeta {
   id: string
   entry?: FlowEntry
   steps?: Record<string, FlowStep>
+  loopGroups?: Array<{
+    id: string
+    mode: 'parallel' | 'sequential'
+    over: string
+    nodeIds: string[]
+    label: string
+  }>
   analyzed?: {
     levels: string[][]
     maxLevel: number
@@ -214,19 +253,25 @@ const nodes = computed<FlowNode[]>(() => {
   if (!f) return out
 
   const states = props.stepStates || {}
-  const colWidth = 320
-  const rowHeight = 180
-  const horizontalGap = 60
-  const verticalGap = 90
+  const colWidth = 360
+  const rowHeight = 220
+  const horizontalGap = 100
+  const verticalGap = 130
   const awaitRowHeight = 140 // Height for await node rows (matches step row height)
-  const nodeWidth = 300
+  const nodeWidth = 320
 
   let y = 0
+
+  function estimateStepHeight(stepLike: any): number {
+    if (stepLike?.loopGroupId) return 250
+    return 210
+  }
 
   // Entry node (centered) - offset by half width to center properly
   if (f.entry) {
     const entryState = states[f.entry.step]
     const status = mapStatusToNodeStatus(entryState?.status)
+    const entryHeight = estimateStepHeight(f.entry)
 
     // Get stepTimeout from analyzed flow metadata (includes config priority)
     const entryStepTimeout = f.analyzed?.steps?.[f.entry.step]?.stepTimeout
@@ -252,14 +297,15 @@ const nodes = computed<FlowNode[]>(() => {
         worker_name: entryState?.worker_name,
         pending_at: entryState?.pending_at,
         completed_at: entryState?.completed_at,
-            isLoop: f.entry.isLoop,
-            loopOver: f.entry.loopOver,
-            loopMode: f.entry.loopMode,
+        isLoop: f.entry.isLoop,
+        loopOver: f.entry.loopOver,
+        loopMode: f.entry.loopMode,
+        __nodeHeight: entryHeight,
       },
       type: 'flow-entry',
-      style: { minWidth: `${nodeWidth}px` },
+      style: { minWidth: `${nodeWidth}px`, zIndex: 20 },
     })
-    y += rowHeight + verticalGap
+    y += entryHeight + verticalGap
 
     // Add await row after entry if needed
     if (f.entry.awaitAfter) {
@@ -351,6 +397,7 @@ const nodes = computed<FlowNode[]>(() => {
 
         const x = rowStartX + col * (colWidth + horizontalGap)
         const yPos = y + row * (rowHeight + verticalGap)
+        const stepHeight = estimateStepHeight(step)
 
         // Get stepTimeout from analyzed flow metadata (static data)
         const analyzedStep = f.analyzed?.steps?.[stepName]
@@ -381,9 +428,13 @@ const nodes = computed<FlowNode[]>(() => {
             isLoop: step?.isLoop,
             loopOver: step?.loopOver,
             loopMode: step?.loopMode,
+            loopGroupId: (step as any)?.loopGroupId,
+            loopPipeline: (step as any)?.loopPipeline,
+            loopGroupSize: (step as any)?.loopGroupSize,
+            __nodeHeight: stepHeight,
           },
           type: 'flow-step',
-          style: { minWidth: `${nodeWidth}px` },
+          style: { minWidth: `${nodeWidth}px`, zIndex: 20 },
         })
 
         // Update await node position to align with step x position
@@ -403,7 +454,7 @@ const nodes = computed<FlowNode[]>(() => {
 
           out.push({
             id: `await:step-after:${stepName}`,
-            position: { x: x - 20, y: yPos + rowHeight + verticalGap },
+            position: { x: x - 20, y: yPos + stepHeight + verticalGap },
             data: {
               label: `Await (${step.awaitAfter.type})`,
               awaitType: step.awaitAfter.type,
@@ -452,6 +503,7 @@ const nodes = computed<FlowNode[]>(() => {
 
       const x = rowStartX + col * (colWidth + horizontalGap)
       const yPos = y + row * (rowHeight + verticalGap)
+      const stepHeight = estimateStepHeight(step)
 
       // Get stepTimeout from analyzed flow metadata (static data)
       const analyzedStep = f.analyzed?.steps?.[name]
@@ -475,10 +527,52 @@ const nodes = computed<FlowNode[]>(() => {
           worker_name: stepState?.worker_name,
           pending_at: stepState?.pending_at,
           completed_at: stepState?.completed_at,
+          loopGroupId: (step as any)?.loopGroupId,
+          loopPipeline: (step as any)?.loopPipeline,
+          loopGroupSize: (step as any)?.loopGroupSize,
+          __nodeHeight: stepHeight,
         },
         type: 'flow-step',
-        style: { minWidth: `${nodeWidth}px` },
+        style: { minWidth: `${nodeWidth}px`, zIndex: 20 },
       })
+    })
+  }
+
+  const loopGroups = Array.isArray(f.loopGroups) ? f.loopGroups : []
+  for (const loopGroup of loopGroups) {
+    const memberNodes = out.filter(node =>
+      node.id.startsWith('step:')
+      && loopGroup.nodeIds.includes(node.id.replace('step:', '')),
+    )
+    if (memberNodes.length === 0) continue
+
+    const minX = Math.min(...memberNodes.map(node => node.position.x))
+    const minY = Math.min(...memberNodes.map(node => node.position.y))
+    const maxX = Math.max(...memberNodes.map(node => node.position.x + nodeWidth))
+    const maxY = Math.max(...memberNodes.map(node => {
+      const nodeHeight = Number((node.data as any)?.__nodeHeight || rowHeight)
+      return node.position.y + nodeHeight
+    }))
+    const paddingX = 40
+    const paddingTop = 54
+    const paddingBottom = 44
+
+    out.unshift({
+      id: `loop-group:${loopGroup.id}`,
+      position: { x: minX - paddingX, y: minY - paddingTop },
+      data: {
+        title: `For Loop ${loopGroup.id.toUpperCase()}`,
+        over: loopGroup.over,
+        mode: loopGroup.mode,
+        pipeline: loopGroup.label,
+      } as any,
+      type: 'flow-loop-group',
+      style: {
+        width: `${Math.max(320, maxX - minX + paddingX * 2)}px`,
+        height: `${Math.max(220, maxY - minY + paddingTop + paddingBottom)}px`,
+        zIndex: 1,
+        pointerEvents: 'none',
+      },
     })
   }
 
@@ -782,5 +876,48 @@ function resetLayout() {
   box-shadow: none;
   outline: none;
   border: none;
+}
+
+.loop-group-node {
+  width: 100%;
+  height: 100%;
+  border: 1px dashed rgba(14, 116, 144, 0.45);
+  border-radius: 12px;
+  background: rgba(236, 254, 255, 0.55);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dark .loop-group-node {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: rgba(8, 47, 73, 0.35);
+}
+
+.loop-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgb(14 116 144);
+}
+
+.dark .loop-group-header {
+  color: rgb(103 232 249);
+}
+
+.loop-group-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace;
+  font-size: 10px;
+  color: rgb(8 47 73);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dark .loop-group-line {
+  color: rgb(207 250 254);
 }
 </style>

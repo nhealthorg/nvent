@@ -23,6 +23,18 @@ interface WorkflowRunStatusResponse {
   status: string
   definition: any
   nodes: Record<string, any>
+  loop_stats?: Record<string, {
+    mode: 'parallel' | 'sequential' | string
+    over: string
+    expanded: boolean
+    total_items: number
+    completed_items: number
+    running_items: number
+    failed_items: number
+    cancelled_items: number
+    pending_items: number
+    active_index?: number | null
+  }>
   created_at: number
   updated_at: number
   queue_receipts?: Array<{
@@ -280,6 +292,144 @@ const workflowStreamRefs = computed(() => {
   return workflowStreams.value?.streams ?? []
 })
 
+type LoopGroupInfo = {
+  id: string
+  mode: 'parallel' | 'sequential'
+  over: string
+  nodeIds: string[]
+  label: string
+}
+
+function topoSortSubset(nodeIds: string[], nodeDefs: Record<string, any>, fallbackOrder: string[]): string[] {
+  const subset = new Set(nodeIds)
+  const indegree = new Map<string, number>()
+  const forward = new Map<string, string[]>()
+
+  for (const id of nodeIds) {
+    indegree.set(id, 0)
+    forward.set(id, [])
+  }
+
+  for (const id of nodeIds) {
+    const deps = Array.isArray(nodeDefs[id]?.depends_on) ? nodeDefs[id].depends_on : []
+    for (const dep of deps) {
+      if (!subset.has(dep)) continue
+      forward.get(dep)?.push(id)
+      indegree.set(id, (indegree.get(id) || 0) + 1)
+    }
+  }
+
+  const rank = new Map<string, number>()
+  fallbackOrder.forEach((id, idx) => rank.set(id, idx))
+
+  const ready: string[] = nodeIds.filter(id => (indegree.get(id) || 0) === 0)
+  ready.sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER))
+
+  const out: string[] = []
+  while (ready.length > 0) {
+    const id = ready.shift()!
+    out.push(id)
+    for (const nextId of forward.get(id) || []) {
+      indegree.set(nextId, (indegree.get(nextId) || 0) - 1)
+      if ((indegree.get(nextId) || 0) === 0) {
+        ready.push(nextId)
+      }
+    }
+    ready.sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER))
+  }
+
+  if (out.length === nodeIds.length) return out
+  return [...nodeIds].sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER))
+}
+
+const loopGroups = computed<{
+  groups: LoopGroupInfo[]
+  byNodeId: Record<string, LoopGroupInfo>
+}>(() => {
+  const nodeDefs: Record<string, any> = definition.value?.nodes || {}
+  const nodeIds = Object.keys(nodeDefs)
+  if (nodeIds.length === 0) return { groups: [], byNodeId: {} }
+
+  const fallbackOrder = sortNodesByLevel(nodeDefs)
+  const loopNodeIds = nodeIds.filter((id) => Boolean(nodeDefs[id]?.fanout))
+  if (loopNodeIds.length === 0) return { groups: [], byNodeId: {} }
+
+  const sigByNode = new Map<string, string>()
+  for (const id of loopNodeIds) {
+    const fanout = nodeDefs[id]?.fanout || {}
+    const over = String(fanout.over || '')
+    const mode = fanout.mode === 'sequential' ? 'sequential' : 'parallel'
+    sigByNode.set(id, `${over}::${mode}`)
+  }
+
+  const adjacency = new Map<string, Set<string>>()
+  for (const id of loopNodeIds) adjacency.set(id, new Set())
+
+  for (const id of loopNodeIds) {
+    const deps = Array.isArray(nodeDefs[id]?.depends_on) ? nodeDefs[id].depends_on : []
+    for (const dep of deps) {
+      if (!adjacency.has(dep)) continue
+      if (sigByNode.get(id) !== sigByNode.get(dep)) continue
+      adjacency.get(id)?.add(dep)
+      adjacency.get(dep)?.add(id)
+    }
+  }
+
+  const visited = new Set<string>()
+  const components: string[][] = []
+
+  for (const start of loopNodeIds) {
+    if (visited.has(start)) continue
+    const queue = [start]
+    visited.add(start)
+    const component: string[] = []
+
+    while (queue.length > 0) {
+      const id = queue.shift()!
+      component.push(id)
+      for (const nextId of adjacency.get(id) || []) {
+        if (visited.has(nextId)) continue
+        visited.add(nextId)
+        queue.push(nextId)
+      }
+    }
+
+    components.push(component)
+  }
+
+  const groups: LoopGroupInfo[] = components
+    .map((component, index) => {
+      const first = component[0]
+      if (!first) return null
+      const fanout = nodeDefs[first]?.fanout || {}
+      const mode: 'parallel' | 'sequential' = fanout.mode === 'sequential' ? 'sequential' : 'parallel'
+      const over = String(fanout.over || '')
+      const orderedNodes = topoSortSubset(component, nodeDefs, fallbackOrder)
+      return {
+        id: `loop-${index + 1}`,
+        mode,
+        over,
+        nodeIds: orderedNodes,
+        label: orderedNodes.join(' -> '),
+      }
+    })
+    .filter((group): group is LoopGroupInfo => Boolean(group))
+    .sort((a, b) => {
+      const firstA = fallbackOrder.indexOf(a.nodeIds[0] || '')
+      const firstB = fallbackOrder.indexOf(b.nodeIds[0] || '')
+      return firstA - firstB
+    })
+
+  const byNodeId: Record<string, LoopGroupInfo> = {}
+  for (const group of groups) {
+    for (const nodeId of group.nodeIds) {
+      byNodeId[nodeId] = group
+    }
+  }
+
+  return { groups, byNodeId }
+})
+
 const flowMeta = computed(() => {
   if (!definition.value?.nodes) return null
 
@@ -287,6 +437,7 @@ const flowMeta = computed(() => {
   const steps: Record<string, any> = {}
 
   Object.entries(definition.value.nodes).forEach(([id, node]: [string, any]) => {
+    const loopGroup = loopGroups.value.byNodeId[id]
     steps[id] = {
       name: id,
       workerId: node.function?.id,
@@ -296,9 +447,12 @@ const flowMeta = computed(() => {
       engineRetryMax: node.function?.engine_retry?.max_attempts,
       runtype: (node as any).runtype || 'task',
       emits: (node as any).emits || [],
-      isLoop: Boolean((node as any).fanout),
-      loopOver: (node as any).fanout?.over,
-      loopMode: (node as any).fanout?.mode || 'parallel',
+      isLoop: Boolean(loopGroup),
+      loopOver: loopGroup?.over,
+      loopMode: loopGroup?.mode || 'parallel',
+      loopGroupId: loopGroup?.id,
+      loopGroupSize: loopGroup?.nodeIds.length || 0,
+      loopPipeline: loopGroup?.label,
     }
   })
 
@@ -323,6 +477,7 @@ const flowMeta = computed(() => {
     id: runId.value,
     entry,
     steps,
+    loopGroups: loopGroups.value.groups,
     analyzed,
   }
 })
@@ -650,20 +805,85 @@ const stepStates = computed(() => {
 const stepList = computed(() => {
   if (!definition.value?.nodes) return []
 
-  return sortNodesByLevel(definition.value.nodes).map(id => {
+  const ordered = sortNodesByLevel(definition.value.nodes)
+  const groupsById = Object.fromEntries(loopGroups.value.groups.map(group => [group.id, group])) as Record<string, LoopGroupInfo>
+  const insertedGroups = new Set<string>()
+  const out: any[] = []
+
+  for (const id of ordered) {
     const state = stepStates.value[id]
     const node = definition.value.nodes[id]
-    return {
+    const group = loopGroups.value.byNodeId[id]
+
+    if (group && !insertedGroups.has(group.id)) {
+      const groupLoopNodeStats = group.nodeIds
+        .map(memberId => status.value?.loop_stats?.[memberId])
+        .filter(Boolean) as Array<NonNullable<WorkflowRunStatusResponse['loop_stats']>[string]>
+
+      const totalItems = groupLoopNodeStats.reduce((max, entry) => Math.max(max, Number(entry.total_items || 0)), 0)
+      const completedItems = groupLoopNodeStats.reduce((min, entry) => {
+        const value = Number(entry.completed_items || 0)
+        return min === null ? value : Math.min(min, value)
+      }, null as number | null) ?? 0
+      const runningItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.running_items || 0), 0)
+      const failedItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.failed_items || 0), 0)
+      const pendingItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.pending_items || 0), 0)
+      const activeIndexCandidates = groupLoopNodeStats
+        .map(entry => Number(entry.active_index))
+        .filter(v => Number.isFinite(v) && v >= 0)
+      const activeIndex = activeIndexCandidates.length > 0 ? Math.min(...activeIndexCandidates) : null
+
+      const memberStates = group.nodeIds
+        .map(memberId => stepStates.value[memberId])
+        .filter(Boolean)
+      const statuses = memberStates.map((memberState: any) => String(memberState?.status || '').toLowerCase())
+
+      let groupStatus = 'idle'
+      if (statuses.some(s => s === 'failed' || s === 'error')) groupStatus = 'failed'
+      else if (statuses.some(s => s === 'running' || s === 'queued' || s === 'active' || s === 'pending')) groupStatus = 'running'
+      else if (statuses.length > 0 && statuses.every(s => s === 'completed' || s === 'done')) groupStatus = 'completed'
+
+      const groupRetries = memberStates.reduce((sum: number, memberState: any) => sum + Number(memberState?.retries || 0), 0)
+
+      out.push({
+        key: `loop-group:${group.id}`,
+        status: groupStatus,
+        retries: groupRetries,
+        isLoopGroup: true,
+        loopGroupId: group.id,
+        loopOver: group.over,
+        loopMode: group.mode,
+        loopPipeline: group.label,
+        loopSize: group.nodeIds.length,
+        loopItemsTotal: totalItems,
+        loopItemsDone: completedItems,
+        loopItemsRunning: runningItems,
+        loopItemsFailed: failedItems,
+        loopItemsPending: pendingItems,
+        loopActiveIndex: activeIndex,
+      })
+      insertedGroups.add(group.id)
+    }
+
+    out.push({
       key: id,
       status: state?.status || 'idle',
       error: state?.error,
       result: state?.result,
       retries: state?.retries,
-      isLoop: Boolean(node?.fanout),
-      loopOver: node?.fanout?.over,
-      loopMode: node?.fanout?.mode || 'parallel',
-    }
-  })
+      isLoop: false,
+      loopOver: group?.over,
+      loopMode: group?.mode || 'parallel',
+      loopGroupId: group?.id,
+      loopSize: group?.nodeIds.length || 0,
+      loopPipeline: groupsById[group?.id || '']?.label,
+      inLoopGroup: Boolean(group),
+      isLoopLeader: Boolean(group?.nodeIds[0] === id),
+      functionId: node?.function?.id,
+    })
+  }
+
+  return out
 })
 
 const selectedStep = ref<string | null>(null)
@@ -673,6 +893,27 @@ function baseStepName(stepName?: string | null): string | null {
   return String(stepName).split('#')[0] || null
 }
 
+const loopGroupNodeIdsByKey = computed<Record<string, string[]>>(() => {
+  const map: Record<string, string[]> = {}
+  for (const group of loopGroups.value.groups) {
+    map[`loop-group:${group.id}`] = group.nodeIds
+  }
+  return map
+})
+
+function stepMatchesSelection(stepName: string | null | undefined, selection: string | null): boolean {
+  if (!selection) return true
+  const base = baseStepName(stepName)
+  if (!base) return false
+
+  if (selection.startsWith('loop-group:')) {
+    const members = loopGroupNodeIdsByKey.value[selection] || []
+    return members.includes(base)
+  }
+
+  return base === selection
+}
+
 const filteredTimelineEvents = computed(() => {
   if (!selectedStep.value) return timelineEvents.value
 
@@ -680,23 +921,23 @@ const filteredTimelineEvents = computed(() => {
     if (!item.stepName) {
       return item.type === 'flow.start' || item.type === 'flow.completed' || item.type === 'flow.failed'
     }
-    return baseStepName(item.stepName) === selectedStep.value
+    return stepMatchesSelection(item.stepName, selectedStep.value)
   })
 })
 
 const filteredTimelineLogs = computed(() => {
   if (!selectedStep.value) return timelineLogs.value
-  return timelineLogs.value.filter((item: any) => baseStepName(item.stepName) === selectedStep.value)
+  return timelineLogs.value.filter((item: any) => stepMatchesSelection(item.stepName, selectedStep.value))
 })
 
 const filteredTimelineStates = computed(() => {
   if (!selectedStep.value) return timelineStates.value
-  return timelineStates.value.filter((item: any) => baseStepName(item.stepName) === selectedStep.value)
+  return timelineStates.value.filter((item: any) => stepMatchesSelection(item.stepName, selectedStep.value))
 })
 
 const filteredTimelineStreams = computed(() => {
   if (!selectedStep.value) return timelineStreams.value
-  return timelineStreams.value.filter((item: any) => baseStepName(item.stepName) === selectedStep.value)
+  return timelineStreams.value.filter((item: any) => stepMatchesSelection(item.stepName, selectedStep.value))
 })
 
 async function refreshAll() {
@@ -813,6 +1054,21 @@ const statusQueueReceipts = computed(() => status.value?.queue_receipts ?? [])
 const statusQueueReceiptCount = computed(() => statusQueueReceipts.value.length)
 const statusQueueReceiptQueueCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.queue)).size)
 const statusQueueReceiptNodeCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.node_uid)).size)
+
+const loopOverviewStats = computed(() => {
+  const loopStats = status.value?.loop_stats || {}
+  const values = Object.values(loopStats)
+  const loops = values.length
+  const expandedLoops = values.filter(item => Boolean(item?.expanded)).length
+  const totalItems = values.reduce((sum, item) => sum + Number(item?.total_items || 0), 0)
+  const completedItems = values.reduce((sum, item) => sum + Number(item?.completed_items || 0), 0)
+  return {
+    loops,
+    expandedLoops,
+    totalItems,
+    completedItems,
+  }
+})
 
 const topologyStats = computed(() => {
   const levelArrays = Array.isArray(flowMeta.value?.analyzed?.levels)
@@ -1178,6 +1434,7 @@ function exportStates() {
             :steps="stepList"
             :started-at="status.created_at"
             :completed-at="status.updated_at"
+            :loop-overview="loopOverviewStats"
             :result="status.result"
             :flow-def="flowMeta"
             @select-step="selectedStep = $event"

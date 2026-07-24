@@ -2,7 +2,7 @@
   <div :class="ui.root">
     <component
       :is="item.clickable !== false ? 'button' : 'div'"
-      v-for="item in items"
+      v-for="item in visibleItems"
       :key="item.value"
       :type="item.clickable !== false ? 'button' : undefined"
       :class="itemClasses(item)"
@@ -20,6 +20,15 @@
           <UIcon
             name="i-lucide-layers"
             class="w-3 h-3 text-gray-600 dark:text-gray-400"
+          />
+        </div>
+        <div
+          v-else-if="item.step.isLoopGroup"
+          class="w-8 h-8 rounded-md flex items-center justify-center bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800"
+        >
+          <UIcon
+            name="i-heroicons-arrow-path-rounded-square-20-solid"
+            class="w-4 h-4 text-cyan-700 dark:text-cyan-300"
           />
         </div>
         <div
@@ -42,7 +51,15 @@
             {{ getStepDisplayName(item.step.key) }}
           </h4>
           <UBadge
-            v-if="item.step.isLoop"
+            v-if="item.step.isLoopGroup"
+            size="xs"
+            color="info"
+            variant="soft"
+          >
+            For Block
+          </UBadge>
+          <UBadge
+            v-if="item.step.inLoopGroup"
             size="xs"
             color="info"
             variant="subtle"
@@ -52,10 +69,10 @@
               name="i-heroicons-arrow-path-rounded-square-20-solid"
               class="w-3 h-3"
             />
-            <span>For Loop</span>
+            <span>{{ item.step.loopGroupId ? `In ${String(item.step.loopGroupId).toUpperCase()}` : 'In Loop' }}</span>
           </UBadge>
           <UBadge
-            v-if="item.step.isLoop"
+            v-if="item.step.isLoopGroup"
             size="xs"
             :color="getLoopModeColor(item.step.loopMode)"
             variant="outline"
@@ -77,15 +94,107 @@
             <span>{{ getAwaitTypeLabel(item.step.awaitType) }}</span>
           </UBadge>
         </div>
+          <div
+            v-if="item.step.isLoopGroup"
+            class="mt-2 rounded-md border border-cyan-200/80 dark:border-cyan-800/60 bg-cyan-50/60 dark:bg-cyan-900/10 p-2.5"
+          >
+            <div
+              v-if="item.step.loopOver"
+              class="mt-1 text-[10px] text-cyan-700/90 dark:text-cyan-300/90 font-mono truncate"
+              :title="item.step.loopOver"
+            >
+              over {{ item.step.loopOver }}
+            </div>
+            <div
+              v-if="item.step.loopPipeline"
+              class="mt-1 text-[10px] text-cyan-800/90 dark:text-cyan-200/90 font-mono truncate"
+              :title="item.step.loopPipeline"
+            >
+              {{ item.step.loopPipeline }}
+            </div>
+
+            <div
+              v-if="Number.isFinite(Number(item.step.loopItemsTotal)) && Number(item.step.loopItemsTotal) > 0"
+              class="mt-2 grid grid-cols-2 gap-1.5 text-[10px]"
+            >
+              <div class="rounded border border-cyan-200/70 dark:border-cyan-800/60 bg-white/70 dark:bg-cyan-950/20 px-1.5 py-1">
+                <div class="text-cyan-700/80 dark:text-cyan-300/80 uppercase tracking-wide">Items</div>
+                <div class="text-cyan-900 dark:text-cyan-100 font-semibold">
+                  {{ item.step.loopItemsDone || 0 }}/{{ item.step.loopItemsTotal || 0 }} done
+                </div>
+              </div>
+              <div class="rounded border border-cyan-200/70 dark:border-cyan-800/60 bg-white/70 dark:bg-cyan-950/20 px-1.5 py-1">
+                <div class="text-cyan-700/80 dark:text-cyan-300/80 uppercase tracking-wide">Active</div>
+                <div class="text-cyan-900 dark:text-cyan-100 font-semibold">
+                  <span v-if="item.step.loopActiveIndex === null || item.step.loopActiveIndex === undefined">n/a</span>
+                  <span v-else>#{{ item.step.loopActiveIndex }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div
+              v-if="Number(item.step.loopItemsRunning || 0) > 0 || Number(item.step.loopItemsFailed || 0) > 0 || Number(item.step.loopItemsPending || 0) > 0"
+              class="mt-1 text-[10px] text-cyan-800/85 dark:text-cyan-200/85"
+            >
+              running {{ item.step.loopItemsRunning || 0 }} • pending {{ item.step.loopItemsPending || 0 }} • failed {{ item.step.loopItemsFailed || 0 }}
+            </div>
+
+            <div
+              v-if="getLoopChildren(item).length > 0"
+              class="mt-2 space-y-1.5"
+            >
+              <button
+                type="button"
+                class="w-full text-left rounded border px-2.5 py-2 transition-colors border-cyan-300/80 dark:border-cyan-700 bg-cyan-100/70 dark:bg-cyan-900/30 hover:bg-cyan-200/80 dark:hover:bg-cyan-900/50"
+                :class="props.modelValue === item.value ? 'ring-1 ring-cyan-500/80' : ''"
+                @click.stop="$emit('update:modelValue', item.value)"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-xs font-semibold text-cyan-900 dark:text-cyan-100">Gesamte Loop filtern</span>
+                  <UBadge size="xs" color="info" variant="soft">Loop Filter</UBadge>
+                </div>
+              </button>
+
+              <button
+                v-for="child in getLoopChildren(item)"
+                :key="child.value"
+                type="button"
+                class="w-full text-left rounded border px-2.5 py-2 transition-colors"
+                :class="loopChildClasses(child)"
+                @click.stop="$emit('update:modelValue', child.value)"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0 flex items-center gap-2">
+                    <UIcon
+                      :name="getStepStatusIcon(child.step.status)"
+                      class="w-3.5 h-3.5 flex-shrink-0"
+                      :class="getStepStatusIconColor(child.step.status)"
+                    />
+                    <span class="truncate text-xs font-medium text-cyan-900 dark:text-cyan-100">
+                      {{ getStepDisplayName(child.step.key) }}
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <span
+                      class="text-[10px] capitalize"
+                      :class="getStepStatusTextColor(child.step.status)"
+                    >
+                      {{ child.step.status || 'pending' }}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
         <div
-          v-if="item.step.isLoop && item.step.loopOver"
+            v-if="item.step.inLoopGroup && item.step.loopOver"
           class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 font-mono truncate"
           :title="item.step.loopOver"
         >
-          over {{ item.step.loopOver }}
+            in {{ String(item.step.loopGroupId || 'loop').toUpperCase() }} over {{ item.step.loopOver }}
         </div>
         <div
-          v-if="!item.step.showAllIndicator"
+            v-if="!item.step.showAllIndicator && !item.step.isLoopGroup"
           class="flex items-center gap-3 mt-1 text-xs text-gray-500"
         >
           <span
@@ -126,16 +235,10 @@
             <span>{{ formatDuration(item.step.stepTimeout) }}</span>
           </span>
         </div>
-        <div
-          v-else
-          class="mt-1 text-xs text-gray-500"
-        >
-          Show all events from all steps
-        </div>
 
         <!-- Additional Details (from description slot) -->
         <div
-          v-if="!item.step.showAllIndicator && (item.step.startedAt || item.step.completedAt || item.step.error || item.step.awaitType)"
+          v-if="!item.step.showAllIndicator && !item.step.isLoopGroup && (item.step.startedAt || item.step.completedAt || item.step.error || item.step.awaitType)"
           class="mt-3"
         >
           <!-- Timing Info -->
@@ -477,6 +580,27 @@ const itemClasses = (item: any) => {
   })
 }
 
+const visibleItems = computed(() => {
+  return props.items.filter((item) => !shouldHideTopLevelItem(item))
+})
+
+function shouldHideTopLevelItem(item: any): boolean {
+  return Boolean(item?.step?.inLoopGroup)
+}
+
+function getLoopChildren(groupItem: any): any[] {
+  const groupId = groupItem?.step?.loopGroupId
+  if (!groupId) return []
+  return props.items.filter(item => item?.step?.inLoopGroup && item?.step?.loopGroupId === groupId)
+}
+
+function loopChildClasses(child: any): string {
+  const isSelected = props.modelValue === child.value
+  const base = 'border-cyan-200/70 dark:border-cyan-800/70 bg-white/70 dark:bg-cyan-950/20 hover:bg-cyan-100/70 dark:hover:bg-cyan-900/30'
+  const selected = 'ring-1 ring-cyan-400/70 border-cyan-400 dark:border-cyan-600 bg-cyan-100/80 dark:bg-cyan-900/40'
+  return isSelected ? `${base} ${selected}` : base
+}
+
 // Helper to format timestamps
 const formatTime = (timestamp: string | number | Date) => {
   const date = new Date(timestamp)
@@ -551,6 +675,11 @@ const getAwaitPosition = (key: string) => {
 }
 
 const getStepDisplayName = (key: string) => {
+  if (key.startsWith('loop-group:')) {
+    const groupId = key.split(':')[1] || 'loop'
+    return `Loop ${groupId.toUpperCase()}`
+  }
+
   // Remove :await-before or :await-after suffix for display
   if (key.includes(':await-')) {
     return key.split(':await-')[0]

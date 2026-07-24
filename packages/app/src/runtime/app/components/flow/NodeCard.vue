@@ -152,40 +152,6 @@
         />
       </div>
       <div
-        v-if="data?.isLoop"
-        class="flex items-center justify-between"
-      >
-        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
-          <UIcon
-            name="i-heroicons-arrow-path-rounded-square-20-solid"
-            class="size-3"
-          />
-          Loop
-        </span>
-        <UBadge
-          :label="`for-each (${data?.loopMode || 'parallel'})`"
-          size="xs"
-          color="info"
-          variant="soft"
-        />
-      </div>
-      <div
-        v-if="data?.isLoop && data?.loopOver"
-        class="flex items-center justify-between"
-      >
-        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
-          <UIcon
-            name="i-heroicons-bars-arrow-down-20-solid"
-            class="size-3"
-          />
-          Loop Source
-        </span>
-        <span
-          class="truncate ml-2 font-mono text-[10px]"
-          :title="data.loopOver"
-        >{{ data.loopOver }}</span>
-      </div>
-      <div
         v-if="data?.subscribes && data.subscribes.length > 0"
         class="flex items-start justify-between gap-2"
       >
