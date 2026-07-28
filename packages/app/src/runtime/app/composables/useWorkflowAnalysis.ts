@@ -46,9 +46,9 @@ export function useWorkflowAnalysis() {
     while (placed.size < Object.keys(steps).length) {
       const currentLevel: string[] = []
       for (const id in steps) {
+        if (placed.has(id)) continue
         const step = steps[id]
         if (!step) continue
-        if (placed.has(id)) continue
         const deps = step.dependsOn
         if (deps.length === 0 || deps.every(d => placed.has(d))) {
           currentLevel.push(id)
@@ -56,32 +56,33 @@ export function useWorkflowAnalysis() {
       }
       
       if (currentLevel.length === 0) {
-        // Handle cycles or missing dependencies by placing everything remaining
+        // Handle cycles by picking one node that isn't placed yet 
+        // to break the cycle and start a new level.
         const remaining = Object.keys(steps).filter(id => !placed.has(id))
         if (remaining.length > 0) {
-          remaining.forEach(id => {
-            const step = steps[id]
-            if (!step) return
-            placed.add(id)
-            analyzedSteps[id] = {
-              name: id,
-              dependsOn: step.dependsOn,
-              level: levels.length
+          // Find node with fewest UNPLACED dependencies
+          let bestId = remaining[0]
+          let minUnplaced = Infinity
+          
+          for (const id of remaining) {
+            const unplacedDeps = steps[id].dependsOn.filter(d => !placed.has(d)).length
+            if (unplacedDeps < minUnplaced) {
+              minUnplaced = unplacedDeps
+              bestId = id
             }
-          })
-          levels.push(remaining)
+          }
+          currentLevel.push(bestId)
+        } else {
+          break
         }
-        break
       }
       
       levels.push(currentLevel)
       currentLevel.forEach(id => {
-        const step = steps[id]
-        if (!step) return
         placed.add(id)
         analyzedSteps[id] = {
           name: id,
-          dependsOn: step.dependsOn,
+          dependsOn: steps[id].dependsOn,
           level: levels.length - 1
         }
       })

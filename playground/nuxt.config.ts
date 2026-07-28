@@ -32,7 +32,7 @@ export default defineNuxtConfig({
 
   nvent: {
     iii: {
-      version: 'iii/v0.21.8',
+      version: 'iii/v0.22.0',
       failOnInstallFailure: true,
       mode: 'local',
       console: true,
