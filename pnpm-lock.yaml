@@ -191,20 +191,7 @@ importers:
 
   packages/workflow-worker/workflow-worker-linux-x64-gnu: {}
 
-  packages/workflow-worker/workflow-worker-meta:
-    optionalDependencies:
-      '@nvent-addon/workflow-worker-darwin-arm64':
-        specifier: 1.0.0-alpha.20
-        version: 1.0.0-alpha.20
-      '@nvent-addon/workflow-worker-linux-arm64-gnu':
-        specifier: 1.0.0-alpha.20
-        version: 1.0.0-alpha.20
-      '@nvent-addon/workflow-worker-linux-x64-gnu':
-        specifier: 1.0.0-alpha.20
-        version: 1.0.0-alpha.20
-      '@nvent-addon/workflow-worker-win32-x64-msvc':
-        specifier: 1.0.0-alpha.20
-        version: 1.0.0-alpha.20
+  packages/workflow-worker/workflow-worker-meta: {}
 
   packages/workflow-worker/workflow-worker-win32-x64-msvc: {}
 
@@ -1343,26 +1330,6 @@ packages:
 
   '@nuxtjs/color-mode@4.0.1':
     resolution: {integrity: sha512-eiA7hWXi5zNHaYKyJFCGF6i0wFZtuvR7KDXZ6jiSvwxjCpRFwphrw0MOSmNfArTSSsT1wpW+/2H92cejeVfUlg==}
-
-  '@nvent-addon/workflow-worker-darwin-arm64@1.0.0-alpha.20':
-    resolution: {integrity: sha512-cG4ERzkJQX8jmrKyvuqzryLfXPUUzkHKK25r+jPkC0i1yQ+PH0Lw4c+VClxoF2DEy+YKjLb08OTFF1D24DWQ7w==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@nvent-addon/workflow-worker-linux-arm64-gnu@1.0.0-alpha.20':
-    resolution: {integrity: sha512-qFxz+SMI5ZfO/KYaeHdTZnRLTSEgCLQz6fM7zqFRk+3fbWbY24O6C8+N8tndPohJeGifOFJaZjnwzgMSqLyNmA==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-x64-gnu@1.0.0-alpha.20':
-    resolution: {integrity: sha512-POQ4HI4QwRjQeT7/hcLHFlI7+sTnB+yM5aaus1JYC0SSdRvwy17RWGEDkwrQoPHscrqM3qrrMAWoE+heRU2phg==}
-    cpu: [x64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-win32-x64-msvc@1.0.0-alpha.20':
-    resolution: {integrity: sha512-LMbH8S00AXHVlArcVGNXzvh2rvM5o3mUW0JGLtx9DBrRv81xYgaUw1Av2EHOwvnsiljGB1z+fIznHBAOUSrx8g==}
-    cpu: [x64]
-    os: [win32]
 
   '@opentelemetry/api-logs@0.57.2':
     resolution: {integrity: sha512-uIX52NnTM0iBh84MShlpouI7UKqkZ7MrUszTmaypHBu4r7NofznSnQRfJ+uUeDtQDj6w8eFGg5KBLDAwAPz1+A==}
@@ -8419,18 +8386,6 @@ snapshots:
       - oxc-parser
       - rolldown
       - unplugin
-
-  '@nvent-addon/workflow-worker-darwin-arm64@1.0.0-alpha.20':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-arm64-gnu@1.0.0-alpha.20':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-x64-gnu@1.0.0-alpha.20':
-    optional: true
-
-  '@nvent-addon/workflow-worker-win32-x64-msvc@1.0.0-alpha.20':
-    optional: true
 
   '@opentelemetry/api-logs@0.57.2':
     dependencies:
