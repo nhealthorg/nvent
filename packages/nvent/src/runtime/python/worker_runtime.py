@@ -1182,11 +1182,11 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         try:
                             # Write error sentinel to state store so orchestrator can detect it
                             await _client.trigger_async({
-                                'function_id': 'state::set',
+                                'function_id': 'workflow::node-result-write',
                                 'payload': {
-                                    'scope': 'workflow_node_result',
-                                    'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                    'value': {"__workflow_error__": str(e)},
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                    'result': {"__workflow_error__": str(e)},
                                 },
                             })
                             # Wake orchestrator
@@ -1212,11 +1212,11 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         
                         # Write result to state
                         await _client.trigger_async({
-                            'function_id': 'state::set',
+                            'function_id': 'workflow::node-result-write',
                             'payload': {
-                                'scope': 'workflow_node_result',
-                                'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                'value': result,
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                                'result': result,
                             },
                         })
                         
@@ -1318,11 +1318,11 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         try:
                             # Write error sentinel to state store
                             await _client.trigger_async({
-                                'function_id': 'state::set',
+                                'function_id': 'workflow::node-result-write',
                                 'payload': {
-                                    'scope': 'workflow_node_result',
-                                    'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                    'value': {"__workflow_error__": str(e)},
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                    'result': {"__workflow_error__": str(e)},
                                 },
                             })
                             # Wake orchestrator
@@ -1346,11 +1346,11 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                     try:
                         # Write result to state
                         await _client.trigger_async({
-                            'function_id': 'state::set',
+                            'function_id': 'workflow::node-result-write',
                             'payload': {
-                                'scope': 'workflow_node_result',
-                                'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                'value': result,
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                                'result': result,
                             },
                         })
                         
@@ -1484,11 +1484,11 @@ def _register_legacy(client, mod, default_id: str) -> None:
                         try:
                             # Write error sentinel to state store
                             await _client.trigger_async({
-                                'function_id': 'state::set',
+                                'function_id': 'workflow::node-result-write',
                                 'payload': {
-                                    'scope': 'workflow_node_result',
-                                    'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                    'value': {"__workflow_error__": str(e)},
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                    'result': {"__workflow_error__": str(e)},
                                 },
                             })
                             # Wake orchestrator
@@ -1512,11 +1512,11 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     try:
                         # Write result to state
                         await _client.trigger_async({
-                            'function_id': 'state::set',
+                            'function_id': 'workflow::node-result-write',
                             'payload': {
-                                'scope': 'workflow_node_result',
-                                'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                'value': result,
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                                'result': result,
                             },
                         })
                         
@@ -1628,11 +1628,11 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     try:
                         # Write result to state
                         await _client.trigger_async({
-                            'function_id': 'state::set',
+                            'function_id': 'workflow::node-result-write',
                             'payload': {
-                                'scope': 'workflow_node_result',
-                                'key': f"{wf['run_id']}/{wf['node_uid']}",
-                                'value': result,
+                                'run_id': wf['run_id'],
+                                'node_uid': wf['node_uid'],
+                                'result': result,
                             },
                         })
                         

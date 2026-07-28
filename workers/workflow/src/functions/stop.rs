@@ -120,7 +120,9 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
         }
     }
 
-    let tracked_receipts = crate::state::list_queue_receipts(&deps.iii, &req.run_id)
+    let tracked_receipts = deps
+        .internal_state
+        .list_queue_receipts(&req.run_id)
         .await
         .unwrap_or_default();
     let tracked_receipt_count = tracked_receipts.len();

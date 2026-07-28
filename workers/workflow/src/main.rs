@@ -212,6 +212,11 @@ async fn main() -> Result<()> {
     // (kept in sync afterwards by configuration::apply_config on hot-reload).
     state::set_dispatch_timeout_ms(cfg.dispatch_timeout_ms);
 
+    let internal_state = workflow::internal_state::build_store(&cfg)
+        .map_err(anyhow::Error::msg)
+        .context("building internal workflow state store")?;
+    state::set_internal_state_store(internal_state.clone());
+
     let discovery = workflow::discovery::init(&iii).await;
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
@@ -220,6 +225,7 @@ async fn main() -> Result<()> {
         cfg: cell.clone(),
         locks: WorkflowLocks::default(),
         discovery,
+        internal_state,
     };
 
     functions::register_all(&iii, &deps);

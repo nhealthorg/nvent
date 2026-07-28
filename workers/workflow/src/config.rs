@@ -27,7 +27,7 @@ pub struct WorkerConfig {
     pub max_node_retries: u32,
 
     /// Retention window for terminal workflow run state (`workflow_run` plus
-    /// referenced `workflow_def`/`workflow_node_result` records).
+    /// referenced workflow internal definition/result records).
     /// Terminal runs older than this value are deleted by `workflow::sweep`.
     /// Milliseconds.
     #[serde(default = "default_run_retention_ms")]
@@ -39,6 +39,32 @@ pub struct WorkerConfig {
     /// Milliseconds.
     #[serde(default = "default_observability_retention_ms")]
     pub observability_retention_ms: u64,
+
+    /// Backend used for workflow-internal persistence.
+    ///
+    /// - `redis`: production default (robust + scalable)
+    /// - `file`: local/dev single-instance backend
+    #[serde(default = "default_internal_state_backend")]
+    pub internal_state_backend: String,
+
+    /// Redis URL for internal workflow state when backend is `redis`.
+    /// Example: redis://127.0.0.1:6379
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal_state_redis_url: Option<String>,
+
+    /// File base directory for internal workflow state when backend is `file`.
+    #[serde(default = "default_internal_state_file_dir")]
+    pub internal_state_file_dir: String,
+
+    /// Whether Redis should keep global time indexes for logs/traces in addition
+    /// to per-run streams.
+    #[serde(default = "default_redis_global_log_trace_index")]
+    pub redis_global_log_trace_index: bool,
+
+    /// Default TTL for idempotency records.
+    /// Milliseconds. 30 days by default.
+    #[serde(default = "default_idempotency_ttl_ms")]
+    pub idempotency_ttl_ms: u64,
 }
 
 fn default_pending_timeout_ms() -> u64 {
@@ -59,6 +85,18 @@ fn default_run_retention_ms() -> u64 {
 fn default_observability_retention_ms() -> u64 {
     30 * 24 * 60 * 60 * 1000
 }
+fn default_internal_state_backend() -> String {
+    "redis".to_string()
+}
+fn default_internal_state_file_dir() -> String {
+    ".data/workflow-store".to_string()
+}
+fn default_redis_global_log_trace_index() -> bool {
+    true
+}
+fn default_idempotency_ttl_ms() -> u64 {
+    30 * 24 * 60 * 60 * 1000
+}
 
 impl Default for WorkerConfig {
     fn default() -> Self {
@@ -69,6 +107,11 @@ impl Default for WorkerConfig {
             max_node_retries: default_max_node_retries(),
             run_retention_ms: default_run_retention_ms(),
             observability_retention_ms: default_observability_retention_ms(),
+            internal_state_backend: default_internal_state_backend(),
+            internal_state_redis_url: None,
+            internal_state_file_dir: default_internal_state_file_dir(),
+            redis_global_log_trace_index: default_redis_global_log_trace_index(),
+            idempotency_ttl_ms: default_idempotency_ttl_ms(),
         }
     }
 }
@@ -114,5 +157,10 @@ mod tests {
         assert_eq!(cfg.max_node_retries, 3);
         assert_eq!(cfg.run_retention_ms, 30 * 24 * 60 * 60 * 1000);
         assert_eq!(cfg.observability_retention_ms, 30 * 24 * 60 * 60 * 1000);
+        assert_eq!(cfg.internal_state_backend, "redis");
+        assert_eq!(cfg.internal_state_redis_url, None);
+        assert_eq!(cfg.internal_state_file_dir, ".data/workflow-store");
+        assert!(cfg.redis_global_log_trace_index);
+        assert_eq!(cfg.idempotency_ttl_ms, 30 * 24 * 60 * 60 * 1000);
     }
 }

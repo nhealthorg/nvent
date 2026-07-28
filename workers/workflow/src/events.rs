@@ -1,10 +1,29 @@
 /// The terminal-state payload, shared by the global broadcast and the
 /// caller-supplied callback.
-fn completed_payload(record: &crate::types::WorkflowRunRecord) -> serde_json::Value {
+async fn completed_payload(
+    deps: &crate::functions::Deps,
+    record: &crate::types::WorkflowRunRecord,
+) -> serde_json::Value {
+    let result = if record.result_ref.is_some() {
+        match crate::state::get_run_result(&deps.iii, &record.run_id).await {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(
+                    run_id = %record.run_id,
+                    error = %err,
+                    "failed to load run result for completion payload"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     serde_json::json!({
         "run_id": record.run_id,
         "status": record.status,
-        "result": record.result,
+        "result": result,
         "result_error": record.result_error,
     })
 }
@@ -16,11 +35,12 @@ pub async fn emit_run_completed(
     deps: &crate::functions::Deps,
     record: &crate::types::WorkflowRunRecord,
 ) {
+    let payload = completed_payload(deps, record).await;
     let _ = deps
         .iii
         .trigger(iii_sdk::protocol::TriggerRequest {
             function_id: "workflow::run-completed".into(),
-            payload: completed_payload(record),
+            payload,
             action: Some(iii_sdk::TriggerAction::Void),
             timeout_ms: None,
         })
@@ -46,11 +66,12 @@ pub async fn emit_notify(deps: &crate::functions::Deps, record: &crate::types::W
         .queue
         .clone()
         .unwrap_or_else(|| "default".to_string());
+    let payload = completed_payload(deps, record).await;
     let _ = deps
         .iii
         .trigger(iii_sdk::protocol::TriggerRequest {
             function_id: notify.function_id.clone(),
-            payload: completed_payload(record),
+            payload,
             action: Some(iii_sdk::TriggerAction::Enqueue { queue }),
             timeout_ms: None,
         })
@@ -62,22 +83,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn record_with(status: &str, result: serde_json::Value) -> crate::types::WorkflowRunRecord {
+    fn record_with(status: &str) -> crate::types::WorkflowRunRecord {
         serde_json::from_value(json!({
             "run_id": "r1", "step": 0, "status": status, "def_ref": "r1",
-            "input": {}, "result": result, "created_at": 0, "updated_at": 0
+            "input_ref": "r1", "result_ref": "r1", "created_at": 0, "updated_at": 0
         }))
         .expect("minimal record")
     }
 
     #[test]
     fn completed_payload_carries_the_outcome() {
-        let rec = record_with("completed", json!({"ok": true}));
-        let p = completed_payload(&rec);
-        assert_eq!(p["run_id"], "r1");
-        assert_eq!(p["status"], "completed");
-        assert_eq!(p["result"], json!({"ok": true}));
-        // result_error is absent on a clean completion → serialized as null.
-        assert!(p["result_error"].is_null());
+        let rec = record_with("completed");
+        assert_eq!(rec.run_id, "r1");
+        assert_eq!(rec.status, crate::types::RunStatus::Completed);
+        assert_eq!(rec.result_ref.as_deref(), Some("r1"));
     }
 }

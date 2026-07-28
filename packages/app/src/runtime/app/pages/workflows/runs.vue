@@ -56,7 +56,11 @@ watch([status, workflow], () => {
 const runs = computed(() => data.value?.runs || [])
 const total = computed(() => data.value?.pagination?.total || 0)
 const cancelingRunIds = ref<string[]>([])
+const deletingRunIds = ref<string[]>([])
 const cancelError = ref<string | null>(null)
+const deleteError = ref<string | null>(null)
+const deleteModalOpen = ref(false)
+const deleteTarget = ref<{ runId: string, workflowName: string } | null>(null)
 
 // Auto-refresh only if on first page and no specific search active
 let refreshInterval: any = null
@@ -96,6 +100,10 @@ function isLiveStatus(status: string) {
   return status === 'running' || status === 'active' || status === 'awaiting_nodes' || status === 'awaiting'
 }
 
+function isTerminalStatus(status: string) {
+  return status === RunStatus.Completed || status === RunStatus.Failed || status === RunStatus.Cancelled
+}
+
 async function cancelRun(runId: string) {
   if (cancelingRunIds.value.includes(runId)) return
   cancelError.value = null
@@ -112,6 +120,40 @@ async function cancelRun(runId: string) {
   }
   finally {
     cancelingRunIds.value = cancelingRunIds.value.filter(id => id !== runId)
+  }
+}
+
+function openDeleteModal(run: WorkflowRunRecord) {
+  const currentStatus = String(run.status || '')
+  if (!isTerminalStatus(currentStatus)) return
+  deleteTarget.value = {
+    runId: run.run_id,
+    workflowName: run.workflow_name || run.def_ref,
+  }
+  deleteModalOpen.value = true
+}
+
+async function confirmDeleteRun() {
+  const target = deleteTarget.value
+  if (!target) return
+  if (deletingRunIds.value.includes(target.runId)) return
+
+  deleteError.value = null
+  deletingRunIds.value = [...deletingRunIds.value, target.runId]
+  try {
+    await $fetch('/api/_workflows/delete', {
+      method: 'POST',
+      body: { run_id: target.runId },
+    })
+    deleteModalOpen.value = false
+    deleteTarget.value = null
+    await refresh()
+  }
+  catch (error: any) {
+    deleteError.value = error?.data?.statusMessage || error?.message || 'Delete failed'
+  }
+  finally {
+    deletingRunIds.value = deletingRunIds.value.filter(id => id !== target.runId)
   }
 }
 
@@ -181,7 +223,9 @@ const columns: TableColumn<WorkflowRunRecord>[]  = [
       const run = row.original
       const currentStatus = String(run.status || '')
       const isLive = isLiveStatus(currentStatus)
+      const isTerminal = isTerminalStatus(currentStatus)
       const isCancelling = cancelingRunIds.value.includes(run.run_id)
+      const isDeleting = deletingRunIds.value.includes(run.run_id)
 
       return h('div', { class: 'flex items-center justify-end gap-2 pr-2' }, [
         isLive
@@ -198,6 +242,20 @@ const columns: TableColumn<WorkflowRunRecord>[]  = [
               },
             })
           : null,
+        isTerminal
+          ? h(UButton, {
+              size: 'xs',
+              color: 'neutral',
+              variant: 'ghost',
+              icon: 'i-lucide-trash-2',
+              loading: isDeleting,
+              title: 'Delete run',
+              onClick: async (event: Event) => {
+                event.stopPropagation()
+                openDeleteModal(run)
+              },
+            })
+          : null,
         h('span', { class: 'text-zinc-300 dark:text-zinc-700' }, '›'),
       ])
     }
@@ -210,13 +268,29 @@ function formatDate(timestamp: number) {
 }
 
 function getNodesProgress(run: WorkflowRunRecord) {
-  const nodes = Object.values(run.nodes || {}) as NodeCheckpoint[]
-  if (nodes.length === 0) return { finished: 0, total: 0, percent: 0 }
-  const finished = nodes.filter(n => n.state === 'done' || n.state === 'failed').length
+  const nodeEntries = Object.entries(run.nodes || {}) as Array<[string, NodeCheckpoint]>
+  if (nodeEntries.length === 0) return { finished: 0, total: 0, percent: 0 }
+
+  // Loop fanout creates node ids like "step#0", while the base id can remain non-terminal.
+  // Exclude base nodes when itemized children exist to avoid under-reporting progress.
+  const loopBaseIds = new Set(
+    nodeEntries
+      .filter(([id]) => id.includes('#'))
+      .map(([id]) => id.split('#')[0])
+      .filter((id): id is string => Boolean(id))
+  )
+
+  const effectiveNodes = nodeEntries
+    .filter(([id]) => !(loopBaseIds.has(id) && !id.includes('#')))
+    .map(([, node]) => node)
+
+  if (effectiveNodes.length === 0) return { finished: 0, total: 0, percent: 0 }
+
+  const finished = effectiveNodes.filter(n => n.state === 'done' || n.state === 'failed' || n.state === 'cancelled').length
   return {
     finished,
-    total: nodes.length,
-    percent: Math.round((finished / nodes.length) * 100)
+    total: effectiveNodes.length,
+    percent: Math.round((finished / effectiveNodes.length) * 100)
   }
 }
 
@@ -238,6 +312,36 @@ function formatDuration(run: WorkflowRunRecord) {
 
 <template>
   <div class="h-full flex flex-col overflow-hidden">
+    <UModal v-model:open="deleteModalOpen" title="Delete Run">
+      <template #body>
+        <div class="space-y-2">
+          <p class="text-sm text-zinc-700 dark:text-zinc-200">
+            Diesen terminalen Run inklusive zugehoeriger Artefakte loeschen?
+          </p>
+          <p v-if="deleteTarget" class="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+            {{ deleteTarget.workflowName }} - {{ deleteTarget.runId }}
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="w-full flex justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            label="Abbrechen"
+            @click="deleteModalOpen = false"
+          />
+          <UButton
+            color="error"
+            variant="solid"
+            label="Loeschen"
+            :loading="deleteTarget ? deletingRunIds.includes(deleteTarget.runId) : false"
+            @click="confirmDeleteRun"
+          />
+        </div>
+      </template>
+    </UModal>
+
     <!-- Header -->
     <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
       <div class="flex items-center justify-between max-w-7xl mx-auto w-full">
@@ -291,6 +395,9 @@ function formatDuration(run: WorkflowRunRecord) {
       <div class="max-w-7xl mx-auto p-6">
         <div v-if="cancelError" class="mb-3 text-xs text-red-600 dark:text-red-400">
           {{ cancelError }}
+        </div>
+        <div v-if="deleteError" class="mb-3 text-xs text-red-600 dark:text-red-400">
+          {{ deleteError }}
         </div>
         <div class="bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
           <UTable

@@ -527,13 +527,13 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
 
         if (hasWorkflowMeta) {
           try {
-            // Write error to state so orchestrator can catch it
+            // Write error result to workflow internal state
             await iii.trigger({
-              function_id: 'state::set',
+              function_id: 'workflow::node-result-write',
               payload: {
-                scope: 'workflow_node_result',
-                key: `${workflow.run_id}/${workflow.node_uid}`,
-                value: { __workflow_error__: errorMessage },
+                run_id: workflow.run_id,
+                node_uid: workflow.node_uid,
+                result: { __workflow_error__: errorMessage },
               },
             })
 
@@ -559,13 +559,13 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
       if (hasWorkflowMeta) {
         try {
           await emitWorkflowTraceEvent(iii, fn.id, workflow, 'workflow.node.completed')
-          // Write result to state
+          // Write result to workflow internal state
           await iii.trigger({
-            function_id: 'state::set',
+            function_id: 'workflow::node-result-write',
             payload: {
-              scope: 'workflow_node_result',
-              key: `${workflow.run_id}/${workflow.node_uid}`,
-              value: result,
+              run_id: workflow.run_id,
+              node_uid: workflow.node_uid,
+              result,
             },
           })
           

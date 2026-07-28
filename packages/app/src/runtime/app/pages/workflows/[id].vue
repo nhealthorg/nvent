@@ -15,9 +15,12 @@ const runId = computed(() => props.runId || (route.value.params.id as string))
 const isStateSlideoverOpen = ref(false)
 const isStreamSlideoverOpen = ref(false)
 const isCancelSlideoverOpen = ref(false)
+const isDeleteModalOpen = ref(false)
 const cancelPending = ref(false)
 const cancelError = ref<string | null>(null)
 const cancelResult = ref<WorkflowStopResponse | null>(null)
+const deletePending = ref(false)
+const deleteError = ref<string | null>(null)
 
 interface WorkflowRunStatusResponse {
   status: string
@@ -958,6 +961,33 @@ function openCancelSlideover() {
   isCancelSlideoverOpen.value = true
 }
 
+function openDeleteModal() {
+  if (!isRunTerminal.value || deletePending.value) return
+  deleteError.value = null
+  isDeleteModalOpen.value = true
+}
+
+async function confirmDeleteRun() {
+  if (!isRunTerminal.value || deletePending.value) return
+
+  deletePending.value = true
+  deleteError.value = null
+  try {
+    await $fetch('/api/_workflows/delete', {
+      method: 'POST',
+      body: { run_id: runId.value },
+    })
+    isDeleteModalOpen.value = false
+    await push('/workflows/runs')
+  }
+  catch (error: any) {
+    deleteError.value = error?.data?.statusMessage || error?.message || 'Delete failed'
+  }
+  finally {
+    deletePending.value = false
+  }
+}
+
 async function cancelRun() {
   cancelPending.value = true
   cancelError.value = null
@@ -1116,6 +1146,40 @@ function exportStates() {
 
 <template>
   <div class="h-full flex flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950">
+    <UModal v-model:open="isDeleteModalOpen" title="Delete Run">
+      <template #body>
+        <div class="space-y-2">
+          <p class="text-sm text-zinc-700 dark:text-zinc-200">
+            Diesen terminalen Run inklusive zugehoeriger Artefakte loeschen?
+          </p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+            {{ runId }}
+          </p>
+          <p v-if="deleteError" class="text-xs text-red-600 dark:text-red-400">
+            {{ deleteError }}
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="w-full flex justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            label="Abbrechen"
+            :disabled="deletePending"
+            @click="isDeleteModalOpen = false"
+          />
+          <UButton
+            color="error"
+            variant="solid"
+            label="Loeschen"
+            :loading="deletePending"
+            @click="confirmDeleteRun"
+          />
+        </div>
+      </template>
+    </UModal>
+
     <!-- Header -->
     <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
       <div class="flex items-center justify-between w-full">
@@ -1302,12 +1366,23 @@ function exportStates() {
                     <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                       Run Snapshot
                     </div>
-                    <UBadge
-                      :label="String(normalizedStatus || 'terminal').toUpperCase()"
-                      color="neutral"
-                      size="xs"
-                      variant="soft"
-                    />
+                    <div class="flex items-center gap-2">
+                      <UBadge
+                        :label="String(normalizedStatus || 'terminal').toUpperCase()"
+                        color="neutral"
+                        size="xs"
+                        variant="soft"
+                      />
+                      <UButton
+                        icon="i-lucide-trash-2"
+                        color="neutral"
+                        variant="ghost"
+                        size="xs"
+                        title="Delete run"
+                        :loading="deletePending"
+                        @click="openDeleteModal"
+                      />
+                    </div>
                   </div>
 
                   <div class="mt-3 grid grid-cols-2 gap-2">

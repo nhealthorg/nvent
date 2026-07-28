@@ -188,6 +188,16 @@ export interface NventIiiOptions {
       runRetentionMs?: number
       /** Retention window for workflow logs/traces (ms). */
       observabilityRetentionMs?: number
+      /** Backend for internal workflow orchestrator state. */
+      internalStateBackend?: 'redis' | 'file'
+      /** Redis URL used when internalStateBackend is 'redis'. */
+      internalStateRedisUrl?: string
+      /** Base directory used when internalStateBackend is 'file'. */
+      internalStateFileDir?: string
+      /** Keep global Redis sorted indexes for logs/traces in addition to per-run storage. */
+      redisGlobalLogTraceIndex?: boolean
+      /** Default TTL for idempotency keys (ms). */
+      idempotencyTtlMs?: number
     }
     /**
      * Enable the iii-console web UI (separate binary, http://localhost:3113).

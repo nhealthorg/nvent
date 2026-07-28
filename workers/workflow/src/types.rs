@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -258,6 +258,18 @@ pub struct NotifySpec {
 // Run record types
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QueueReceiptRecord {
+    pub id: String,
+    pub run_id: String,
+    pub node_uid: String,
+    pub function_id: String,
+    pub queue: String,
+    pub receipt_id: String,
+    pub attempt: u32,
+    pub ts_unix_ms: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunRecord {
     pub run_id: String,
@@ -277,24 +289,28 @@ pub struct WorkflowRunRecord {
     /// Observed by tick → finalize Cancelled
     #[serde(default)]
     pub abort: bool,
-    /// Key into workflow_def/<run_id>
+    /// Logical reference to the frozen workflow definition (run_id by default).
     pub def_ref: String,
-    pub input: Value,
+    /// Logical reference to the run input blob stored in internal workflow state.
+    pub input_ref: String,
     /// Registry of user-defined state keys for this run.
-    /// Keys are encoded as hex so they can be used as stable state::update paths.
+    /// Keys are hex-encoded for stable map-key storage.
     #[serde(default)]
     pub state_keys_map: BTreeMap<String, bool>,
     /// Registry of stream IDs used by this run.
-    #[serde(default, deserialize_with = "deserialize_stream_ids")]
+    #[serde(default)]
     pub stream_ids: Vec<String>,
+    /// Queue enqueue receipts recorded for this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue_receipts: Vec<QueueReceiptRecord>,
     /// Keyed by node_uid
     #[serde(default)]
     pub nodes: BTreeMap<String, NodeCheckpoint>,
     /// node_id → FROZEN `over` snapshot; N = len
-    #[serde(default, deserialize_with = "deserialize_fanout_src")]
+    #[serde(default)]
     pub fanout_src: BTreeMap<String, Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
+    pub result_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_error: Option<String>,
     /// Caller-supplied completion callback (push instead of poll). See `NotifySpec`.
@@ -310,93 +326,17 @@ pub struct WorkflowRunRecord {
     pub updated_at: i64,
 }
 
-fn deserialize_stream_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = Value::deserialize(deserializer)?;
-    Ok(parse_stream_ids_compat(&raw))
-}
-
-fn parse_stream_ids_compat(raw: &Value) -> Vec<String> {
-    match raw {
-        Value::Array(arr) => arr
-            .iter()
-            .filter_map(|item| item.as_str().map(|s| s.to_string()))
-            .collect(),
-        Value::Object(obj) => {
-            if let Some(values) = obj.get("values").and_then(|v| v.as_array()) {
-                return values
-                    .iter()
-                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                    .collect();
-            }
-            if let Some(values) = obj.get("items").and_then(|v| v.as_array()) {
-                return values
-                    .iter()
-                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                    .collect();
-            }
-
-            // Backward compatibility: treat object keys as stream IDs.
-            obj.iter()
-                .filter_map(|(key, value)| {
-                    if value.as_bool().unwrap_or(true) {
-                        Some(key.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn deserialize_fanout_src<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<Value>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = Value::deserialize(deserializer)?;
-    Ok(parse_fanout_src_compat(&raw))
-}
-
-fn parse_fanout_src_compat(raw: &Value) -> BTreeMap<String, Vec<Value>> {
-    let mut out: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    let Some(root) = raw.as_object() else {
-        return out;
-    };
-
-    for (node_id, value) in root {
-        let items = match value {
-            Value::Array(arr) => arr.clone(),
-            Value::Object(obj) => {
-                if let Some(values) = obj.get("values").and_then(|v| v.as_array()) {
-                    values.clone()
-                } else if let Some(values) = obj.get("items").and_then(|v| v.as_array()) {
-                    values.clone()
-                } else {
-                    obj.values().cloned().collect()
-                }
-            }
-            other => vec![other.clone()],
-        };
-        out.insert(node_id.clone(), items);
-    }
-
-    out
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeCheckpoint {
     pub state: NodeState,
-    /// Deterministic: wf_<run_id>_<node_uid>
+    /// Optional runtime session id for harness-backed node execution.
+    /// Function/queue-backed nodes can keep this `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// The turn we fired; reconcile MUST match this
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    /// Key into workflow_node_result/<run_id>/<node_uid>
+    /// Logical reference to a stored node result for this checkpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_ref: Option<String>,
     /// Set when a 'completed' turn carried result_error
@@ -477,9 +417,10 @@ mod tests {
             status: RunStatus::AwaitingNodes,
             abort: false,
             def_ref: "run_abc123".to_string(),
-            input: json!({"topic": "test"}),
+            input_ref: "run_abc123".to_string(),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
             nodes: {
                 let mut m = BTreeMap::new();
                 m.insert(
@@ -500,7 +441,7 @@ mod tests {
                 m
             },
             fanout_src: BTreeMap::new(),
-            result: None,
+            result_ref: None,
             result_error: None,
             notify: None,
             caller_session_id: None,
@@ -522,7 +463,7 @@ mod tests {
             "step": 0,
             "status": "running",
             "def_ref": "run_min",
-            "input": {},
+            "input_ref": "run_min",
             "created_at": 1_700_000_000_i64,
             "updated_at": 1_700_000_000_i64
         });
@@ -535,7 +476,7 @@ mod tests {
             record.fanout_src.is_empty(),
             "fanout_src should default to empty"
         );
-        assert!(record.result.is_none(), "result should default to None");
+        assert!(record.result_ref.is_none(), "result_ref should default to None");
         assert!(
             record.result_error.is_none(),
             "result_error should default to None"
@@ -552,13 +493,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_record_stream_ids_accepts_legacy_map_shape() {
+    fn workflow_run_record_stream_ids_rejects_legacy_map_shape() {
         let value = json!({
             "run_id": "r_1",
             "step": 0,
             "status": "running",
-            "def_ref": "workflow_def/r_1",
-            "input": {},
+            "def_ref": "r_1",
+            "input_ref": "r_1",
             "nodes": {},
             "fanout_src": {},
             "stream_ids": {
@@ -570,22 +511,18 @@ mod tests {
             "updated_at": 1
         });
 
-        let record: WorkflowRunRecord =
-            serde_json::from_value(value).expect("deserialize WorkflowRunRecord with map stream_ids");
-
-        assert!(record.stream_ids.iter().any(|id| id == "workflow"));
-        assert!(record.stream_ids.iter().any(|id| id == "pipeline"));
-        assert!(!record.stream_ids.iter().any(|id| id == "debug"));
+        let result: Result<WorkflowRunRecord, _> = serde_json::from_value(value);
+        assert!(result.is_err(), "legacy map stream_ids shape must be rejected");
     }
 
     #[test]
-    fn workflow_run_record_stream_ids_accepts_wrapped_array_shape() {
+    fn workflow_run_record_stream_ids_rejects_wrapped_array_shape() {
         let value = json!({
             "run_id": "r_2",
             "step": 0,
             "status": "running",
-            "def_ref": "workflow_def/r_2",
-            "input": {},
+            "def_ref": "r_2",
+            "input_ref": "r_2",
             "nodes": {},
             "fanout_src": {},
             "stream_ids": {
@@ -595,20 +532,18 @@ mod tests {
             "updated_at": 1
         });
 
-        let record: WorkflowRunRecord = serde_json::from_value(value)
-            .expect("deserialize WorkflowRunRecord with wrapped stream_ids");
-
-        assert_eq!(record.stream_ids, vec!["workflow".to_string(), "timeline".to_string()]);
+        let result: Result<WorkflowRunRecord, _> = serde_json::from_value(value);
+        assert!(result.is_err(), "wrapped object stream_ids shape must be rejected");
     }
 
     #[test]
-    fn workflow_run_record_fanout_src_accepts_legacy_map_shape() {
+    fn workflow_run_record_fanout_src_rejects_legacy_map_shape() {
         let value = json!({
             "run_id": "r_3",
             "step": 0,
             "status": "running",
-            "def_ref": "workflow_def/r_3",
-            "input": {},
+            "def_ref": "r_3",
+            "input_ref": "r_3",
             "nodes": {},
             "stream_ids": [],
             "fanout_src": {
@@ -621,10 +556,7 @@ mod tests {
             "updated_at": 1
         });
 
-        let record: WorkflowRunRecord = serde_json::from_value(value)
-            .expect("deserialize WorkflowRunRecord with map fanout_src");
-
-        let items = record.fanout_src.get("classify").expect("fanout entry");
-        assert_eq!(items.len(), 2);
+        let result: Result<WorkflowRunRecord, _> = serde_json::from_value(value);
+        assert!(result.is_err(), "legacy map fanout_src shape must be rejected");
     }
 }

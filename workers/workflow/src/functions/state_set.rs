@@ -27,22 +27,8 @@ pub async fn handle(deps: &Deps, req: StateSetRequest) -> Result<(), WorkflowErr
         // 2. Set value in workflow_run_state
         state::state_set(&deps.iii, SCOPE_RUN_STATE, &state_key, req.value.clone()).await?;
 
-        // 3. Atomically upsert registry entry in workflow_run
-        if state::get_run(&deps.iii, &req.run_id).await?.is_some() {
-            state::state_update(
-                &deps.iii,
-                state::SCOPE_RUN,
-                &req.run_id,
-                json!([
-                    {
-                        "type": "merge",
-                        "path": "state_keys_map",
-                        "value": state::state_registry_merge_value(&req.key, true)
-                    }
-                ]),
-            )
-            .await?;
-        }
+        // 3. Update registry entry in the internal run record.
+        state::set_state_registry_key_presence(&req.run_id, &req.key, true).await?;
     }
 
     // 4. Automatic Audit

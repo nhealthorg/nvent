@@ -45,6 +45,11 @@ export interface WorkflowWorkerBootConfig {
   maxNodeRetries?: number
   runRetentionMs?: number
   observabilityRetentionMs?: number
+  internalStateBackend?: 'redis' | 'file'
+  internalStateRedisUrl?: string
+  internalStateFileDir?: string
+  redisGlobalLogTraceIndex?: boolean
+  idempotencyTtlMs?: number
 }
 
 export class WorkflowWorkerManager {
@@ -120,6 +125,21 @@ export class WorkflowWorkerManager {
     }
     if (this.workflowConfig.observabilityRetentionMs != null) {
       configPayload.observability_retention_ms = this.workflowConfig.observabilityRetentionMs
+    }
+    if (this.workflowConfig.internalStateBackend != null) {
+      configPayload.internal_state_backend = this.workflowConfig.internalStateBackend
+    }
+    if (this.workflowConfig.internalStateRedisUrl != null) {
+      configPayload.internal_state_redis_url = this.workflowConfig.internalStateRedisUrl
+    }
+    if (this.workflowConfig.internalStateFileDir != null) {
+      configPayload.internal_state_file_dir = this.workflowConfig.internalStateFileDir
+    }
+    if (this.workflowConfig.redisGlobalLogTraceIndex != null) {
+      configPayload.redis_global_log_trace_index = this.workflowConfig.redisGlobalLogTraceIndex
+    }
+    if (this.workflowConfig.idempotencyTtlMs != null) {
+      configPayload.idempotency_ttl_ms = this.workflowConfig.idempotencyTtlMs
     }
 
     if (Object.keys(configPayload).length === 0) {

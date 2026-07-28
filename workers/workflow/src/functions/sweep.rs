@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{error::WorkflowError, functions::Deps, reconcile, state, types::NodeState};
 use crate::{observability, observability::ObservabilityAdapter};
 
-use super::start;
+use super::{run_delete, start};
 
 fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
     let base_id = node_uid.split('#').next().unwrap_or(node_uid);
@@ -103,8 +103,9 @@ pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, Wo
         .iter()
         .filter(|r| r.status.is_terminal() && r.updated_at < cutoff)
     {
-        match state::delete_run(&deps.iii, run).await {
-            Ok(()) => swept += 1,
+        match run_delete::delete_run_by_id(deps, &run.run_id).await {
+            Ok(res) if res.deleted => swept += 1,
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(run_id = %run.run_id, error = %e, "sweep: GC delete failed")
             }

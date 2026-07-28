@@ -5,8 +5,8 @@
 //!
 //! NOTE: this is single-process correctness. A multi-process deployment needs
 //! an engine-level compare-and-set on the run record (which iii-state does NOT
-//! provide); the fail-safe is the deterministic child-session id and
-//! `workflow_node_result` key, which keeps duplicate deliveries idempotent.
+//! provide); the fail-safe is the deterministic child-session id and internal
+//! node-result key, which keeps duplicate deliveries idempotent.
 //! For multi-instance HA, shard `workflow::tick` by `run_id` so one owning
 //! instance handles all writes for a given run — no new code required.
 

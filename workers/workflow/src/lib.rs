@@ -6,6 +6,7 @@ pub mod error;
 pub mod events;
 pub mod functions;
 pub mod ids;
+pub mod internal_state;
 pub mod locks;
 pub mod manifest;
 pub mod observability;

@@ -24,23 +24,23 @@
   },
   "dependencies": {
     "@nvent-addon/workflow-worker": "*",
-    "@nuxt/devtools-kit": "^3.2.4",
-    "@nuxt/kit": "4.5.0",
+    "@nuxt/devtools-kit": "^3.3.1",
+    "@nuxt/kit": "4.5.1",
     "chokidar": "^5.0.0",
     "confbox": "^0.2.4",
     "globby": "16.2.2",
-    "iii-browser-sdk": "0.21.6",
-    "iii-sdk": "0.21.6",
-    "@iii-dev/helpers": "0.21.6",
+    "iii-browser-sdk": "0.22.0",
+    "iii-sdk": "0.22.0",
+    "@iii-dev/helpers": "0.22.0",
     "knitwork": "^1.3.0",
-    "nuxt": "4.5.0",
+    "nuxt": "4.5.1",
     "pathe": "^2.0.3",
     "perfect-debounce": "^2.1.0"
   },
   "devDependencies": {
-    "@nuxt/module-builder": "^1.0.2",
-    "@nuxt/schema": "4.5.0",
-    "@types/node": "^26.1.1",
+    "@nuxt/module-builder": "^1.0.3",
+    "@nuxt/schema": "4.5.1",
+    "@types/node": "^26.1.2",
     "typescript": "5.9.3",
     "vitest": "^4.1.10"
   }

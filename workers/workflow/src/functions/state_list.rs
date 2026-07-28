@@ -199,4 +199,29 @@ mod tests {
 
         assert_eq!(keys, vec!["count".to_string(), "result.value".to_string()]);
     }
+
+    #[test]
+    fn registry_keys_from_map_ignores_false_and_invalid_entries() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            format!(
+                "{}{}",
+                state::STATE_REGISTRY_KEY_PREFIX,
+                state::encode_state_registry_key("keep")
+            ),
+            true,
+        );
+        map.insert(
+            format!(
+                "{}{}",
+                state::STATE_REGISTRY_KEY_PREFIX,
+                state::encode_state_registry_key("drop")
+            ),
+            false,
+        );
+        map.insert("k_not_hex".to_string(), true);
+
+        let keys = registry_keys_from_map(&map);
+        assert_eq!(keys, vec!["keep".to_string()]);
+    }
 }

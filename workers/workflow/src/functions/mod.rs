@@ -5,10 +5,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::config::WorkerConfig;
+use crate::internal_state::WorkflowInternalStateStore;
 use crate::locks::WorkflowLocks;
 
 pub mod node_completed;
 pub mod node_result;
+pub mod run_result;
+pub mod run_delete;
+pub mod node_result_write;
 pub mod start;
 pub mod status;
 pub mod stop;
@@ -37,6 +41,7 @@ pub struct Deps {
     pub cfg: ConfigCell,
     pub locks: WorkflowLocks,
     pub discovery: crate::discovery::DiscoveryRegistry,
+    pub internal_state: Arc<dyn WorkflowInternalStateStore>,
 }
 
 impl Deps {
@@ -248,10 +253,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Return the current status of a workflow run (state per node, plus node_errors / \
-             node_results / result / result_error), or null if not found. A single check is \
+             node_results / result_ref / result / result_error), or null if not found. A single check is \
              cheap, but each call costs one of your turns — do NOT poll in a loop waiting for a \
              long run to finish, that exhausts your turn budget. To be pushed the outcome when \
-             the run reaches a terminal state, pass `notify` to workflow::start instead.",
+             the run reaches a terminal state, pass `notify` to workflow::start instead. For \
+             large outputs, set include_result=false and fetch the payload via workflow::run-result.",
         ),
     );
 
@@ -280,6 +286,32 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              completed or has no stored result.",
         ),
     );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::run-result",
+        RegisterFunction::new_async(move |req: run_result::RunResultRequest| {
+            let d = d.clone();
+            async move { run_result::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description(
+            "Fetch the terminal workflow output payload by run_id. Use this after workflow::status \
+             with include_result=false to keep polling lightweight for large outputs.",
+        ),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::node-result-write",
+        RegisterFunction::new_async(move |req: node_result_write::NodeResultWriteRequest| {
+            let d = d.clone();
+            async move { node_result_write::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description(
+            "Internal: persist a node result in workflow internal state by run_id and node_uid.",
+        ),
+    );
+
     let d = deps.clone();
     iii.register_function(
         "workflow::stop",
@@ -289,6 +321,19 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description("Cooperatively cancel a workflow run and cascade harness::stop to each live node session."),
     );
+
+    let d = deps.clone();
+    iii.register_function(
+        "workflow::run-delete",
+        RegisterFunction::new_async(move |req: run_delete::RunDeleteRequest| {
+            let d = d.clone();
+            async move { run_delete::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description(
+            "Delete one workflow run and all run-scoped artifacts (internal state, workflow state keys, streams, logs/traces, queue receipts). Also best-effort stops any running node sessions and discards tracked queue messages before delete.",
+        ),
+    );
+
     let d = deps.clone();
     iii.register_function(
         sweep::SWEEP_ID,

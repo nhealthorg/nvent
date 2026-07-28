@@ -518,43 +518,6 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
 // Static fanout-type checking (Rule 2b)
 // ---------------------------------------------------------------------------
 
-/// JSON Schema composition / dynamic keys that make a schema's effective type
-/// impossible to pin down statically. If any is present we cannot prove the
-/// shape, so the static fanout check bails and the runtime guard takes over.
-fn schema_is_dynamic(schema: &Value) -> bool {
-    const DYNAMIC_KEYS: [&str; 7] = [
-        "additionalProperties",
-        "patternProperties",
-        "$ref",
-        "$dynamicRef",
-        "anyOf",
-        "oneOf",
-        "allOf",
-    ];
-    DYNAMIC_KEYS.iter().any(|k| schema.get(*k).is_some())
-}
-
-/// If `schema`'s declared `type` PROVES the value is not (and cannot be) an
-/// array, return that type name; otherwise None (it is an array, a union that
-/// includes "array", untyped, or a dynamic schema we won't second-guess).
-fn proven_nonarray_type(schema: &Value) -> Option<String> {
-    if schema_is_dynamic(schema) {
-        return None;
-    }
-    match schema.get("type") {
-        Some(Value::String(t)) if t != "array" => Some(t.clone()),
-        Some(Value::Array(types)) => {
-            let names: Vec<&str> = types.iter().filter_map(Value::as_str).collect();
-            if names.is_empty() || names.contains(&"array") {
-                None
-            } else {
-                Some(names.join("|"))
-            }
-        }
-        _ => None,
-    }
-}
-
 /// Walk a `fanout.over` path (`"node:<id>.<seg>.<seg>"`) into the upstream node's
 /// DECLARED output schema and, if the leaf is provably non-array, return its type
 /// name. Mirrors `dag::resolve_over_path`'s path protocol (skip a leading
@@ -595,7 +558,7 @@ pub async fn enqueue_tick(
 // ---------------------------------------------------------------------------
 
 /// Namespace an idempotency key by its caller. The key is stored in a flat global
-/// keyspace (`SCOPE_IDEM`), so an un-scoped key lets two different callers using
+/// keyspace (`workflow_idempotency`), so an un-scoped key lets two different callers using
 /// the same string (e.g. "daily-report") collide: the second caller is handed
 /// back the first's `run_id`, leaking it — and, via `workflow::status` /
 /// `workflow::node-result`, the run's results. `caller_session_id` is hook-stamped
@@ -621,7 +584,7 @@ async fn caller_workflow_depth(
     let mut depth = 0usize;
     let mut cur = caller_session_id.map(str::to_string);
     while let Some(sid) = cur {
-        match state::run_id_for_session(&deps.iii, &sid).await? {
+        match deps.internal_state.run_id_for_session(&sid).await? {
             Some(parent_run) => {
                 depth += 1;
                 if depth > MAX_WORKFLOW_DEPTH {
@@ -663,7 +626,11 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
             )));
         }
         let scoped = scoped_idem_key(key, caller_session_id.as_deref());
-        if let Some(existing_run_id) = state::get_idem(&deps.iii, &scoped).await? {
+        if let Some(existing_run_id) = deps
+            .internal_state
+            .run_id_for_idempotency_key(&scoped)
+            .await?
+        {
             return Ok(StartResponse {
                 run_id: existing_run_id,
             });
@@ -674,6 +641,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     let _guard = deps.locks.guard(&run_id).await;
 
     state::put_def(&deps.iii, &run_id, &req.definition).await?;
+    state::put_run_input(&deps.iii, &run_id, &req.input).await?;
 
     // Extract workflow name from metadata if present
     let workflow_name = req.definition.metadata.as_ref().and_then(|m| m.name.clone());
@@ -719,12 +687,13 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         status: RunStatus::Running,
         abort: false,
         def_ref: run_id.clone(),
-        input: req.input,
+        input_ref: crate::ids::input_key(&run_id),
         state_keys_map: BTreeMap::new(),
         stream_ids: Vec::new(),
+        queue_receipts: Vec::new(),
         nodes,
         fanout_src: BTreeMap::new(),
-        result: None,
+        result_ref: None,
         result_error: None,
         notify: req.notify,
         caller_session_id,
@@ -738,7 +707,10 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 
     if let Some(ref key) = req.idempotency_key {
         let scoped = scoped_idem_key(key, record.caller_session_id.as_deref());
-        state::put_idem(&deps.iii, &scoped, &run_id).await?;
+        let idem_ttl_ms = deps.cfg().await.idempotency_ttl_ms;
+        deps.internal_state
+            .put_idempotency_key(&scoped, &run_id, Some(idem_ttl_ms))
+            .await?;
     }
 
     // The Running record is already persisted; if the first tick fails to enqueue,

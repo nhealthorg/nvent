@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     error::WorkflowError,
     state,
-    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{NodeCheckpoint, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord},
 };
 
 use super::Deps;
@@ -24,6 +24,14 @@ use super::Deps;
 pub struct StatusRequest {
     /// The `run_id` returned by `workflow::start`.
     pub run_id: String,
+    /// Whether to resolve and return the full terminal run result payload.
+    /// Set false for lightweight polling when outputs can be large.
+    #[serde(default = "default_include_result")]
+    pub include_result: bool,
+}
+
+fn default_include_result() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -39,7 +47,7 @@ pub struct StatusResponse {
     pub node_errors: BTreeMap<String, String>,
     /// The authored workflow definition (for UI visualization).
     pub definition: WorkflowDef,
-    /// Nodes that have a stored result: node uid → result_ref (its key in state).
+    /// Nodes that have a stored result: node uid → result_ref.
     /// Fetch the value with `workflow::node-result { run_id, node_uid }`. Lets a
     /// caller recover partial work from a run that failed partway (the run-level
     /// `result` is only set on a Completed run). Omitted when empty.
@@ -47,10 +55,13 @@ pub struct StatusResponse {
     pub node_results: BTreeMap<String, String>,
     /// Queue enqueue receipts recorded for this run (for restart/cancel forensics).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub queue_receipts: Vec<state::QueueReceiptRecord>,
+    pub queue_receipts: Vec<QueueReceiptRecord>,
     /// Per-loop execution metrics keyed by fanout node id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub loop_stats: BTreeMap<String, LoopStats>,
+    /// Reference key for terminal run output in internal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     /// Run-level failure summary (set when `status == failed`).
@@ -179,8 +190,13 @@ pub async fn handle(
         })
         .collect();
 
-    let queue_receipts = state::list_queue_receipts(&deps.iii, &req.run_id).await?;
+    let queue_receipts = deps.internal_state.list_queue_receipts(&req.run_id).await?;
     let loop_stats = collect_loop_stats(&definition, &record);
+    let result = if req.include_result && record.result_ref.is_some() {
+        state::get_run_result(&deps.iii, &req.run_id).await?
+    } else {
+        None
+    };
 
     Ok(Some(StatusResponse {
         run_id: record.run_id,
@@ -191,7 +207,8 @@ pub async fn handle(
         node_results,
         queue_receipts,
         loop_stats,
-        result: record.result,
+        result_ref: record.result_ref,
+        result,
         result_error: record.result_error,
         created_at: record.created_at,
         updated_at: record.updated_at,
@@ -217,7 +234,7 @@ mod tests {
                 state: NodeState::Done,
                 session_id: None,
                 turn_id: None,
-                result_ref: Some("workflow_node_result/r_abc123/plan".to_string()),
+                result_ref: Some("r_abc123/plan".to_string()),
                 result_error: None,
                 pending_at: None,
                 pending_timeout_ms: None,
@@ -233,10 +250,10 @@ mod tests {
         let mut node_results = BTreeMap::new();
         node_results.insert(
             "plan".to_string(),
-            "workflow_node_result/r_abc123/plan".to_string(),
+            "r_abc123/plan".to_string(),
         );
 
-        let queue_receipts = vec![state::QueueReceiptRecord {
+        let queue_receipts = vec![QueueReceiptRecord {
             id: "r_abc123:plan:receipt-1".to_string(),
             run_id: "r_abc123".to_string(),
             node_uid: "plan".to_string(),
@@ -264,6 +281,7 @@ mod tests {
             node_results,
             queue_receipts,
             loop_stats: BTreeMap::new(),
+            result_ref: Some("r_abc123".to_string()),
             result: Some(json!({"summary": "hello"})),
             result_error: Some("node 'read': boom".to_string()),
             created_at: 12345,
@@ -280,6 +298,7 @@ mod tests {
         assert_eq!(decoded.node_errors, resp.node_errors);
         assert_eq!(decoded.node_results, resp.node_results);
         assert_eq!(decoded.queue_receipts, resp.queue_receipts);
+        assert_eq!(decoded.result_ref, resp.result_ref);
         assert_eq!(decoded.result, resp.result);
         assert_eq!(decoded.result_error, resp.result_error);
         assert_eq!(decoded.created_at, resp.created_at);
@@ -305,6 +324,7 @@ mod tests {
             node_results: BTreeMap::new(),
             queue_receipts: Vec::new(),
             loop_stats: BTreeMap::new(),
+            result_ref: None,
             result: None,
             result_error: None,
             created_at: 0,
@@ -312,6 +332,10 @@ mod tests {
         };
 
         let serialized = serde_json::to_value(&resp).expect("serialize");
+        assert!(
+            serialized.get("result_ref").is_none(),
+            "result_ref omitted when None"
+        );
         assert!(
             serialized.get("result").is_none(),
             "result omitted when None"
@@ -385,12 +409,13 @@ mod tests {
             status: RunStatus::Running,
             abort: false,
             def_ref: "r_loop".to_string(),
-            input: json!({}),
+            input_ref: "r_loop".to_string(),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
-            result: None,
+            result_ref: None,
             result_error: None,
             notify: None,
             caller_session_id: None,

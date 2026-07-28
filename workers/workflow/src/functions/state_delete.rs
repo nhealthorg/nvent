@@ -24,22 +24,8 @@ pub async fn handle(deps: &Deps, req: StateDeleteRequest) -> Result<(), Workflow
         // 1. Delete value
         state::state_delete(&deps.iii, SCOPE_RUN_STATE, &state_key).await?;
 
-        // 2. Atomically remove registry entry from workflow_run
-        if state::get_run(&deps.iii, &req.run_id).await?.is_some() {
-            state::state_update(
-                &deps.iii,
-                state::SCOPE_RUN,
-                &req.run_id,
-                json!([
-                    {
-                        "type": "merge",
-                        "path": "state_keys_map",
-                        "value": state::state_registry_merge_value(&req.key, false)
-                    }
-                ]),
-            )
-            .await?;
-        }
+        // 2. Update registry entry in the internal run record.
+        state::set_state_registry_key_presence(&req.run_id, &req.key, false).await?;
     }
 
     // 3. Audit

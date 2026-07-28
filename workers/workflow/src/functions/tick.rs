@@ -8,7 +8,7 @@ use crate::{
     error::WorkflowError,
     ids, state,
     types::{
-        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeState, RunStatus, WorkflowDef,
+        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef,
         WorkflowRunRecord,
     },
 };
@@ -67,6 +67,7 @@ fn dispatch_queue_for(function: &FunctionSpec) -> String {
 fn resolve_node_input(
     def: &WorkflowDef,
     record: &WorkflowRunRecord,
+    run_input: &Value,
     node_uid: &str,
     base_id: &str,
     node: &NodeDef,
@@ -108,10 +109,10 @@ fn resolve_node_input(
             _ => None,
         };
 
-        return maybe_item_from_dep.unwrap_or_else(|| dag::gather_input(def, record, base_id, results));
+        return maybe_item_from_dep.unwrap_or_else(|| dag::gather_input(def, record, run_input, base_id, results));
     }
 
-    dag::gather_input(def, record, base_id, results)
+    dag::gather_input(def, record, run_input, base_id, results)
 }
 
 fn effective_pending_timeout_ms(
@@ -131,6 +132,10 @@ pub(crate) async fn fire_node(
     node_uid: &str,
     results: &BTreeMap<String, Value>,
 ) -> Result<(), WorkflowError> {
+        let run_input = state::get_run_input(&deps.iii, &record.run_id)
+            .await?
+            .ok_or_else(|| WorkflowError::State(format!("run input missing for {}", record.run_id)))?;
+
     // Abort guard: covers both the tick Fire branch and the sweep refire path.
     // `decide` already returns Finalize(Cancelled) first when abort=true (so the
     // Fire branch in tick::handle is never reached for an aborting run), but the
@@ -156,7 +161,7 @@ pub(crate) async fn fire_node(
 
     // Resolve the input value. Read everything from `node`/`record` into owned values
     // BEFORE the .await so we don't hold a borrow across the await point.
-    let input_val = resolve_node_input(def, record, node_uid, base_id, node, results);
+    let input_val = resolve_node_input(def, record, &run_input, node_uid, base_id, node, results);
 
     let dispatch_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
 
@@ -297,19 +302,40 @@ pub(crate) async fn fire_node(
                     },
                 );
             } else {
-                if let Some(receipt_id) = v.get("messageReceiptId").and_then(|x| x.as_str()) {
-                    if let Err(e) = state::put_queue_receipt(
-                        &deps.iii,
-                        &record.run_id,
-                        node_uid,
-                        &function.id,
-                        &queue,
-                        receipt_id,
-                        attempt,
-                        deps.now_ms(),
-                    )
-                    .await
+                let maybe_session_id = v
+                    .get("session_id")
+                    .or_else(|| v.get("sessionId"))
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string);
+
+                if let Some(session_id) = maybe_session_id.as_deref() {
+                    if let Err(e) = deps
+                        .internal_state
+                        .put_session_index(session_id, &record.run_id)
+                        .await
                     {
+                        tracing::warn!(
+                            run_id = %record.run_id,
+                            node_uid = %node_uid,
+                            session_id = %session_id,
+                            error = %e,
+                            "failed to persist session index"
+                        );
+                    }
+                }
+
+                if let Some(receipt_id) = v.get("messageReceiptId").and_then(|x| x.as_str()) {
+                    let receipt = QueueReceiptRecord {
+                        id: format!("{}:{}:{}", &record.run_id, node_uid, receipt_id),
+                        run_id: record.run_id.clone(),
+                        node_uid: node_uid.to_string(),
+                        function_id: function.id.clone(),
+                        queue: queue.clone(),
+                        receipt_id: receipt_id.to_string(),
+                        attempt,
+                        ts_unix_ms: deps.now_ms(),
+                    };
+                    if let Err(e) = deps.internal_state.put_queue_receipt(&receipt).await {
                         tracing::warn!(
                             run_id = %record.run_id,
                             node_uid = %node_uid,
@@ -330,7 +356,7 @@ pub(crate) async fn fire_node(
                     node_uid.to_string(),
                     NodeCheckpoint {
                         state: NodeState::Running,
-                        session_id: None,
+                        session_id: maybe_session_id,
                         turn_id: None,
                         result_ref: None, // Result written by function when complete
                         result_error: None,
@@ -443,7 +469,8 @@ async fn finalize(
             results.get(out_node).cloned().unwrap_or(Value::Null)
         };
 
-        record.result = Some(out_val);
+        state::put_run_result(&deps.iii, &record.run_id, &out_val).await?;
+        record.result_ref = Some(crate::ids::run_result_key(&record.run_id));
     } else if status == RunStatus::Failed {
         // Surface WHY the run failed. Without this, `notify` delivers
         // result_error: null and workflow::status shows a bare "failed" — the
@@ -689,12 +716,13 @@ mod tests {
             status: RunStatus::Running,
             abort: false,
             def_ref: "run_test".to_string(),
-            input: json!({"topic": "rust"}),
+            input_ref: "run_test".to_string(),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
-            result: None,
+            result_ref: None,
             result_error: None,
             notify: None,
             caller_session_id: None,
@@ -982,7 +1010,15 @@ mod tests {
         results.insert("read#1".to_string(), json!({ "summary": "B" }));
 
         let node = def.nodes.get("synthesize").expect("synthesize node present");
-        let val = resolve_node_input(&def, &record, "synthesize#1", "synthesize", node, &results);
+        let val = resolve_node_input(
+            &def,
+            &record,
+            &json!({"topic": "rust"}),
+            "synthesize#1",
+            "synthesize",
+            node,
+            &results,
+        );
 
         assert_eq!(val, json!({ "summary": "B" }));
     }
@@ -1000,7 +1036,15 @@ mod tests {
         // synthesize#0 reads node:read, but dep fanout behavior for this non-fanout node
         // should fall back to gather_input and return array of read child results.
         let node = def.nodes.get("synthesize").expect("synthesize node present");
-        let val = resolve_node_input(&def, &record, "synthesize#0", "synthesize", node, &results);
+        let val = resolve_node_input(
+            &def,
+            &record,
+            &json!({"topic": "rust"}),
+            "synthesize#0",
+            "synthesize",
+            node,
+            &results,
+        );
 
         assert_eq!(val, json!([{ "summary": "X" }]));
     }

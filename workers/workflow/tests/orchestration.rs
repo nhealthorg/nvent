@@ -92,6 +92,46 @@ fn three_node_def() -> WorkflowDef {
     }
 }
 
+fn two_node_linear_def() -> WorkflowDef {
+    let mut nodes = BTreeMap::new();
+
+    nodes.insert(
+        "first".to_string(),
+        function_node(
+            "first-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+
+    nodes.insert(
+        "second".to_string(),
+        function_node(
+            "second-fn",
+            InputSpec {
+                from: "node:first".into(),
+                template: None,
+            },
+            vec!["first".to_string()],
+            None,
+        ),
+    );
+
+    WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:second".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // In-memory driver helpers
 // ---------------------------------------------------------------------------
@@ -108,12 +148,13 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         status: RunStatus::Running,
         abort: false,
         def_ref: "run_test".to_string(),
-        input: def_input,
+        input_ref: format!("run_test_input_{}", def_input.to_string().len()),
         state_keys_map: BTreeMap::new(),
         stream_ids: Vec::new(),
+        queue_receipts: Vec::new(),
         nodes: BTreeMap::new(),
         fanout_src: BTreeMap::new(),
-        result: None,
+        result_ref: None,
         result_error: None,
         notify: None,
         caller_session_id: None,
@@ -241,7 +282,7 @@ fn fanout_barrier_synthesize_completes_in_order() {
 
     // Assert gather_input returns results in NUMERIC order (read#0 first, then read#1),
     // NOT in completion order (which was read#1, read#0).
-    let gathered = dag::gather_input(&def, &record, "synthesize", &results);
+    let gathered = dag::gather_input(&def, &record, &json!({"topic": "rust"}), "synthesize", &results);
     let arr = gathered
         .as_array()
         .expect("gather_input must return an array");
@@ -1502,4 +1543,44 @@ fn sequential_loop_parallel_all_three_branches_fails_if_one_branch_fails() {
 
     let q = dag::quiescence(&def, &record);
     assert_eq!(q, RunStatus::Failed, "quiescence must return Failed");
+}
+
+#[test]
+fn regression_first_done_immediately_unblocks_second() {
+    let def = two_node_linear_def();
+    let mut record = new_record(json!({"topic": "x"}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    // Step 1: first node must fire.
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["first".to_string()]);
+        }
+        other => panic!("expected Fire([first]) at step 1, got {:?}", other),
+    }
+
+    // Simulate persisted result for first node (the critical edge in this regression).
+    complete(&mut record, &mut results, "first", json!({"ok": true}));
+
+    // Step 2: second must fire right away. It must not Park/Retry/Finalize.
+    let step2 = drive_step(&def, &mut record, &results);
+    match &step2 {
+        TickDecision::Fire(uids) => {
+            assert_eq!(uids, &vec!["second".to_string()]);
+        }
+        other => panic!("expected Fire([second]) after first result, got {:?}", other),
+    }
+
+    // Sanity-check checkpoint states to catch regressions in state transitions.
+    assert_eq!(
+        record.nodes.get("first").map(|cp| &cp.state),
+        Some(&NodeState::Done),
+        "first checkpoint must stay Done"
+    );
+    assert_eq!(
+        record.nodes.get("second").map(|cp| &cp.state),
+        Some(&NodeState::Running),
+        "second checkpoint must be Running after fire"
+    );
 }

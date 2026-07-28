@@ -20,13 +20,13 @@ export default defineWorkflow({
   name: 'multi-step',
   description: 'Multi-step text processing and analysis workflow',
   triggers: [
-    {
-      type: 'cron',
-      config: {
-        expression: '0 */5 * * * * *',
-        timezone: 'Europe/Berlin'
-      }
-    }
+    //{
+    //  type: 'cron',
+    //  config: {
+    //    expression: '0 */5 * * * * *',
+    //    timezone: 'Europe/Berlin'
+    //  }
+    //}
   ],
   request_format: {
     text: {

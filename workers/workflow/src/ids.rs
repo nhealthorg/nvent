@@ -30,18 +30,28 @@ pub fn node_uid(node_id: &str, item: Option<u32>) -> String {
     }
 }
 
-/// Deterministic child session id (opaque idempotency handle; never parsed back).
+/// Deterministic child/session-style identifier helper.
 pub fn child_session_id(run_id: &str, node_uid: &str) -> String {
     format!("wf_{}_{}", run_id, node_uid)
 }
 
-/// Key within scope "workflow_node_result" for a node's stored result blob.
+/// Deterministic key for a node's stored result blob in workflow internal state.
 pub fn node_result_key(run_id: &str, node_uid: &str) -> String {
     format!("{}/{}", run_id, node_uid)
 }
 
 /// Key within scope "workflow_def" for a run's frozen definition.
 pub fn def_key(run_id: &str) -> String {
+    run_id.to_string()
+}
+
+/// Key for the run input blob in internal state.
+pub fn input_key(run_id: &str) -> String {
+    run_id.to_string()
+}
+
+/// Key for the terminal workflow output blob in internal state.
+pub fn run_result_key(run_id: &str) -> String {
     run_id.to_string()
 }
 
@@ -73,11 +83,8 @@ mod tests {
 
     #[test]
     fn test_child_session_id_distinct_per_attempt_but_stable_within_attempt() {
-        // fire_node uses child_session_id(run, "{node_uid}@r{attempt}") as BOTH the
-        // session_id AND the harness idempotency_key. That is the crash-resume
-        // fail-safe: re-firing the SAME attempt (a tick replay after a crash) reuses
-        // the SAME key so harness::send dedups and does not double-spawn, while a
-        // genuine retry (attempt+1) gets a FRESH key so it spawns a new session.
+        // Determinism property: equal inputs yield equal ids; varying retry suffixes
+        // (or other input differences) yield distinct ids.
         let r0a = child_session_id("r_1", "read#0@r0");
         let r0b = child_session_id("r_1", "read#0@r0");
         let r1 = child_session_id("r_1", "read#0@r1");

@@ -539,20 +539,21 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
 /// - `input.from == "node:<dep>"` and `<dep>` is a normal node → return that single
 ///   node's result, or `Value::Null` if not yet present.
 /// - Any other `from` value (`run_input`, `literal`, `fanout_item`) → return
-///   `record.input.clone()` (template/dispatch layer handles substitution later).
+///   the run input value (template/dispatch layer handles substitution later).
 pub fn gather_input(
     def: &WorkflowDef,
     record: &WorkflowRunRecord,
+    run_input: &Value,
     node_id: &str,
     results: &BTreeMap<String, Value>,
 ) -> Value {
     let node_def = match def.nodes.get(node_id) {
         Some(n) => n,
-        None => return record.input.clone(),
+        None => return run_input.clone(),
     };
 
     match &node_def.input.from {
-        crate::types::InputFrom::One(from) => gather_one(def, record, from, results),
+        crate::types::InputFrom::One(from) => gather_one(def, record, run_input, from, results),
         crate::types::InputFrom::Many(sources) => {
             // Join: gather each `node:<id>` into a field keyed by the dep id, so a
             // synthesis node can read every dependency it declared (a single
@@ -561,7 +562,7 @@ pub fn gather_input(
             for src in sources {
                 if let Some(dep) = src.strip_prefix("node:") {
                     let key = dep.split('.').next().unwrap_or(dep).to_string();
-                    obj.insert(key, gather_one(def, record, src, results));
+                    obj.insert(key, gather_one(def, record, run_input, src, results));
                 }
                 // Non-`node:` entries are rejected at workflow::start; ignore here.
             }
@@ -575,6 +576,7 @@ pub fn gather_input(
 fn gather_one(
     def: &WorkflowDef,
     record: &WorkflowRunRecord,
+    run_input: &Value,
     from: &str,
     results: &BTreeMap<String, Value>,
 ) -> Value {
@@ -596,7 +598,7 @@ fn gather_one(
         }
     } else {
         // run_input / literal / fanout_item → delegate to the template layer.
-        record.input.clone()
+        run_input.clone()
     }
 }
 
@@ -821,12 +823,13 @@ mod tests {
             status: RunStatus::Running,
             abort: false,
             def_ref: "run_test".to_string(),
-            input: json!({"topic": "rust"}),
+            input_ref: "run_test".to_string(),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
-            result: None,
+            result_ref: None,
             result_error: None,
             notify: None,
             caller_session_id: None,
@@ -1121,7 +1124,7 @@ mod tests {
         }
 
         // synthesize has input.from = "node:read" — gather_input should fan-in.
-        let gathered = gather_input(&d, &r, "synthesize", &results);
+        let gathered = gather_input(&d, &r, &json!({"topic": "rust"}), "synthesize", &results);
         let arr = gathered.as_array().expect("expected a JSON array");
         assert_eq!(arr.len(), 11);
         // Element at index 2 must be the result of read#2.
@@ -1200,7 +1203,7 @@ mod tests {
 
         // The join reads BOTH deps — each keyed by its node id (a single `from`
         // could only have delivered one of them).
-        let gathered = gather_input(&d, &r, "join", &results);
+        let gathered = gather_input(&d, &r, &json!({"topic": "rust"}), "join", &results);
         assert_eq!(
             gathered,
             json!({"b": {"draft": "hello"}, "c": {"review": "ok"}})

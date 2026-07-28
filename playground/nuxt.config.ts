@@ -53,6 +53,10 @@ export default defineNuxtConfig({
       },
       workflow: {
         observabilityRetentionMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+        internalStateBackend: 'redis',
+        internalStateRedisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
+        redisGlobalLogTraceIndex: true,
+        idempotencyTtlMs: 30 * 24 * 60 * 60 * 1000, // 30 days
       },
       queue: {
         queueConfigs: {

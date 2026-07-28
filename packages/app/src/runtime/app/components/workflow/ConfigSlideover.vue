@@ -35,32 +35,77 @@
           </div>
 
           <template v-else>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
-                <p class="text-[11px] uppercase tracking-wider text-zinc-500">Default Pending Timeout</p>
-                <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatMs(config?.default_pending_timeout_ms) }}</p>
+            <section class="rounded-2xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+              <div class="px-4 py-3 bg-zinc-50 dark:bg-zinc-900/40 border-b border-zinc-200 dark:border-zinc-800">
+                <p class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Runtime</p>
+                <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">Execution and scheduling parameters</p>
               </div>
-              <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
-                <p class="text-[11px] uppercase tracking-wider text-zinc-500">Sweep Expression</p>
-                <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100 font-mono">{{ config?.sweep_expression || 'n/a' }}</p>
+              <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Default Pending Timeout</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatMs(config?.default_pending_timeout_ms) }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Sweep Expression</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100 font-mono">{{ config?.sweep_expression || 'n/a' }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Dispatch Timeout</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatMs(config?.dispatch_timeout_ms) }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Max Node Retries</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ config?.max_node_retries ?? 'n/a' }}</p>
+                </div>
               </div>
-              <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
-                <p class="text-[11px] uppercase tracking-wider text-zinc-500">Dispatch Timeout</p>
-                <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatMs(config?.dispatch_timeout_ms) }}</p>
+            </section>
+
+            <section class="rounded-2xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+              <div class="px-4 py-3 bg-zinc-50 dark:bg-zinc-900/40 border-b border-zinc-200 dark:border-zinc-800">
+                <p class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Retention</p>
+                <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">Cleanup windows for runs and observability data</p>
               </div>
-              <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
-                <p class="text-[11px] uppercase tracking-wider text-zinc-500">Max Node Retries</p>
-                <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ config?.max_node_retries ?? 'n/a' }}</p>
+              <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Run Retention</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatDays(config?.run_retention_ms) }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Log/Trace Retention</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatDays(config?.observability_retention_ms) }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30 sm:col-span-2">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Idempotency TTL</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatDays(config?.idempotency_ttl_ms) }}</p>
+                  <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">How long an idempotency key keeps returning the original run id before it expires.</p>
+                </div>
               </div>
-              <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
-                <p class="text-[11px] uppercase tracking-wider text-zinc-500">Run Retention</p>
-                <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatDays(config?.run_retention_ms) }}</p>
+            </section>
+
+            <section class="rounded-2xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+              <div class="px-4 py-3 bg-zinc-50 dark:bg-zinc-900/40 border-b border-zinc-200 dark:border-zinc-800">
+                <p class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Internal State</p>
+                <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">Persistence backend and storage controls</p>
               </div>
-              <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
-                <p class="text-[11px] uppercase tracking-wider text-zinc-500">Log/Trace Retention</p>
-                <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatDays(config?.observability_retention_ms) }}</p>
+              <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Internal State Backend</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ config?.internal_state_backend || 'n/a' }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Global Redis Log/Trace Index</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ formatBool(config?.redis_global_log_trace_index) }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30 sm:col-span-2">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Internal State Redis URL</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100 font-mono break-all">{{ sanitizeRedisUrl(config?.internal_state_redis_url) }}</p>
+                </div>
+                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-zinc-50/70 dark:bg-zinc-900/30 sm:col-span-2">
+                  <p class="text-[11px] uppercase tracking-wider text-zinc-500">Internal State File Dir</p>
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100 font-mono break-all">{{ config?.internal_state_file_dir || 'n/a' }}</p>
+                </div>
               </div>
-            </div>
+            </section>
 
             <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
               <div class="px-4 py-2 bg-zinc-100/70 dark:bg-zinc-900/60 border-b border-zinc-200 dark:border-zinc-800 text-xs font-semibold text-zinc-600 dark:text-zinc-300 uppercase tracking-wider">
@@ -85,6 +130,11 @@ interface WorkflowWorkerConfig {
   max_node_retries: number
   run_retention_ms: number
   observability_retention_ms: number
+  internal_state_backend?: 'redis' | 'file'
+  internal_state_redis_url?: string
+  internal_state_file_dir?: string
+  redis_global_log_trace_index?: boolean
+  idempotency_ttl_ms?: number
 }
 
 interface ConfigResponse {
@@ -128,6 +178,16 @@ function formatDays(value?: number) {
   const days = value / 86_400_000
   const normalized = Number.isInteger(days) ? days.toString() : Number(days.toFixed(2)).toString()
   return `${normalized} Tage`
+}
+
+function formatBool(value?: boolean) {
+  if (value == null) return 'n/a'
+  return value ? 'true' : 'false'
+}
+
+function sanitizeRedisUrl(value?: string) {
+  if (!value) return 'n/a'
+  return value.replace(/:\/\/([^:@/]+):([^@/]+)@/, '://$1:***@')
 }
 
 async function loadConfig() {
