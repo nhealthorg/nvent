@@ -28,7 +28,7 @@ import {
   updateTemplates,
   hasNuxtModule,
 } from '@nuxt/kit'
-import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync, utimesSync } from 'node:fs'
+import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync, utimesSync, cpSync } from 'node:fs'
 import { rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { addCustomTab } from '@nuxt/devtools-kit'
@@ -43,7 +43,7 @@ import { resolveExtendedFunctionAbsPath } from './iii/extendedFunctionPath'
 import { mergeExtendedQueueConfigs, type NventExtendedQueueDefinition } from './iii/extendedQueues'
 import type { NventIiiOptions } from './types'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
-import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig } from './iii/python'
+import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig, ensurePythonVenv, installPythonPackages } from './iii/python'
 import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
 import { WorkflowWorkerManager, resolveWorkflowBinaryFromPackageRoot } from './runtime/nitro/utils/workers/workflow'
 import { createEngineManager } from './runtime/nitro/utils/engine'
@@ -203,9 +203,8 @@ export default defineNuxtModule<NventIiiOptions>({
 
     const functionsDir = opts.functions?.dir ?? 'functions'
     const workflowsDir = opts.workflows?.dir ?? 'workflows'
-    const pythonBin = opts.functions?.python?.devPath
-      ? join(nuxt.options.rootDir, opts.functions.python.devPath)
-      : 'python3'
+    const rawPythonPath = opts.functions?.python?.devPath ?? '.venv/bin/python3'
+    const pythonBin = isAbsolute(rawPythonPath) ? rawPythonPath : join(nuxt.options.rootDir, rawPythonPath)
     const skipPython = opts.functions?.python?.skip ?? false
     const wsUrl = iiiOpts.wsUrl ?? 'ws://localhost:49134'
     const mode = iiiOpts.mode ?? 'local'
@@ -233,12 +232,6 @@ export default defineNuxtModule<NventIiiOptions>({
       iiiOpts.workflow,
       stagedWorkflowBinary ? join('.', 'bin', getWorkflowBinaryName()) : undefined,
     )
-
-    // -------------------------------------------------------------------------
-    // IDE integration: install nvent.py into the venv site-packages so
-    // Pylance / VS Code resolves `from nvent import ...` automatically.
-    // -------------------------------------------------------------------------
-    installNventPyToSitePackages(pythonBin, readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'))
 
     // -------------------------------------------------------------------------
     // Forward nvent.app options to @nvent-addon/app (configKey: 'nventapp').
@@ -320,6 +313,13 @@ export default defineNuxtModule<NventIiiOptions>({
         runtimeContent: skipPython ? '' : readFileSync(PYTHON_RUNTIME_SRC, 'utf-8'),
         nventHelperContent: skipPython ? '' : readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'),
         skip: skipPython,
+        extraPaths: (opts.functions?.python?.extraPaths ?? []).map((p) => {
+          // In production, we assume they are copied into 'libs/' relative to .output/nvent/
+          if (nuxt.options.dev) {
+            return isAbsolute(p) ? p : join(nuxt.options.rootDir, p)
+          }
+          return join('libs', basename(p))
+        }),
       },
       console: {
         enabled: !!iiiOpts.console,
@@ -399,6 +399,7 @@ export default defineNuxtModule<NventIiiOptions>({
           absPath: resolvedPath.absPath,
           relativePath: basename(resolvedPath.absPath),
           description: fn.description,
+          runtime: 'nodejs',
         })
         seenTs.add(fn.id)
       }
@@ -416,6 +417,7 @@ export default defineNuxtModule<NventIiiOptions>({
           absPath,
           relativePath: basename(absPath),
           standalone: !!fn.standalone,
+          runtime: 'python',
         })
         seenPy.add(fn.id)
       }
@@ -433,6 +435,7 @@ export default defineNuxtModule<NventIiiOptions>({
           absPath,
           relativePath: basename(absPath),
           description: wf.description,
+          runtime: 'nodejs',
         })
         seenWf.add(wf.id)
       }
@@ -526,11 +529,12 @@ export default defineNuxtModule<NventIiiOptions>({
     if (nuxt.options.dev) {
       // Write pyrightconfig.json so any pyright-aware editor (VS Code/Pylance,
       // neovim, etc.) auto-resolves the venv and function paths without manual setup.
-      if (!skipPython && opts.functions?.python?.devPath) {
+      if (!skipPython && rawPythonPath.includes('/bin/python')) {
         writePyrightConfig({
           rootDir: nuxt.options.rootDir,
-          devPath: opts.functions.python.devPath,
+          devPath: rawPythonPath,
           includePaths: layerInfos.map(l => join(l.serverDir, functionsDir)),
+          extraPaths: opts.functions?.python?.extraPaths,
         })
       }
 
@@ -620,16 +624,27 @@ export default defineNuxtModule<NventIiiOptions>({
       }
 
       if (!skipPython) {
-        
+    // 1. Ensure venv exists if devPath is a venv path.
+    await ensurePythonVenv(pythonBin, logLevel)
 
-        // Install Python requirements on dev startup.
-        for (const reqPath of [
+    // 2. Install nvent.py helper into site-packages for IDE support
+    installNventPyToSitePackages(pythonBin, readFileSync(PYTHON_NVENT_HELPER_SRC, 'utf-8'))
+
+    // 3. Install Python requirements on dev startup.
+    for (const reqPath of [
           join(nuxt.options.rootDir, 'requirements.txt'),
           join(nuxt.options.rootDir, 'server', 'requirements.txt'),
         ]) {
           await installPythonRequirements(reqPath, pythonBin, logLevel)
         }
-        
+
+        // 3. Install explicit requirements from config + always iii-sdk
+        const extraReqs = ['iii-sdk', ...(opts.functions?.python?.requirements ?? [])]
+        await installPythonPackages(extraReqs, pythonBin, logLevel)
+
+        // 4. Resolve extra paths for PYTHONPATH
+        const pythonExtraPaths = (opts.functions?.python?.extraPaths ?? [])
+          .map(p => isAbsolute(p) ? p : join(nuxt.options.rootDir, p))
 
         // Start Python workers in the Nuxt process so they survive Nitro hot-reloads
         // and can be restarted directly on .py file changes.
@@ -641,6 +656,7 @@ export default defineNuxtModule<NventIiiOptions>({
           wsUrl,
           pythonBin,
           logLevel,
+          pythonExtraPaths,
         )
         await pythonOrchestrator.start(lastScanned.pythonFunctions)
         nuxt.hook('close', async () => { await pythonOrchestrator.stop() })
@@ -744,9 +760,38 @@ export default defineNuxtModule<NventIiiOptions>({
 
           for (const req of requirementsCandidates) {
             if (!existsSync(req.src)) continue
-            copyFileSync(req.src, join(outputRequirementsDir, req.name))
+            let content = readFileSync(req.src, 'utf-8')
+            const extras = opts.functions?.python?.extraPaths ?? []
+            if (extras.length > 0) {
+              content += '\n\n# nvent extraPaths (auto-added during build)\n'
+              for (const p of extras) {
+                // We use relative path to the copied directory in .output/nvent/
+                // requirements.txt is in .output/nvent/requirements/
+                // libs are in .output/nvent/libs/
+                // So path is ../libs/<basename>
+                content += `../libs/${basename(p)}\n`
+              }
+            }
+            writeFileSync(join(outputRequirementsDir, req.name), content, 'utf-8')
           }
-          console.log('[nvent] Python worker files copied to .output/nvent/')
+
+          // Copy extraPaths to .output/nvent/libs/
+          const libsDir = join(outputNventDir, 'libs')
+          for (const p of (opts.functions?.python?.extraPaths ?? [])) {
+            const abs = isAbsolute(p) ? p : join(nuxt.options.rootDir, p)
+            if (existsSync(abs)) {
+              mkdirSync(libsDir, { recursive: true })
+              const dest = join(libsDir, basename(p))
+              if (statSync(abs).isDirectory()) {
+                cpSync(abs, dest, { recursive: true })
+              }
+              else {
+                copyFileSync(abs, dest)
+              }
+            }
+          }
+
+          console.log('[nvent] Python worker files + extraPaths copied to .output/nvent/')
         })
       }
     }

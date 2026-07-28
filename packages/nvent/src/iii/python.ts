@@ -10,7 +10,7 @@
 
 import { writeFileSync, existsSync } from 'node:fs'
 import { execFileSync, spawn } from 'node:child_process'
-import { join, dirname, basename, relative } from 'node:path'
+import { join, dirname, basename, relative, isAbsolute } from 'node:path'
 
 /**
  * Write (or overwrite) a `pyrightconfig.json` at the Nuxt project root so that
@@ -26,15 +26,18 @@ import { join, dirname, basename, relative } from 'node:path'
  * `includePaths` is a list of absolute paths that pyright should check;
  * only paths that are inside `rootDir` are included (external paths are skipped).
  *
+ * `extraPaths` is a list of additional relative or absolute paths to include.
+ *
  * Best-effort: silently skips on any error.
  */
 export function writePyrightConfig(options: {
   rootDir: string
   devPath: string
   includePaths: string[]
+  extraPaths?: string[]
 }): void {
   try {
-    const { rootDir, devPath, includePaths } = options
+    const { rootDir, devPath, includePaths, extraPaths = [] } = options
 
     // Derive venvPath + venv from devPath.
     // e.g. ".venv/bin/python3"         → venvPath=".",         venv=".venv"
@@ -50,6 +53,13 @@ export function writePyrightConfig(options: {
       .map(p => relative(rootDir, p))
       .filter(p => !p.startsWith('..'))
 
+    // Add extraPaths (handle relative to rootDir)
+    for (const p of extraPaths) {
+      const absPath = isAbsolute(p) ? p : join(rootDir, p)
+      const relPath = relative(rootDir, absPath)
+      if (!include.includes(relPath)) include.push(relPath)
+    }
+
     const config: Record<string, unknown> = { venvPath, venv }
     if (include.length > 0) config.include = include
 
@@ -62,6 +72,40 @@ export function writePyrightConfig(options: {
   catch {
     // IDE integration — never block dev startup on a file write failure.
   }
+}
+
+/**
+ * Ensures a Python virtual environment exists if a relative devPath is provided.
+ * If the path ends in /bin/python or /bin/python3, it extracts the venv directory
+ * and runs `python3 -m venv <dir>` if it doesn't exist.
+ */
+export async function ensurePythonVenv(pythonBin: string, logLevel: string): Promise<void> {
+  // Only handle paths that look like they are inside a venv (e.g. .venv/bin/python3 or .venv/bin/python)
+  if (!pythonBin.includes('/bin/python')) return
+
+  if (existsSync(pythonBin)) return
+
+  const binDir = dirname(pythonBin)
+  const venvDir = dirname(binDir)
+
+  if (logLevel !== 'none') console.log(`[nvent] Creating Python virtual environment at ${venvDir}`)
+
+  return new Promise((resolve) => {
+    // We use the system 'python3' to create the venv.
+    // Use -m venv --without-pip if needed, but usually we want pip.
+    const proc = spawn('python3', ['-m', 'venv', venvDir], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    })
+    proc.on('exit', (code) => {
+      if (code !== 0 && logLevel !== 'none') console.error(`[nvent] venv creation failed (code=${code})`)
+      else if (code === 0 && logLevel !== 'none') console.log('[nvent] Python virtual environment created')
+      resolve()
+    })
+    proc.on('error', (err) => {
+      if (logLevel !== 'none') console.error(`[nvent] venv creation error: ${err.message}`)
+      resolve()
+    })
+  })
 }
 
 /**
@@ -85,6 +129,34 @@ export async function installPythonRequirements(
     proc.on('exit', (code) => {
       if (code !== 0 && logLevel !== 'none') console.error(`[nvent] pip install failed (code=${code}):\n${stderr.trim()}`)
       else if (code === 0 && logLevel !== 'none') console.log('[nvent] Python requirements installed')
+      resolve()
+    })
+    proc.on('error', (err) => {
+      if (logLevel !== 'none') console.error(`[nvent] pip install error: ${err.message}`)
+      resolve()
+    })
+  })
+}
+
+/**
+ * Install specific Python packages via pip.
+ */
+export async function installPythonPackages(
+  packages: string[],
+  pythonBin: string,
+  logLevel: string,
+): Promise<void> {
+  if (packages.length === 0) return
+  if (logLevel !== 'none') console.log(`[nvent] Installing Python packages: ${packages.join(', ')}`)
+  return new Promise((resolve) => {
+    const proc = spawn(pythonBin, ['-m', 'pip', 'install', ...packages, '--upgrade', '--quiet'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+    proc.on('exit', (code) => {
+      if (code !== 0 && logLevel !== 'none') console.error(`[nvent] pip install failed (code=${code}):\n${stderr.trim()}`)
+      else if (code === 0 && logLevel !== 'none') console.log('[nvent] Python packages installed')
       resolve()
     })
     proc.on('error', (err) => {

@@ -249,26 +249,26 @@ class Logger:
     def debug(self, message: str, data: dict = None) -> None: ...
 
 
-# ── FlowContext ────────────────────────────────────────────────────────────
+# ── WorkflowContext ────────────────────────────────────────────────────────────
 
-class FlowContext:
+class WorkflowContext:
     """Execution context passed as the second argument to every handler.
 
     Example — HTTP step that streams results::
 
-        async def handler(req: ApiRequest, ctx: FlowContext):
+        async def handler(req: ApiRequest, ctx: WorkflowContext):
             await ctx.enqueue({"topic": "pipeline.analyze", "data": {"text": req.body["text"]}})
             return ApiResponse(statusCode=200, body=ctx.stream.subscription())
 
     Example — queue step that publishes progress::
 
-        async def handler(data: dict, ctx: FlowContext):
+        async def handler(data: dict, ctx: WorkflowContext):
             await ctx.stream.set("step-1", {"step": 1, "total": 4, "label": "Tokenizing"})
             await ctx.stream.set("result", {"done": True, **stats})
 
     Multi-trigger step::
 
-        async def handler(input, ctx: FlowContext):
+        async def handler(input, ctx: WorkflowContext):
             return await ctx.match({
                 "http":  lambda req: ApiResponse(statusCode=200, body={"ok": True}),
                 "queue": lambda data: process(data),
@@ -329,6 +329,11 @@ class FlowContext:
         ...
 
 
+# Aliases for backward compatibility
+FlowContext = WorkflowContext
+StepContext = WorkflowContext
+
+
 # ── define_function ────────────────────────────────────────────────────────
 
 _NVENT_FN_MARKER = "__nvent_fn__"
@@ -361,8 +366,8 @@ def define_function(
     The handler signature depends on the trigger type:
 
     - ``http``:   ``async def handler(req: ApiRequest) -> ApiResponse``
-    - ``queue``:  ``async def handler(data: dict, ctx: FlowContext) -> None``
-    - ``cron``:   ``async def handler(ctx: FlowContext) -> None``
+    - ``queue``:  ``async def handler(data: dict, ctx: WorkflowContext) -> None``
+    - ``cron``:   ``async def handler(ctx: WorkflowContext) -> None``
 
     Example::
 

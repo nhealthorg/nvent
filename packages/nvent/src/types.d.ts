@@ -300,11 +300,25 @@ export interface NventIiiOptions {
        */
       devPath?: string
       /**
+       * List of additional Python packages to install in development (e.g. ['pandas', 'numpy']).
+       * 'iii-sdk' is always included automatically.
+       */
+      requirements?: string[]
+      /**
+       * List of extra directories to add to PYTHONPATH and pyright include paths.
+       * Supports absolute paths or paths relative to rootDir.
+       */
+      extraPaths?: string[]
+      /**
        * Skip Python worker support entirely (no Python scanning, no workers started).
        * Useful when the project has no Python functions. Default: false
        */
       skip?: boolean
     }
+  }
+  workflows?: {
+    /** Directory under server/ where workflows are, relative to serverDir (default: 'workflows') */
+    dir?: string
   }
   app?: {
     /** Enable the nvent app UI and its built-in route. Default: true */

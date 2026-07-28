@@ -237,6 +237,12 @@ export default defineNitroPlugin(async (nitroApp) => {
   const nventHelperContent = existsSync(nventHelperFilePath)
     ? readFileSync(nventHelperFilePath, 'utf-8')
     : (pythonCfg.nventHelperContent ?? '')
+
+  // Resolve extra paths relative to the artifacts directory
+  const extraPaths = (pythonCfg.extraPaths ?? []).map((p: string) => {
+    return isAbsolute(p) ? p : resolve(nventArtifactsDir, p)
+  })
+
   const orchestrator = new PythonWorkersOrchestrator(
     workersDir,
     runtimeContent,
@@ -244,6 +250,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     wsUrl,
     pythonBin,
     logLevel,
+    extraPaths,
   )
 
   if (process.env.NODE_ENV !== 'development' && !pythonCfg.skip) {

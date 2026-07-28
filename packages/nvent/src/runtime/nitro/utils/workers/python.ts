@@ -88,7 +88,7 @@ const MAX_BACKOFF_MS = 30_000
 export interface PyFnInfo {
   id: string
   absPath: string
-  standalone: boolean
+  standalone?: boolean
 }
 
 export class PythonWorkerManager {
@@ -104,6 +104,7 @@ export class PythonWorkerManager {
     private readonly fns: PyFnInfo[],
     private readonly python: string = 'python3',
     private readonly logLevel: string = 'warn',
+    private readonly extraPaths: string[] = [],
   ) {}
 
   isRunning(): boolean {
@@ -135,10 +136,19 @@ export class PythonWorkerManager {
 
     // _runtime.py <ws_url> <worker_name> <path1> <id1> [<path2> <id2> ...]
     const fnArgs = this.fns.flatMap(fn => [fn.absPath, fn.id])
+
+    // Build PYTHONPATH from extraPaths
+    const env = { ...process.env }
+    if (this.extraPaths.length > 0) {
+      const existing = env.PYTHONPATH ? `${env.PYTHONPATH}:` : ''
+      env.PYTHONPATH = existing + this.extraPaths.join(':')
+    }
+
     // Use -u flag for unbuffered output so logs appear immediately
     this.process = spawn(this.python, ['-u', this.runtimeScript, this.wsUrl, this.workerName, ...fnArgs], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
+      env,
     })
 
     let stdoutBuffer = ''
@@ -227,6 +237,7 @@ export class PythonWorkersOrchestrator {
     private readonly wsUrl: string,
     private readonly pythonBin: string,
     private readonly logLevel: string = 'warn',
+    private readonly extraPaths: string[] = [],
   ) {
     this.runtimeScript = join(workersDir, '_runtime.py')
   }
@@ -331,6 +342,7 @@ export class PythonWorkersOrchestrator {
       fns,
       this.pythonBin,
       this.logLevel,
+      this.extraPaths,
     )
   }
 }
