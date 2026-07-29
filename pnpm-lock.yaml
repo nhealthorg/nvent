@@ -189,7 +189,11 @@ importers:
 
   packages/workflow-worker/workflow-worker-linux-arm64-gnu: {}
 
+  packages/workflow-worker/workflow-worker-linux-arm64-musl: {}
+
   packages/workflow-worker/workflow-worker-linux-x64-gnu: {}
+
+  packages/workflow-worker/workflow-worker-linux-x64-musl: {}
 
   packages/workflow-worker/workflow-worker-meta: {}
 
