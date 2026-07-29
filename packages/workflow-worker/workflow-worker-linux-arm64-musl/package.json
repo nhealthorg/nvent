@@ -1,0 +1,23 @@
+{
+  "name": "@nvent-addon/workflow-worker-linux-arm64-musl",
+  "version": "1.0.0-alpha.21",
+  "description": "Linux arm64 musl binary for nvent workflow worker.",
+  "repository": "DevJoghurt/nvent",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "musl"
+  ],
+  "files": [
+    "bin/workflow",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../../scripts/verify-workflow-worker-package.mjs --target linux-arm64-musl"
+  }
+}

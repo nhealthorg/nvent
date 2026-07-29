@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process'
+
 export const TARGETS = {
   'linux-x64-gnu': {
     triple: 'x86_64-unknown-linux-gnu',
@@ -5,10 +7,22 @@ export const TARGETS = {
     packageName: '@nvent-addon/workflow-worker-linux-x64-gnu',
     binaryName: 'workflow',
   },
+  'linux-x64-musl': {
+    triple: 'x86_64-unknown-linux-musl',
+    packageDir: 'packages/workflow-worker/workflow-worker-linux-x64-musl',
+    packageName: '@nvent-addon/workflow-worker-linux-x64-musl',
+    binaryName: 'workflow',
+  },
   'linux-arm64-gnu': {
     triple: 'aarch64-unknown-linux-gnu',
     packageDir: 'packages/workflow-worker/workflow-worker-linux-arm64-gnu',
     packageName: '@nvent-addon/workflow-worker-linux-arm64-gnu',
+    binaryName: 'workflow',
+  },
+  'linux-arm64-musl': {
+    triple: 'aarch64-unknown-linux-musl',
+    packageDir: 'packages/workflow-worker/workflow-worker-linux-arm64-musl',
+    packageName: '@nvent-addon/workflow-worker-linux-arm64-musl',
     binaryName: 'workflow',
   },
   'darwin-x64': {
@@ -33,18 +47,31 @@ export const TARGETS = {
 
 function detectLibc() {
   if (process.platform !== 'linux') return undefined
-  // A lightweight libc check: prefer glibc unless explicitly musl-like.
+  // Using process.report if available for glibc detection
   const report = process.report?.getReport?.()
-  const glibc = report?.header?.glibcVersionRuntime
-  return glibc ? 'gnu' : 'gnu'
+  if (report?.header?.glibcVersionRuntime) {
+    return 'gnu'
+  }
+  // If not glibc, check for musl
+  // A common way to check for musl in Node is to see if it's alpine or check ldd
+  try {
+    const ldd = spawnSync('ldd', ['--version'], { encoding: 'utf8' })
+    if (ldd.stdout?.includes('musl') || ldd.stderr?.includes('musl')) {
+      return 'musl'
+    }
+  } catch {
+    // ignore
+  }
+  return 'gnu' // Default to gnu
 }
 
 export function detectTargetKey() {
+  const libc = detectLibc()
   if (process.platform === 'linux' && process.arch === 'x64') {
-    return detectLibc() === 'gnu' ? 'linux-x64-gnu' : null
+    return libc === 'musl' ? 'linux-x64-musl' : 'linux-x64-gnu'
   }
   if (process.platform === 'linux' && process.arch === 'arm64') {
-    return detectLibc() === 'gnu' ? 'linux-arm64-gnu' : null
+    return libc === 'musl' ? 'linux-arm64-musl' : 'linux-arm64-gnu'
   }
   if (process.platform === 'darwin' && process.arch === 'x64') return 'darwin-x64'
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64'
