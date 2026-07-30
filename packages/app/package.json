@@ -1,6 +1,6 @@
 {
   "name": "@nvent-addon/app",
-  "version": "1.0.0-alpha.22",
+  "version": "1.0.0",
   "description": "nvent app module for Nuxt.js",
   "repository": "https://github.com/nhealthorg/nvent",
   "license": "MIT",

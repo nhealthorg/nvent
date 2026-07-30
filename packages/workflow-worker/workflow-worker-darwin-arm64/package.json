@@ -1,6 +1,6 @@
 {
   "name": "@nvent-addon/workflow-worker-darwin-arm64",
-  "version": "1.0.0-alpha.22",
+  "version": "1.0.0",
   "description": "macOS arm64 binary for nvent workflow worker.",
   "repository": "DevJoghurt/nvent",
   "license": "MIT",

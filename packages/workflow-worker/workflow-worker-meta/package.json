@@ -1,6 +1,6 @@
 {
   "name": "@nvent-addon/workflow-worker",
-  "version": "1.0.0-alpha.22",
+  "version": "1.0.0",
   "description": "Platform-aware workflow worker binary resolver for nvent.",
   "repository": "DevJoghurt/nvent",
   "license": "MIT",
