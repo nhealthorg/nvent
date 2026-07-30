@@ -8,6 +8,7 @@
   "private": true,
   "scripts": {
     "build": "pnpm prepare && pnpm --filter \"./packages/app\" --filter \"./packages/nvent\" prepack",
+    "build:meta": "pnpm prepare && pnpm --filter \"./packages/app\" --filter \"./packages/nvent\" run build && pnpm --filter \"./packages/app\" --filter \"./packages/nvent\" pack --pack-destination .release-artifacts",
     "build:stub": "pnpm prepare",
     "build:worker": "cargo build --manifest-path workers/workflow/Cargo.toml",
     "build:worker:test": "cargo test --manifest-path workers/workflow/Cargo.toml",

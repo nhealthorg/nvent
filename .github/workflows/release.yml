@@ -128,7 +128,7 @@ jobs:
           pnpm bumpp ${{ needs.resolve-version.outputs.version }} --recursive --no-commit --no-tag --no-push --yes
 
       - name: Build packages
-        run: pnpm build
+        run: pnpm build:meta
 
       - name: Commit and tag version
         if: github.event_name == 'workflow_dispatch'
