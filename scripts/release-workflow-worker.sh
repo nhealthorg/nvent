@@ -50,8 +50,10 @@ publish_tgz() {
 }
 
 publish_tgz "@nvent-addon/workflow-worker-linux-x64-gnu"
+publish_tgz "@nvent-addon/workflow-worker-linux-x64-musl"
 publish_tgz "@nvent-addon/workflow-worker-linux-arm64-gnu"
-# publish_tgz "@nvent-addon/workflow-worker-darwin-x64"
+publish_tgz "@nvent-addon/workflow-worker-linux-arm64-musl"
+publish_tgz "@nvent-addon/workflow-worker-darwin-x64"
 publish_tgz "@nvent-addon/workflow-worker-darwin-arm64"
 publish_tgz "@nvent-addon/workflow-worker-win32-x64-msvc"
 
