@@ -91,7 +91,9 @@ jobs:
         run: pnpm run build:worker:package -- --target ${{ matrix.target_key }}
 
       - name: Pack platform package
-        run: pnpm -C ${{ matrix.package_dir }} pack
+        run: |
+          cd ${{ matrix.package_dir }}
+          npm pack
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
