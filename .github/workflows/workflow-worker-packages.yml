@@ -18,8 +18,14 @@ jobs:
         include:
           - os: ubuntu-latest
             target_key: linux-x64-gnu
+          - os: ubuntu-latest
+            target_key: linux-x64-musl
           - os: ubuntu-24.04-arm
             target_key: linux-arm64-gnu
+          - os: ubuntu-24.04-arm
+            target_key: linux-arm64-musl
+          - os: macos-latest
+            target_key: darwin-x64
           - os: macos-latest
             target_key: darwin-arm64
           - os: windows-latest
@@ -55,19 +61,25 @@ jobs:
         run: |
           case "${{ matrix.target_key }}" in
             linux-x64-gnu)
-              pnpm run pack:worker:linux-x64
+              cd packages/workflow-worker/workflow-worker-linux-x64-gnu && npm pack
+              ;;
+            linux-x64-musl)
+              cd packages/workflow-worker/workflow-worker-linux-x64-musl && npm pack
               ;;
             linux-arm64-gnu)
-              pnpm -C packages/workflow-worker/workflow-worker-linux-arm64-gnu pack
+              cd packages/workflow-worker/workflow-worker-linux-arm64-gnu && npm pack
+              ;;
+            linux-arm64-musl)
+              cd packages/workflow-worker/workflow-worker-linux-arm64-musl && npm pack
               ;;
             darwin-x64)
-              pnpm -C packages/workflow-worker/workflow-worker-darwin-x64 pack
+              cd packages/workflow-worker/workflow-worker-darwin-x64 && npm pack
               ;;
             darwin-arm64)
-              pnpm -C packages/workflow-worker/workflow-worker-darwin-arm64 pack
+              cd packages/workflow-worker/workflow-worker-darwin-arm64 && npm pack
               ;;
             win32-x64-msvc)
-              pnpm -C packages/workflow-worker/workflow-worker-win32-x64-msvc pack
+              cd packages/workflow-worker/workflow-worker-win32-x64-msvc && npm pack
               ;;
           esac
 
