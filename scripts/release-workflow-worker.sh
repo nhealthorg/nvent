@@ -23,7 +23,7 @@ get_dist_tag() {
   fi
 }
 
-DIST_TAG=$(get_dist_tag "$VERSION")
+DIST_TAG="${NPM_TAG:-$(get_dist_tag "$VERSION")}"
 echo "📦 Publishing workflow-worker packages (dist-tag: ${DIST_TAG})"
 
 publish_tgz() {
