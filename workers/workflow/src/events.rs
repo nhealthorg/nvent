@@ -80,7 +80,6 @@ pub async fn emit_notify(deps: &crate::functions::Deps, record: &crate::types::W
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
     fn record_with(status: &str) -> crate::types::WorkflowRunRecord {

@@ -13,7 +13,7 @@ export default defineFunction({
       .filter((w: string) => w.length > 0)
 
     const source = words.length > 0 ? words : [baseText || 'default-item']
-    const limited = source.slice(0, 6)
+    const limited = source.slice(0, 2000)
 
     ctx.logger?.debug('Planning workflow loop items', { count: limited.length })
 

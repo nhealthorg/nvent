@@ -434,6 +434,58 @@ async fn read_json_opt<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Opti
     Ok(Some(parsed))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::FileWorkflowInternalStateStore;
+    use crate::config::WorkerConfig;
+    use crate::internal_state::WorkflowInternalStateStore;
+    use crate::state::WorkflowRunTraceRecord;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn temp_store_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("nvent-workflow-test-{}", Uuid::new_v4()))
+    }
+
+    fn sample_trace(id: &str, ts_unix_ms: i64) -> WorkflowRunTraceRecord {
+        WorkflowRunTraceRecord {
+            id: id.to_string(),
+            run_id: "run-1".to_string(),
+            node_uid: Some("node".to_string()),
+            function_id: None,
+            runtime: None,
+            event_name: "workflow.node.completed".to_string(),
+            ts_unix_ms,
+            attributes: None,
+            trace_id: None,
+            span_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn trace_paging_returns_latest_first() {
+        let dir = temp_store_dir();
+        let mut cfg = WorkerConfig::default();
+        cfg.internal_state_backend = "file".to_string();
+        cfg.internal_state_file_dir = dir.to_string_lossy().into_owned();
+
+        let store = FileWorkflowInternalStateStore::new(&cfg);
+        store.put_run_trace("run-1", &sample_trace("trace-1", 100)).await.expect("put trace 1");
+        store.put_run_trace("run-1", &sample_trace("trace-2", 300)).await.expect("put trace 2");
+        store.put_run_trace("run-1", &sample_trace("trace-3", 200)).await.expect("put trace 3");
+
+        let (first_page, first_has_more) = store.list_run_traces_paged("run-1", 0, 2).await.expect("page 1");
+        let (second_page, second_has_more) = store.list_run_traces_paged("run-1", 2, 2).await.expect("page 2");
+
+        assert_eq!(first_page.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["trace-2", "trace-3"]);
+        assert!(first_has_more);
+        assert_eq!(second_page.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["trace-1"]);
+        assert!(!second_has_more);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+}
+
 async fn remove_if_exists(path: &Path) -> Result<(), WorkflowError> {
     match fs::remove_file(path).await {
         Ok(()) => Ok(()),

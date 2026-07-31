@@ -89,6 +89,15 @@ pub async fn delete_run_by_id(deps: &Deps, run_id: &str) -> Result<RunDeleteResp
         }
     }
 
+    if let Some(def) = crate::state::get_def(&deps.iii, &record.run_id).await? {
+        let result = if record.result_ref.is_some() {
+            crate::state::get_run_result(&deps.iii, &record.run_id).await?
+        } else {
+            None
+        };
+        super::lifecycle_hooks::emit_delete(deps, &def, &record, result).await;
+    }
+
     crate::state::delete_run(&deps.iii, &record).await?;
 
     Ok(RunDeleteResponse {

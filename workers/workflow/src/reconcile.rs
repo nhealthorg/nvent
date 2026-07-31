@@ -429,6 +429,7 @@ mod tests {
         nodes.insert(
             "step".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "worker::step".to_string(),
                     timeout_ms: None,

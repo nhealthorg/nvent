@@ -370,6 +370,7 @@ mod tests {
         def_nodes.insert(
             "loop-node".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "test-fn".to_string(),
                     timeout_ms: None,

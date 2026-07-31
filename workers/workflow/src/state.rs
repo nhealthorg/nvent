@@ -721,6 +721,17 @@ pub async fn list_run_logs(
     require_internal_state_store()?.list_run_logs(run_id).await
 }
 
+pub async fn list_run_logs_paged(
+    _iii: &IIIClient,
+    run_id: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<(Vec<WorkflowRunLogRecord>, bool), WorkflowError> {
+    require_internal_state_store()?
+        .list_run_logs_paged(run_id, offset, limit)
+        .await
+}
+
 pub async fn delete_run_log_key(
     _iii: &IIIClient,
     run_id: &str,
@@ -764,6 +775,17 @@ pub async fn list_run_traces(
     run_id: &str,
 ) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
     require_internal_state_store()?.list_run_traces(run_id).await
+}
+
+pub async fn list_run_traces_paged(
+    _iii: &IIIClient,
+    run_id: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<(Vec<WorkflowRunTraceRecord>, bool), WorkflowError> {
+    require_internal_state_store()?
+        .list_run_traces_paged(run_id, offset, limit)
+        .await
 }
 
 pub async fn delete_run_trace_key(

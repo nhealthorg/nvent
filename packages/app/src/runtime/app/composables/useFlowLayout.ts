@@ -121,6 +121,16 @@ export function useFlowLayout(props: {
     return 210
   }
 
+  function getDisplayLabel(stepName: string, step: any): string {
+    if (typeof step?.label === 'string' && step.label.trim().length > 0) {
+      return step.label
+    }
+    if (stepName.includes('::')) {
+      return stepName.split('::').filter(Boolean).pop() || stepName
+    }
+    return stepName
+  }
+
   const nodes = computed<FlowNode[]>(() => {
     const out: FlowNode[] = []
     const f = props.flow
@@ -140,7 +150,7 @@ export function useFlowLayout(props: {
         id: `entry:${f.entry.step}`,
         position: { x, y: 0 },
         data: {
-          label: f.entry.step,
+          label: getDisplayLabel(f.entry.step, f.entry),
           queue: f.entry.queue,
           engineRetryMax: f.entry.engineRetryMax,
           workerId: f.entry.workerId,
@@ -234,14 +244,14 @@ export function useFlowLayout(props: {
             id: `step:${name}`,
             position: { x: xPos, y: yPos },
             data: {
-              label: name,
+              ...step,
+              label: getDisplayLabel(name, step),
               status: mapStatusToNodeStatus(s?.status),
               queue: step?.queue,
               workerId: step?.workerId,
               attempt: s?.attempt,
               error: s?.error,
               __nodeHeight: nodeHeight,
-              ...step,
             },
             type: 'flow-step',
             style: { minWidth: `${nodeWidth}px`, zIndex: 20 },

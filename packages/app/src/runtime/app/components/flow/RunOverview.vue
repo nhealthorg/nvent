@@ -84,6 +84,7 @@
         v-else
         v-model="selectedStep"
         :items="radioItems"
+        @inspect-step-result="emit('inspect-step-result', $event)"
       />
     </div>
   </div>
@@ -116,6 +117,7 @@ const emit = defineEmits<{
   'select-step': [stepKey: string | null]
   'cancel-flow': []
   'restart-flow': []
+  'inspect-step-result': [stepKey: string]
 }>()
 
 const executableStepCount = computed(() => props.steps.filter(step => !step?.isLoopGroup).length)

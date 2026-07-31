@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, useComponentRouter, onMounted, onUnmounted, watch } from '#imports'
-import type { ComputedRef, Ref } from 'vue'
+import type { Ref } from 'vue'
 import { useWorkflowAnalysis } from '../../composables/useWorkflowAnalysis'
 
 const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis()
@@ -63,29 +63,9 @@ interface WorkflowStopResponse {
   queue_cleanup_errors?: Record<string, string>
 }
 
-interface WorkflowTimelineResponse {
-  trace_ids: string[]
-  spans: any[]
-  logs: any[]
-}
-
-interface WorkflowStatesResponse {
-  states: Array<{ key: string, value: unknown }>
-}
-
-interface WorkflowStreamsResponse {
-  streams: Array<{
-    streamName: string
-    items: Array<{
-      id: string
-      item_id?: string
-      run_id?: string
-      node_uid?: string
-      function_id?: string
-      ts_unix_ms?: number
-      data?: unknown
-    }>
-  }>
+interface WorkflowNodeResultResponse {
+  node_uid: string
+  result: unknown
 }
 
 interface UseWorkflowRunDetailResult {
@@ -93,35 +73,13 @@ interface UseWorkflowRunDetailResult {
   statusPending: Ref<boolean>
   statusError: Ref<unknown>
   refreshStatus: () => Promise<void>
-  timeline: Ref<WorkflowTimelineResponse | null>
-  timelinePending: Ref<boolean>
-  timelineError: Ref<unknown>
-  refreshTimeline: () => Promise<void>
-  workflowStates: Ref<WorkflowStatesResponse | null>
-  statesPending: Ref<boolean>
-  statesError: Ref<unknown>
-  refreshStates: () => Promise<void>
-  workflowStreams: Ref<WorkflowStreamsResponse | null>
-  streamsPending: Ref<boolean>
-  streamsError: Ref<unknown>
-  refreshStreams: () => Promise<void>
-  isLive: ComputedRef<boolean>
   refreshAll: () => Promise<void>
 }
 
 function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult {
   const status = ref<WorkflowRunStatusResponse | null>(null)
-  const timeline = ref<WorkflowTimelineResponse | null>(null)
-  const workflowStates = ref<WorkflowStatesResponse | null>(null)
-  const workflowStreams = ref<WorkflowStreamsResponse | null>(null)
   const statusPending = ref(false)
   const statusError = ref<unknown>(null)
-  const timelinePending = ref(false)
-  const timelineError = ref<unknown>(null)
-  const statesPending = ref(false)
-  const statesError = ref<unknown>(null)
-  const streamsPending = ref(false)
-  const streamsError = ref<unknown>(null)
 
   async function refreshStatus() {
     statusPending.value = true
@@ -139,64 +97,8 @@ function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult
     }
   }
 
-  async function refreshTimeline() {
-    timelinePending.value = true
-    timelineError.value = null
-    try {
-      timeline.value = await $fetch<WorkflowTimelineResponse>('/api/_workflows/timeline', {
-        params: { run_id: runIdRef.value, limit: 500 },
-      })
-    }
-    catch (error) {
-      timelineError.value = error
-    }
-    finally {
-      timelinePending.value = false
-    }
-  }
-
-  async function refreshStates() {
-    statesPending.value = true
-    statesError.value = null
-    try {
-      workflowStates.value = await $fetch<WorkflowStatesResponse>('/api/_workflows/states', {
-        params: { run_id: runIdRef.value, limit: 500 },
-      })
-    }
-    catch (error) {
-      statesError.value = error
-    }
-    finally {
-      statesPending.value = false
-    }
-  }
-
-  async function refreshStreams() {
-    streamsPending.value = true
-    streamsError.value = null
-    try {
-      workflowStreams.value = await $fetch<WorkflowStreamsResponse>('/api/_workflows/streams', {
-        params: { run_id: runIdRef.value, limit: 500 },
-      })
-    }
-    catch (error) {
-      streamsError.value = error
-    }
-    finally {
-      streamsPending.value = false
-    }
-  }
-
-  const isLive = computed(() => {
-    const currentStatus = status.value?.status
-    return currentStatus === 'running' || currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting'
-  })
-
   async function refreshAll() {
-    await Promise.all([
-      refreshStatus(),
-      refreshTimeline(),
-    ])
+    await refreshStatus()
   }
 
   onMounted(() => {
@@ -212,19 +114,6 @@ function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult
     statusPending,
     statusError,
     refreshStatus,
-    timeline,
-    timelinePending,
-    timelineError,
-    refreshTimeline,
-    workflowStates,
-    statesPending,
-    statesError,
-    refreshStates,
-    workflowStreams,
-    streamsPending,
-    streamsError,
-    refreshStreams,
-    isLive,
     refreshAll,
   }
 }
@@ -234,18 +123,6 @@ const {
   statusPending: pending,
   statusError: error,
   refreshStatus: refresh,
-  timeline,
-  timelinePending,
-  timelineError,
-  refreshTimeline,
-  workflowStates,
-  statesPending,
-  statesError,
-  refreshStates,
-  workflowStreams,
-  streamsPending,
-  streamsError,
-  refreshStreams,
   refreshAll: refreshAllData,
 } = useWorkflowRunDetail(runId)
 
@@ -270,29 +147,6 @@ const normalizedStatus = computed(() => {
   if (currentStatus === 'error') return 'failed'
   if (currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting') return 'running'
   return currentStatus
-})
-
-function nanosToMs(value: unknown): number {
-  const num = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(num) || num <= 0) return 0
-  return Math.floor(num / 1_000_000)
-}
-
-function normalizeTraceAttributes(value: unknown): Record<string, any> {
-  if (Array.isArray(value)) {
-    return Object.fromEntries(
-      value
-        .filter((entry): entry is [string, unknown] => Array.isArray(entry) && entry.length >= 2 && typeof entry[0] === 'string')
-        .map(([key, attrValue]) => [key, attrValue]),
-    )
-  }
-
-  if (value && typeof value === 'object') return value as Record<string, any>
-  return {}
-}
-
-const workflowStreamRefs = computed(() => {
-  return workflowStreams.value?.streams ?? []
 })
 
 type LoopGroupInfo = {
@@ -443,6 +297,7 @@ const flowMeta = computed(() => {
     const loopGroup = loopGroups.value.byNodeId[id]
     steps[id] = {
       name: id,
+      label: node.label,
       workerId: node.function?.id,
       runtime: node.function?.runtime,
       dependsOn: node.depends_on || [],
@@ -466,6 +321,7 @@ const flowMeta = computed(() => {
       const node = definition.value.nodes[entryId]
       entry = {
         step: entryId,
+        label: node.label,
         queue: node.function?.queue || 'default',
         engineRetryMax: node.function?.engine_retry?.max_attempts,
         workerId: node.function.id,
@@ -483,262 +339,6 @@ const flowMeta = computed(() => {
     loopGroups: loopGroups.value.groups,
     analyzed,
   }
-})
-
-const stepNameBySpanId = computed<Record<string, string>>(() => {
-  const out: Record<string, string> = {}
-  for (const span of timeline.value?.spans ?? []) {
-    const attrs = normalizeTraceAttributes(span?.attributes)
-    const stepName = attrs['workflow.node_uid'] || attrs['iii.function.id'] || span?.name
-    if (span?.span_id && stepName) out[span.span_id] = String(stepName)
-  }
-  return out
-})
-
-const stepNameByTraceId = computed<Record<string, string>>(() => {
-  const out: Record<string, string> = {}
-  for (const span of timeline.value?.spans ?? []) {
-    const attrs = normalizeTraceAttributes(span?.attributes)
-    const stepName = attrs['workflow.node_uid'] || attrs['iii.function.id'] || span?.name
-    if (span?.trace_id && stepName && !out[span.trace_id]) out[span.trace_id] = String(stepName)
-  }
-  return out
-})
-
-const timelineEvents = computed(() => {
-  const items: any[] = []
-  const lifecycleKeys = new Set<string>()
-
-  if (status.value?.created_at) {
-    items.push({
-      id: `flow-start-${status.value.created_at}`,
-      ts: status.value.created_at,
-      type: 'flow.start',
-      data: {
-        runId: runId.value,
-        status: status.value.status,
-      },
-    })
-  }
-
-  if (normalizedStatus.value === 'completed' || normalizedStatus.value === 'failed') {
-    items.push({
-      id: `flow-terminal-${status.value?.updated_at || 0}`,
-      ts: status.value?.updated_at,
-      type: normalizedStatus.value === 'completed' ? 'flow.completed' : 'flow.failed',
-      data: {
-        runId: runId.value,
-        status: normalizedStatus.value,
-      },
-    })
-  }
-
-  Object.entries(status.value?.nodes ?? {}).forEach(([id, checkpoint]: [string, any]) => {
-    if (checkpoint.retries > 0) {
-      items.push({
-        id: `step-retry-${id}-${checkpoint.retries}`,
-        ts: checkpoint.pending_at || status.value?.updated_at,
-        type: 'step.retry',
-        stepName: id,
-        data: { retries: checkpoint.retries },
-      })
-    }
-  })
-
-  for (const span of timeline.value?.spans ?? []) {
-    const attrs = normalizeTraceAttributes(span?.attributes)
-    const stepName = attrs['workflow.node_uid'] || attrs['iii.function.id'] || span?.name
-    const pending = Boolean(span?.pending || span?.end_time_unix_nano === 0)
-    for (const event of span?.events ?? []) {
-      const eventAttrs = normalizeTraceAttributes(event?.attributes)
-      const eventName = String(event?.name || '')
-      const eventStepName = eventAttrs['workflow.node_uid'] || eventAttrs['iii.function.id'] || stepName
-      const eventTs = nanosToMs(event?.timestamp_unix_nano) || nanosToMs(span?.start_time_unix_nano)
-
-      let eventType: string | null = null
-      if (eventName === 'workflow.node.started') eventType = 'step.started'
-      else if (eventName === 'workflow.node.completed') eventType = 'step.completed'
-      else if (eventName === 'workflow.node.failed') eventType = 'step.failed'
-      else if (eventName === 'workflow.state.set') eventType = 'state.set'
-      else if (eventName === 'workflow.state.delete') eventType = 'state.delete'
-      else if (eventName === 'workflow.stream.publish' || eventName === 'workflow.stream.set') eventType = 'stream.publish'
-      else if (eventName === 'workflow.stream.delete') eventType = 'stream.delete'
-
-      if (!eventType || !eventStepName) continue
-      lifecycleKeys.add(`${eventStepName}:${eventType}`)
-      items.push({
-        id: `span-event-${span?.span_id || 'unknown'}-${eventName}-${eventTs}`,
-        ts: eventTs,
-        type: eventType,
-        stepName: String(eventStepName),
-        data: {
-          name: span?.name,
-          pending,
-          spanId: span?.span_id,
-          status: span?.status,
-          traceId: span?.trace_id,
-          key: eventAttrs['workflow.state.key'],
-          value: eventAttrs['workflow.state.value'],
-          ...attrs,
-          ...eventAttrs,
-        },
-      })
-    }
-
-    if (pending && stepName && !lifecycleKeys.has(`${stepName}:step.started`)) {
-      items.push({
-        id: `span-pending-${span?.span_id || stepName}`,
-        ts: nanosToMs(span?.start_time_unix_nano) || status.value?.updated_at || Date.now(),
-        type: 'step.running',
-        stepName: String(stepName),
-        data: {
-          name: span?.name,
-          pending,
-          spanId: span?.span_id,
-          status: span?.status,
-          traceId: span?.trace_id,
-          ...attrs,
-        },
-      })
-    }
-  }
-
-  Object.entries(status.value?.nodes ?? {}).forEach(([id, checkpoint]: [string, any]) => {
-    if (checkpoint.pending_at && !lifecycleKeys.has(`${id}:step.started`)) {
-      items.push({
-        id: `step-running-${id}-${checkpoint.pending_at}`,
-        ts: checkpoint.pending_at,
-        type: checkpoint.state === 'running' ? 'step.running' : 'step.started',
-        stepName: id,
-        data: {
-          state: checkpoint.state,
-          retries: checkpoint.retries,
-          workerName: checkpoint.worker_name,
-        },
-      })
-    }
-
-    if (checkpoint.completed_at && !lifecycleKeys.has(`${id}:${checkpoint.result_error ? 'step.failed' : 'step.completed'}`)) {
-      items.push({
-        id: `step-completed-${id}-${checkpoint.completed_at}`,
-        ts: checkpoint.completed_at,
-        type: checkpoint.result_error ? 'step.failed' : 'step.completed',
-        stepName: id,
-        data: {
-          error: checkpoint.result_error,
-          retries: checkpoint.retries,
-          workerName: checkpoint.worker_name,
-        },
-      })
-    }
-
-    if (checkpoint.result_error && !checkpoint.completed_at && !lifecycleKeys.has(`${id}:step.failed`)) {
-      items.push({
-        id: `step-error-${id}-${checkpoint.pending_at || status.value?.updated_at || 0}`,
-        ts: checkpoint.pending_at || status.value?.updated_at,
-        type: 'step.failed',
-        stepName: id,
-        data: {
-          error: checkpoint.result_error,
-          retries: checkpoint.retries,
-          workerName: checkpoint.worker_name,
-        }
-      })
-    }
-  })
-
-  items.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
-  return items.slice(0, 100)
-})
-
-const timelineLogs = computed(() => {
-  return (timeline.value?.logs ?? []).map((log: any) => {
-    const nestedLogData = log?.attributes?.['log.data'] || {}
-    const systemKeys = new Set([
-      'level',
-      'trace_id',
-      'span_id',
-      'workflow.run_id',
-      'workflow.node_uid',
-      'iii.function.id',
-      'workflow.runtime',
-    ])
-    const metadata = Object.fromEntries(
-      Object.entries(nestedLogData).filter(([key]) => !systemKeys.has(key)),
-    )
-
-    const traceId = log?.trace_id || nestedLogData?.trace_id
-    const spanId = log?.span_id || nestedLogData?.span_id
-
-    const stepName = log?.attributes?.['workflow.node_uid']
-      || nestedLogData?.['workflow.node_uid']
-      || stepNameBySpanId.value[spanId]
-      || stepNameByTraceId.value[traceId]
-      || log?.attributes?.['iii.function.id']
-      || nestedLogData?.['iii.function.id']
-
-    const level = String(nestedLogData?.level || log?.severity_text || 'INFO').toLowerCase()
-    const message = String(log?.body || '')
-
-    return {
-      id: `log-${log?.timestamp_unix_nano}-${log?.span_id || ''}`,
-      ts: nanosToMs(log?.timestamp_unix_nano),
-      type: 'log',
-      stepName,
-      level,
-      message,
-      data: {
-        level,
-        message,
-        serviceName: log?.service_name,
-        traceId,
-        spanId,
-        metadata,
-        workflow: {
-          runId: log?.attributes?.['workflow.run_id'] || nestedLogData?.['workflow.run_id'],
-          nodeUid: log?.attributes?.['workflow.node_uid'] || nestedLogData?.['workflow.node_uid'],
-          functionId: log?.attributes?.['iii.function.id'] || nestedLogData?.['iii.function.id'],
-          runtime: log?.attributes?.['workflow.runtime'] || nestedLogData?.['workflow.runtime'],
-        },
-      },
-    }
-  })
-})
-
-const timelineStates = computed(() => {
-  return (workflowStates.value?.states ?? []).map((item: any) => ({
-    id: `state-${item.id || `${item.key}-${item.ts_unix_ms || 0}`}`,
-    ts: Number(item.ts_unix_ms || 0),
-    type: item.kind === 'delete' ? 'state.delete' : 'state.set',
-    stepName: item.node_uid || item.function_id,
-    data: {
-      key: item.key,
-      value: item.value,
-      nodeUid: item.node_uid,
-      functionId: item.function_id,
-      runId: item.run_id,
-    },
-  }))
-})
-
-const timelineStreams = computed(() => {
-  return timelineEvents.value
-    .filter(item => item.type === 'stream.publish' || item.type === 'stream.delete')
-    .map((item: any, index: number) => ({
-      id: item.id || `stream-${item.data?.streamName || item.data?.['workflow.stream.name'] || index}`,
-      ts: item.ts,
-      type: item.type,
-      stepName: item.stepName,
-      data: {
-        streamName: String(item.data?.streamName || item.data?.['workflow.stream.name'] || ''),
-        itemId: item.data?.itemId || item.data?.['workflow.stream.item_id'],
-        nodeUid: item.stepName || item.data?.nodeUid || item.data?.['workflow.node_uid'],
-        functionId: item.data?.functionId || item.data?.['iii.function.id'],
-        preview: item.data?.preview || item.data?.['workflow.stream.preview'],
-        eventName: item.type,
-        runId: runId.value,
-      },
-    }))
 })
 
 const stepStates = computed(() => {
@@ -809,6 +409,7 @@ const stepList = computed(() => {
   if (!definition.value?.nodes) return []
 
   const ordered = sortNodesByLevel(definition.value.nodes)
+  const nodeStates = status.value?.nodes ?? {}
   const groupsById = Object.fromEntries(loopGroups.value.groups.map(group => [group.id, group])) as Record<string, LoopGroupInfo>
   const insertedGroups = new Set<string>()
   const out: any[] = []
@@ -840,6 +441,12 @@ const stepList = computed(() => {
         .map(memberId => stepStates.value[memberId])
         .filter(Boolean)
       const statuses = memberStates.map((memberState: any) => String(memberState?.status || '').toLowerCase())
+      const loopResultCount = Object.entries(nodeStates)
+        .filter(([uid, cp]: [string, any]) => {
+          const base = uid.split('#')[0]
+          return group.nodeIds.includes(base || '') && Boolean(cp?.result_ref)
+        })
+        .length
 
       let groupStatus = 'idle'
       if (statuses.some(s => s === 'failed' || s === 'error')) groupStatus = 'failed'
@@ -864,12 +471,18 @@ const stepList = computed(() => {
         loopItemsFailed: failedItems,
         loopItemsPending: pendingItems,
         loopActiveIndex: activeIndex,
+        canInspectResult: loopResultCount > 0,
       })
       insertedGroups.add(group.id)
     }
 
+    const loopChildResultUids = Object.entries(nodeStates)
+      .filter(([uid, cp]: [string, any]) => uid.startsWith(`${id}#`) && Boolean(cp?.result_ref))
+      .map(([uid]) => uid)
+
     out.push({
       key: id,
+      label: node?.label,
       status: state?.status || 'idle',
       error: state?.error,
       result: state?.result,
@@ -883,6 +496,8 @@ const stepList = computed(() => {
       inLoopGroup: Boolean(group),
       isLoopLeader: Boolean(group?.nodeIds[0] === id),
       functionId: node?.function?.id,
+      canInspectResult: Boolean(state?.result) || loopChildResultUids.length > 0,
+      loopChildResultUids,
     })
   }
 
@@ -890,6 +505,13 @@ const stepList = computed(() => {
 })
 
 const selectedStep = ref<string | null>(null)
+const isResultSlideoverOpen = ref(false)
+const selectedResultStepKey = ref<string | null>(null)
+const selectedResultNodeUid = ref<string | null>(null)
+const resultNodeUidOptions = ref<string[]>([])
+const resultPending = ref(false)
+const resultError = ref<string | null>(null)
+const selectedNodeResult = ref<unknown>(null)
 
 function baseStepName(stepName?: string | null): string | null {
   if (!stepName) return null
@@ -902,6 +524,12 @@ const loopGroupNodeIdsByKey = computed<Record<string, string[]>>(() => {
     map[`loop-group:${group.id}`] = group.nodeIds
   }
   return map
+})
+
+const selectedStepNodeIds = computed<string[]>(() => {
+  const current = selectedStep.value
+  if (!current || !current.startsWith('loop-group:')) return []
+  return loopGroupNodeIdsByKey.value[current] || []
 })
 
 function stepMatchesSelection(stepName: string | null | undefined, selection: string | null): boolean {
@@ -917,44 +545,79 @@ function stepMatchesSelection(stepName: string | null | undefined, selection: st
   return base === selection
 }
 
-const filteredTimelineEvents = computed(() => {
-  if (!selectedStep.value) return timelineEvents.value
+function candidateResultUidsForStep(stepKey: string): string[] {
+  const nodeStates = status.value?.nodes ?? {}
 
-  return timelineEvents.value.filter((item: any) => {
-    if (!item.stepName) {
-      return item.type === 'flow.start' || item.type === 'flow.completed' || item.type === 'flow.failed'
-    }
-    return stepMatchesSelection(item.stepName, selectedStep.value)
-  })
-})
+  if (stepKey.startsWith('loop-group:')) {
+    const members = loopGroupNodeIdsByKey.value[stepKey] || []
+    return Object.entries(nodeStates)
+      .filter(([uid, cp]: [string, any]) => {
+        const base = uid.split('#')[0]
+        return members.includes(base || '') && Boolean(cp?.result_ref)
+      })
+      .map(([uid]) => uid)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  }
 
-const filteredTimelineLogs = computed(() => {
-  if (!selectedStep.value) return timelineLogs.value
-  return timelineLogs.value.filter((item: any) => stepMatchesSelection(item.stepName, selectedStep.value))
-})
+  const direct = nodeStates[stepKey]
+  if (direct?.result_ref) return [stepKey]
 
-const filteredTimelineStates = computed(() => {
-  if (!selectedStep.value) return timelineStates.value
-  return timelineStates.value.filter((item: any) => stepMatchesSelection(item.stepName, selectedStep.value))
-})
+  return Object.entries(nodeStates)
+    .filter(([uid, cp]: [string, any]) => uid.startsWith(`${stepKey}#`) && Boolean(cp?.result_ref))
+    .map(([uid]) => uid)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+}
 
-const filteredTimelineStreams = computed(() => {
-  if (!selectedStep.value) return timelineStreams.value
-  return timelineStreams.value.filter((item: any) => stepMatchesSelection(item.stepName, selectedStep.value))
+async function fetchNodeResult(nodeUid: string) {
+  resultPending.value = true
+  resultError.value = null
+  try {
+    const response = await $fetch<WorkflowNodeResultResponse>('/api/_workflows/node-result', {
+      params: {
+        run_id: runId.value,
+        node_uid: nodeUid,
+      },
+    })
+    selectedNodeResult.value = response?.result ?? null
+  }
+  catch (error: any) {
+    resultError.value = error?.data?.statusMessage || error?.message || 'Result loading failed'
+    selectedNodeResult.value = null
+  }
+  finally {
+    resultPending.value = false
+  }
+}
+
+async function openResultSlideover(stepKey: string) {
+  selectedResultStepKey.value = stepKey
+  resultNodeUidOptions.value = candidateResultUidsForStep(stepKey)
+  selectedResultNodeUid.value = resultNodeUidOptions.value[0] || null
+  selectedNodeResult.value = null
+  resultError.value = null
+  isResultSlideoverOpen.value = true
+
+  if (selectedResultNodeUid.value) {
+    await fetchNodeResult(selectedResultNodeUid.value)
+  }
+}
+
+watch(selectedResultNodeUid, (nextUid, prevUid) => {
+  if (!isResultSlideoverOpen.value) return
+  if (!nextUid || nextUid === prevUid) return
+  void fetchNodeResult(nextUid)
 })
 
 async function refreshAll() {
-  await Promise.all([refresh(), refreshTimeline()])
+  await refresh()
 }
 
 async function openStateSlideover() {
   isStateSlideoverOpen.value = true
-  await refreshStates()
 }
 
 async function openStreamSlideover() {
   isStreamSlideoverOpen.value = true
-  await refreshStreams()
 }
 
 function openCancelSlideover() {
@@ -1076,10 +739,6 @@ const nodeStats = computed(() => {
   return stats
 })
 
-const timelineSpanCount = computed(() => timeline.value?.spans?.length ?? 0)
-const timelineLogCount = computed(() => timeline.value?.logs?.length ?? 0)
-const timelineEventCount = computed(() => timelineEvents.value.length)
-
 const statusQueueReceipts = computed(() => status.value?.queue_receipts ?? [])
 const statusQueueReceiptCount = computed(() => statusQueueReceipts.value.length)
 const statusQueueReceiptQueueCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.queue)).size)
@@ -1098,6 +757,41 @@ const loopOverviewStats = computed(() => {
     totalItems,
     completedItems,
   }
+})
+
+const loopIndexOptions = computed<Array<{ value: string, label: string }>>(() => {
+  const loopStats = status.value?.loop_stats || {}
+  const selected = selectedStep.value
+
+  if (selected && selected.startsWith('loop-group:')) {
+    const memberNodeIds = loopGroupNodeIdsByKey.value[selected] || []
+    const values = memberNodeIds
+      .map(nodeId => loopStats[nodeId])
+      .filter(Boolean)
+
+    const maxTotal = values.reduce((max, entry) => Math.max(max, Number(entry?.total_items || 0)), 0)
+    if (maxTotal <= 0) return []
+
+    const options: Array<{ value: string, label: string }> = [{ value: '', label: 'All loop items' }]
+    for (let i = 0; i < maxTotal; i++) {
+      options.push({ value: String(i), label: `Index #${i}` })
+    }
+    return options
+  }
+
+  if (selected && !loopStats[selected]) {
+    return []
+  }
+
+  const values = selected ? [loopStats[selected]].filter(Boolean) : Object.values(loopStats)
+  const maxTotal = values.reduce((max, entry) => Math.max(max, Number(entry?.total_items || 0)), 0)
+  if (maxTotal <= 0) return []
+
+  const options: Array<{ value: string, label: string }> = [{ value: '', label: 'All loop items' }]
+  for (let i = 0; i < maxTotal; i++) {
+    options.push({ value: String(i), label: `Index #${i}` })
+  }
+  return options
 })
 
 const topologyStats = computed(() => {
@@ -1127,21 +821,18 @@ const topologyStats = computed(() => {
   }
 })
 
-const filteredWorkflowStates = computed(() => {
-  return workflowStates.value?.states ?? []
+const formattedNodeResult = computed(() => {
+  if (selectedNodeResult.value === null || selectedNodeResult.value === undefined) {
+    return 'null'
+  }
+  try {
+    return JSON.stringify(selectedNodeResult.value, null, 2)
+  }
+  catch {
+    return String(selectedNodeResult.value)
+  }
 })
 
-function exportStates() {
-  const data = filteredWorkflowStates.value
-  const json = JSON.stringify(data, null, 2)
-  const blob = new Blob([json], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `workflow-states-${runId.value}-${Date.now()}.json`
-  a.click()
-  URL.revokeObjectURL(url)
-}
 </script>
 
 <template>
@@ -1180,6 +871,33 @@ function exportStates() {
       </template>
     </UModal>
 
+    <USlideover v-model:open="isResultSlideoverOpen" title="Node Result">
+      <template #content>
+        <div class="h-full flex flex-col bg-white dark:bg-zinc-950">
+          <div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 space-y-2">
+            <div class="text-xs text-zinc-500 dark:text-zinc-400">Step</div>
+            <div class="text-sm font-medium text-zinc-900 dark:text-zinc-100 break-all">{{ selectedResultStepKey || 'n/a' }}</div>
+            <div v-if="resultNodeUidOptions.length > 1" class="space-y-1">
+              <div class="text-xs text-zinc-500 dark:text-zinc-400">Loop item</div>
+              <select
+                v-model="selectedResultNodeUid"
+                class="w-full text-xs rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1"
+              >
+                <option v-for="uid in resultNodeUidOptions" :key="uid" :value="uid">{{ uid }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex-1 overflow-auto p-4">
+            <div v-if="resultPending" class="text-sm text-zinc-500 dark:text-zinc-400">Loading result...</div>
+            <div v-else-if="resultError" class="text-sm text-red-600 dark:text-red-400">{{ resultError }}</div>
+            <div v-else-if="!selectedResultNodeUid" class="text-sm text-zinc-500 dark:text-zinc-400">No result available for this step yet.</div>
+            <pre v-else class="text-xs leading-5 whitespace-pre-wrap break-words rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-3">{{ formattedNodeResult }}</pre>
+          </div>
+        </div>
+      </template>
+    </USlideover>
+
     <!-- Header -->
     <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
       <div class="flex items-center justify-between w-full">
@@ -1211,11 +929,8 @@ function exportStates() {
             />
             <template #content>
               <NventFlowStateInspector
-                :states="filteredWorkflowStates"
-                :is-loading="statesPending"
-                :error-message="statesError ? 'State data could not be loaded' : null"
+                :run-id="runId"
                 :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
-                @export="exportStates"
               />
             </template>
           </USlideover>
@@ -1233,9 +948,7 @@ function exportStates() {
             />
             <template #content>
               <NventFlowStreamInspector
-                :streams="workflowStreamRefs"
-                :is-loading="streamsPending"
-                :error-message="streamsError ? 'Stream references could not be loaded' : null"
+                :run-id="runId"
                 :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
               />
             </template>
@@ -1403,17 +1116,13 @@ function exportStates() {
                       <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.retries }}</div>
                     </div>
                     <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Spans / Logs</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ timelineSpanCount }} / {{ timelineLogCount }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
                       <div class="text-[10px] uppercase tracking-wide text-zinc-500">Queue Receipts</div>
                       <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ statusQueueReceiptCount }}</div>
                     </div>
                   </div>
 
                   <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
-                    Events {{ timelineEventCount }}. Receipt queues {{ statusQueueReceiptQueueCount }}, receipt nodes {{ statusQueueReceiptNodeCount }}.
+                    Receipt queues {{ statusQueueReceiptQueueCount }}, receipt nodes {{ statusQueueReceiptNodeCount }}.
                   </div>
                 </div>
 
@@ -1515,6 +1224,7 @@ function exportStates() {
             @select-step="selectedStep = $event"
             @cancel-flow="cancelRun"
             @restart-flow="() => {}"
+            @inspect-step-result="openResultSlideover"
           />
           <div v-else-if="pending" class="p-8 space-y-4">
             <div class="h-8 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse w-1/2"></div>
@@ -1528,14 +1238,14 @@ function exportStates() {
 
         <div class="w-full xl:w-[28rem] 2xl:w-[32rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden">
           <NventFlowRunTimeline
-            :events="filteredTimelineEvents"
-            :logs="filteredTimelineLogs"
-            :states="filteredTimelineStates"
-            :streams="filteredTimelineStreams"
-            :timeline-loading="timelinePending"
-            :timeline-error="timelineError"
+            :run-id="runId"
+            :run-status="normalizedStatus || 'unknown'"
+            :started-at="status?.created_at"
+            :completed-at="status?.updated_at"
+            :node-checkpoints="status?.nodes"
             :selected-step="selectedStep"
-            :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
+            :selected-step-node-ids="selectedStepNodeIds"
+            :loop-index-options="loopIndexOptions"
           />
         </div>
       </div>

@@ -15,6 +15,63 @@ interface WorkflowStreamGroup {
   items: WorkflowStreamMessage[]
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function asFiniteNumber(value: unknown): number | undefined {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return undefined
+  return n
+}
+
+function timestampFromWorkflowItemId(value: unknown): number | undefined {
+  const id = String(value || '')
+  const match = /^st_(\d+)_/.exec(id)
+  if (!match) return undefined
+  return asFiniteNumber(match[1])
+}
+
+function resolveTimestampMs(item: any, keyHint?: string): number {
+  const dataRecord = asRecord(item?.data) ?? asRecord(item?.value) ?? asRecord(item)
+
+  const directCandidates = [
+    item?.ts_unix_ms,
+    item?.timestamp_unix_ms,
+    item?.timestamp_ms,
+    item?.ts,
+    item?.created_at,
+  ]
+
+  for (const candidate of directCandidates) {
+    const parsed = asFiniteNumber(candidate)
+    if (parsed && parsed > 0) return parsed
+  }
+
+  if (dataRecord) {
+    const nestedCandidates = [
+      dataRecord.ts_unix_ms,
+      dataRecord.timestamp_unix_ms,
+      dataRecord.timestamp_ms,
+      dataRecord.ts,
+      dataRecord.created_at,
+    ]
+    for (const candidate of nestedCandidates) {
+      const parsed = asFiniteNumber(candidate)
+      if (parsed && parsed > 0) return parsed
+    }
+  }
+
+  const idCandidates = [item?.item_id, item?.id, keyHint]
+  for (const candidate of idCandidates) {
+    const parsed = timestampFromWorkflowItemId(candidate)
+    if (parsed && parsed > 0) return parsed
+  }
+
+  return 0
+}
+
 function normalizeStreamItems(result: unknown): WorkflowStreamMessage[] {
   if (Array.isArray(result)) {
     return result.map((item: any, index: number) => ({
@@ -23,7 +80,7 @@ function normalizeStreamItems(result: unknown): WorkflowStreamMessage[] {
       run_id: item?.run_id || undefined,
       node_uid: item?.node_uid || undefined,
       function_id: item?.function_id || undefined,
-      ts_unix_ms: Number(item?.ts_unix_ms || item?.ts || 0),
+      ts_unix_ms: resolveTimestampMs(item),
       data: item?.data ?? item,
     }))
   }
@@ -42,7 +99,7 @@ function normalizeStreamItems(result: unknown): WorkflowStreamMessage[] {
       run_id: item?.run_id || undefined,
       node_uid: item?.node_uid || undefined,
       function_id: item?.function_id || undefined,
-      ts_unix_ms: Number(item?.ts_unix_ms || item?.ts || 0),
+      ts_unix_ms: resolveTimestampMs(item, item?.key),
       data: item?.value ?? item?.data ?? item,
     }))
   }
@@ -71,11 +128,12 @@ export default defineEventHandler(async (event) => {
       },
     })
 
-    const streamNames = Array.isArray((result as { streams?: string[] })?.streams)
-      ? (result as { streams?: string[] }).streams
+    const resultStreams = (result as any)?.streams
+    const streamNames = (Array.isArray(resultStreams)
+      ? resultStreams
       : Array.isArray(result)
         ? result.filter((item): item is string => typeof item === 'string')
-        : []
+        : []) as string[]
 
     const streams: WorkflowStreamGroup[] = await Promise.all(
       streamNames.map(async (streamName) => {

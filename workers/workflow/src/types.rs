@@ -101,9 +101,26 @@ pub struct WorkflowMetadata {
     /// Optional description of what this workflow does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Optional lifecycle hooks triggered by the workflow engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<WorkflowLifecycleHooks>,
     /// Tags for categorization and filtering.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// Optional hook function ids for workflow lifecycle events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowLifecycleHooks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_delete: Option<String>,
 }
 
 /// Selects the node whose result becomes the run's `result`.
@@ -121,6 +138,9 @@ pub struct OutputRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeDef {
+    /// User-facing node label for UI display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Function to execute for this node.
     pub function: FunctionSpec,
     pub input: InputSpec,

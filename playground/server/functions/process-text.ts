@@ -7,6 +7,7 @@ import { defineFunction } from '#nvent/server'
  * Output: { uppercase: string, lowercase: string, length: number }
  */
 export default defineFunction({
+  label: 'Process Text',
   description: 'Processes text - converts to uppercase, lowercase, and counts length',
   workflow: true,
   handler: async (input: { text: string }, ctx) => {

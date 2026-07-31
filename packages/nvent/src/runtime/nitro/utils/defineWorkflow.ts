@@ -27,6 +27,7 @@ async function getRegistry() {
  * Falls back to heuristics if registry is not available.
  */
 async function getFunctionExecutionConfig(functionId: string): Promise<{
+  label?: string
   runtime: 'nodejs' | 'python' | 'rust' | 'unknown'
   queue?: string
   engine_retry?: { max_attempts?: number }
@@ -41,6 +42,7 @@ async function getFunctionExecutionConfig(functionId: string): Promise<{
           ? fn.workflow.queue
           : undefined
         return {
+          label: typeof fn.label === 'string' ? fn.label : undefined,
           runtime: fn.runtime || 'unknown',
           queue,
           engine_retry: typeof fn.workflow === 'object' && fn.workflow.engine_retry
@@ -128,6 +130,7 @@ export interface WorkflowContext {
    * Low-level node definition (full control over spec)
    */
   node: <T = any>(id: string, spec: {
+    label?: string
     function?: string | {
       id: string
       runtime?: 'nodejs' | 'python' | 'rust' | 'unknown'
@@ -267,6 +270,7 @@ function isWorkflowLoopItemRef(value: unknown): value is WorkflowLoopItemRef {
 }
 
 type CallOptions = {
+  label?: string
   queue?: string
   runtime?: 'nodejs' | 'python' | 'rust' | 'unknown'
   engine_retry?: { max_attempts?: number }
@@ -276,7 +280,7 @@ type CallOptions = {
 function isCallOptions(value: unknown): value is CallOptions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const v = value as Record<string, unknown>
-  return 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
+  return 'label' in v || 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
 }
 
 type ParsedCall = {
@@ -299,7 +303,7 @@ function parseCallArguments(args: any[]): ParsedCall {
 
   if (work.length === 1) {
     functionId = work[0]
-    nodeId = functionId.replace(/::/g, '_')
+    nodeId = functionId
     input = 'run_input'
   }
   else if (work.length === 2) {
@@ -309,7 +313,7 @@ function parseCallArguments(args: any[]): ParsedCall {
       input = 'run_input'
     } else {
       functionId = work[0]
-      nodeId = functionId.replace(/::/g, '_')
+      nodeId = functionId
       input = work[1]
     }
   }
@@ -352,9 +356,15 @@ type InferHandlerInput<TTriggers extends TriggerConfig[]> =
   [TTriggers[number]['type']] extends ['http'] ? import('./defineFunction').HttpRequest : unknown
 
 export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends TriggerConfig[] = TriggerConfig[]> {
-  name: string
+  name?: string
   handler: WorkflowHandler<TInput, TOutput>
   description?: string
+  hooks?: {
+    onStart?: string
+    onEnd?: string
+    onError?: string
+    onDelete?: string
+  }
   triggers?: TTriggers
   /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
   input?: Parseable<TInput>
@@ -404,6 +414,12 @@ export function defineWorkflow<
             metadata: {
               name: options.name,
               description: options.description,
+              hooks: options.hooks ? {
+                on_start: options.hooks.onStart,
+                on_end: options.hooks.onEnd,
+                on_error: options.hooks.onError,
+                on_delete: options.hooks.onDelete,
+              } : undefined,
               created_by_worker: `nvent-nodejs-${process.pid}`,
             },
           },
@@ -497,6 +513,7 @@ export function defineWorkflow<
 
           // Map to Rust NodeDef structure
           const nodeDef: any = {
+            label: spec.label,
             depends_on: dependsOn,
             input: normalizeInput(spec.input, dataDeps),
             fanout: typeof spec.fanout === 'string' ? { over: spec.fanout } : spec.fanout,
@@ -529,9 +546,10 @@ export function defineWorkflow<
             }
             
             // Get runtime from registry instead of guessing
-            if (!fnSpec.runtime || !fnSpec.queue || !fnSpec.engine_retry) {
+            if (!fnSpec.runtime || !fnSpec.queue || !fnSpec.engine_retry || !nodeDef.label) {
               const execution = await getFunctionExecutionConfig(fnSpec.id)
 
+              if (!nodeDef.label && execution.label) nodeDef.label = execution.label
               if (!fnSpec.runtime) fnSpec.runtime = execution.runtime
               if (!fnSpec.queue && execution.queue) fnSpec.queue = execution.queue
               if (!fnSpec.engine_retry && execution.engine_retry) fnSpec.engine_retry = execution.engine_retry
@@ -554,6 +572,7 @@ export function defineWorkflow<
           const functionSpec = buildFunctionSpec(parsed.functionId, parsed.callOptions)
           
           return ctx.node(nodeId, {
+            label: parsed.callOptions?.label,
             function: functionSpec,
             input: parsed.input
           })
@@ -576,6 +595,7 @@ export function defineWorkflow<
               const isItemInput = isWorkflowLoopItemRef(parsed.input)
 
               return ctx.node(nodeId, {
+                label: parsed.callOptions?.label,
                 function: functionSpec,
                 input: isItemInput ? 'fanout_item' : parsed.input,
                 fanout: {

@@ -70,6 +70,14 @@ mod tests {
     }
 
     #[test]
+    fn test_node_uid_with_namespaced_node_id() {
+        assert_eq!(
+            node_uid("playground::process-text", Some(2)),
+            "playground::process-text#2"
+        );
+    }
+
+    #[test]
     fn test_child_session_id() {
         assert_eq!(child_session_id("r_1", "read#0"), "wf_r_1_read#0");
     }

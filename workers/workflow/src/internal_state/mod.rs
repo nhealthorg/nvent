@@ -118,11 +118,43 @@ pub trait WorkflowInternalStateStore: Send + Sync {
 
     async fn put_run_log(&self, run_id: &str, entry: &WorkflowRunLogRecord) -> Result<(), WorkflowError>;
     async fn list_run_logs(&self, run_id: &str) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError>;
+    async fn list_run_logs_paged(
+        &self,
+        run_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<WorkflowRunLogRecord>, bool), WorkflowError> {
+        let mut rows = self.list_run_logs(run_id).await?;
+        rows.sort_by(|a, b| b.ts_unix_ms.cmp(&a.ts_unix_ms));
+
+        let start = offset as usize;
+        let take = limit.max(1) as usize;
+        let total = rows.len();
+        let page = rows.into_iter().skip(start).take(take).collect::<Vec<_>>();
+        let has_more = start + page.len() < total;
+        Ok((page, has_more))
+    }
     async fn delete_run_log_key(&self, run_id: &str, id: &str) -> Result<(), WorkflowError>;
     async fn prune_run_logs_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError>;
 
     async fn put_run_trace(&self, run_id: &str, entry: &WorkflowRunTraceRecord) -> Result<(), WorkflowError>;
     async fn list_run_traces(&self, run_id: &str) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError>;
+    async fn list_run_traces_paged(
+        &self,
+        run_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<WorkflowRunTraceRecord>, bool), WorkflowError> {
+        let mut rows = self.list_run_traces(run_id).await?;
+        rows.sort_by(|a, b| b.ts_unix_ms.cmp(&a.ts_unix_ms));
+
+        let start = offset as usize;
+        let take = limit.max(1) as usize;
+        let total = rows.len();
+        let page = rows.into_iter().skip(start).take(take).collect::<Vec<_>>();
+        let has_more = start + page.len() < total;
+        Ok((page, has_more))
+    }
     async fn delete_run_trace_key(&self, run_id: &str, id: &str) -> Result<(), WorkflowError>;
     async fn prune_run_traces_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError>;
 

@@ -12,6 +12,7 @@ pub mod node_completed;
 pub mod node_result;
 pub mod run_result;
 pub mod run_delete;
+pub mod lifecycle_hooks;
 pub mod node_result_write;
 pub mod start;
 pub mod status;

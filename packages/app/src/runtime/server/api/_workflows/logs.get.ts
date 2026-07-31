@@ -25,10 +25,21 @@ function asObject(value: unknown): Record<string, unknown> {
   return {}
 }
 
+function parseStringList(value: string | string[] | undefined): string[] | undefined {
+  if (value === undefined) return undefined
+
+  const parts = (Array.isArray(value) ? value : [value])
+    .flatMap(entry => String(entry).split(','))
+    .map(entry => entry.trim())
+    .filter(Boolean)
+
+  return parts.length > 0 ? parts : undefined
+}
+
 export default defineEventHandler(async (event) => {
   const query = getQuery(event)
   const runId = query.run_id as string
-  const nodeUid = query.node_uid as string | undefined
+  const nodeUids = parseStringList(query.node_uids as string | string[] | undefined)
   const limit = query.limit ? parseInt(query.limit as string) : 500
 
   if (!runId) {
@@ -45,7 +56,7 @@ export default defineEventHandler(async (event) => {
       function_id: 'workflow::log-read',
       payload: {
         run_id: runId,
-        node_uid: nodeUid,
+        node_uids: nodeUids,
         limit
       }
     }) as { logs?: WorkflowRunLogRecord[] }

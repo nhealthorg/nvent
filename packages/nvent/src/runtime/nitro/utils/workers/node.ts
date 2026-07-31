@@ -629,7 +629,9 @@ export function normalizeModuleToFnInfo(ns: Record<string, unknown>, fallbackId:
 
   if (!def || typeof def.handler !== 'function') return null
 
-  const id = fallbackId
+  const id = typeof def.name === 'string' && def.name.trim().length > 0
+    ? def.name.trim()
+    : fallbackId
   const triggers = (def.triggers ?? []).map(t => ({ ...t, function_id: id }))
 
   return {

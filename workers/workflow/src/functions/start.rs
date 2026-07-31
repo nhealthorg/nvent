@@ -71,11 +71,11 @@ struct StartRequestRaw {
 const SHAPE_HINT: &str = "Expected shape: \
     {\"definition\":{\"nodes\":{\"<id>\":{\"function\":{\"id\":\"<function-id>\"},\
     \"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}}}. `version` defaults to 1. \
-    Each node is {function, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
+    Each node is {label?, function, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
     run_input). Full field docs are inline in this function's request schema.";
 
 const ALLOWED_DEF_KEYS: &[&str] = &["version", "nodes", "output", "default_functions", "metadata"];
-const ALLOWED_NODE_KEYS: &[&str] = &["function", "input", "depends_on", "fanout"];
+const ALLOWED_NODE_KEYS: &[&str] = &["label", "function", "input", "depends_on", "fanout"];
 const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "queue", "engine_retry", "runtime"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
@@ -703,6 +703,8 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 
     state::put_run(&deps.iii, &record).await?;
 
+    super::lifecycle_hooks::emit_start(deps, &req.definition, &record).await;
+
     crate::telemetry::record_run_started();
 
     if let Some(ref key) = req.idempotency_key {
@@ -741,6 +743,7 @@ mod tests {
 
     fn make_node(function_id: &str, fanout_over: Option<&str>, input_from: InputFrom) -> NodeDef {
         NodeDef {
+            label: None,
             function: FunctionSpec {
                 id: function_id.to_string(),
                 timeout_ms: None,
@@ -896,6 +899,49 @@ mod tests {
         assert!(
             validate_def(&def).is_err(),
             "expected Err for node id with '#'"
+        );
+    }
+
+    #[test]
+    fn accepts_node_id_with_double_colon() {
+        let def: WorkflowDef = serde_json::from_value(json!({
+            "version": 1,
+            "nodes": {
+                "playground::process-text": {
+                    "function": { "id": "playground::process-text" },
+                    "input": { "from": "run_input" }
+                }
+            },
+            "output": { "from": "node:playground::process-text" }
+        }))
+        .expect("definition with :: node id");
+
+        assert!(
+            validate_def(&def).is_ok(),
+            "expected Ok for node id with '::'"
+        );
+    }
+
+    #[test]
+    fn start_request_preserves_node_label() {
+        let req: StartRequest = serde_json::from_value(json!({
+            "definition": {
+                "version": 1,
+                "nodes": {
+                    "a": {
+                        "label": "Process Text",
+                        "function": { "id": "playground::process-text" },
+                        "input": { "from": "run_input" }
+                    }
+                },
+                "output": { "from": "node:a" }
+            }
+        }))
+        .expect("StartRequest with node label");
+
+        assert_eq!(
+            req.definition.nodes["a"].label.as_deref(),
+            Some("Process Text")
         );
     }
 

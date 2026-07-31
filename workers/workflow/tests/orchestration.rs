@@ -19,6 +19,7 @@ use workflow::{
 
 fn function_node(id: &str, input: InputSpec, depends_on: Vec<String>, fanout: Option<FanoutSpec>) -> NodeDef {
     NodeDef {
+        label: None,
         function: FunctionSpec {
             id: id.to_string(),
             timeout_ms: None,

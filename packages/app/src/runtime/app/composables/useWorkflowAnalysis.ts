@@ -1,6 +1,7 @@
 import { computed } from '#imports'
 
 export interface WorkflowNodeDefinition {
+  label?: string
   depends_on?: string[]
   function: {
     id: string
@@ -18,6 +19,7 @@ export interface WorkflowDefinition {
 
 export interface AnalyzedStep {
   name: string
+  label?: string
   dependsOn: string[]
   level: number
 }
@@ -30,11 +32,12 @@ export function useWorkflowAnalysis() {
    * Analysis of workflow nodes to determine execution levels (topological sort)
    */
   function analyzeWorkflow(nodes: Record<string, WorkflowNodeDefinition>) {
-    const steps: Record<string, { name: string, dependsOn: string[] }> = {}
+    const steps: Record<string, { name: string, label?: string, dependsOn: string[] }> = {}
     
     Object.entries(nodes).forEach(([id, node]) => {
       steps[id] = {
         name: id,
+        label: node.label,
         dependsOn: node.depends_on || []
       }
     })
@@ -82,6 +85,7 @@ export function useWorkflowAnalysis() {
         placed.add(id)
         analyzedSteps[id] = {
           name: id,
+          label: steps[id].label,
           dependsOn: steps[id].dependsOn,
           level: levels.length - 1
         }

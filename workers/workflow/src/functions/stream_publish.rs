@@ -71,6 +71,7 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
             "workflow.stream.group_id": run_id,
             "workflow.stream.item_id": item_id,
             "workflow.stream.preview": data_preview,
+            "workflow.stream.payload": data,
         })),
         trace_id: None,
         span_id: None,

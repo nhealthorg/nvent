@@ -220,6 +220,10 @@ export type FunctionHandler<TInput = unknown, TOutput = unknown> = (
 ) => TOutput | Promise<TOutput>
 
 export interface FunctionDef<TInput = unknown, TOutput = unknown> {
+  /** Optional explicit function id override. Defaults to file-path-derived id. */
+  name?: string
+  /** Optional UI-facing label for workflow/inspector views. */
+  label?: string
   description?: string
   triggers?: TriggerConfig[]
   /** Enable workflow execution support for this function. */
@@ -281,6 +285,8 @@ export function defineFunction<
   TOutput = TOutSchema extends Parseable<infer T> ? T : unknown,
 >(
   config: {
+    /** Optional UI-facing label for workflow/inspector views. */
+    label?: string
     description?: string
     /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
     input?: TInSchema

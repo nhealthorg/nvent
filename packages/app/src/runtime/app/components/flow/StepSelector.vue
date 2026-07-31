@@ -48,7 +48,7 @@
       <div class="flex-1 min-w-0 ml-3">
         <div class="flex items-center gap-2">
           <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">
-            {{ getStepDisplayName(item.step.key) }}
+            {{ getStepDisplayName(item.step) }}
           </h4>
           <UBadge
             v-if="item.step.isLoopGroup"
@@ -171,7 +171,7 @@
                       :class="getStepStatusIconColor(child.step.status)"
                     />
                     <span class="truncate text-xs font-medium text-cyan-900 dark:text-cyan-100">
-                      {{ getStepDisplayName(child.step.key) }}
+                      {{ getStepDisplayName(child.step) }}
                     </span>
                   </div>
                   <div class="flex items-center gap-1.5">
@@ -184,6 +184,20 @@
                   </div>
                 </div>
               </button>
+            </div>
+
+            <div
+              v-if="item.step.canInspectResult"
+              class="mt-3 flex justify-end"
+            >
+              <UButton
+                icon="i-lucide-file-json"
+                size="xs"
+                variant="ghost"
+                color="cyan"
+                label="Loop results"
+                @click.stop="emit('inspect-step-result', item.value)"
+              />
             </div>
           </div>
         <div
@@ -238,8 +252,8 @@
 
         <!-- Additional Details (from description slot) -->
         <div
-          v-if="!item.step.showAllIndicator && !item.step.isLoopGroup && (item.step.startedAt || item.step.completedAt || item.step.error || item.step.awaitType)"
-          class="mt-3"
+          v-if="!item.step.showAllIndicator && !item.step.isLoopGroup && (item.step.startedAt || item.step.completedAt || item.step.error || item.step.awaitType || item.step.canInspectResult)"
+          class="mt-3 text-xs"
         >
           <!-- Timing Info -->
           <div
@@ -488,6 +502,21 @@
               </div>
             </div>
           </div>
+
+          <!-- Result Button -->
+          <div
+            v-if="item.step.canInspectResult"
+            class="mt-2 flex justify-end"
+          >
+            <UButton
+              icon="i-lucide-file-json"
+              size="xs"
+              variant="ghost"
+              color="gray"
+              label="Result"
+              @click.stop="emit('inspect-step-result', item.value)"
+            />
+          </div>
         </div>
       </div>
     </component>
@@ -516,8 +545,9 @@ const props = defineProps<{
   }
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   'update:modelValue': [value: string]
+  'inspect-step-result': [stepKey: string]
 }>()
 
 // Copy to clipboard functionality
@@ -539,7 +569,7 @@ const copyToClipboard = async (text: string) => {
 // Default UI configuration
 const defaultUi = {
   root: 'space-y-3',
-  itemBase: 'w-full flex items-start border rounded-lg text-sm p-3.5 transition-colors text-left',
+  itemBase: 'relative w-full flex items-start border rounded-lg text-sm p-3.5 transition-colors text-left',
   itemClickable: 'hover:bg-gray-50 dark:hover:bg-gray-900/50 cursor-pointer',
   itemNonClickable: 'bg-blue-50/50 dark:bg-blue-900/10 opacity-75 cursor-default',
   item: 'border-gray-200 dark:border-gray-800',
@@ -674,15 +704,27 @@ const getAwaitPosition = (key: string) => {
   return ''
 }
 
-const getStepDisplayName = (key: string) => {
+const getStepDisplayName = (step: any) => {
+  const key = String(step?.key || '')
   if (key.startsWith('loop-group:')) {
     const groupId = key.split(':')[1] || 'loop'
     return `Loop ${groupId.toUpperCase()}`
   }
 
+  const label = typeof step?.label === 'string' ? step.label.trim() : ''
+  if (label.length > 0) return label
+
   // Remove :await-before or :await-after suffix for display
   if (key.includes(':await-')) {
-    return key.split(':await-')[0]
+    const base = key.split(':await-')[0] || key
+    if (base.includes('::')) {
+      return base.split('::').filter(Boolean).pop() || base
+    }
+    return base
+  }
+
+  if (key.includes('::')) {
+    return key.split('::').filter(Boolean).pop() || key
   }
   return key
 }

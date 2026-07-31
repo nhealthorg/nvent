@@ -45,29 +45,44 @@
         />
       </div>
       <div class="flex items-center gap-2">
-        <div class="flex items-center gap-1 text-xs">
-          <span class="text-gray-500 dark:text-gray-400">traces:</span>
-          <span class="font-medium text-gray-900 dark:text-gray-100">{{ eventCount }}</span>
-        </div>
-        <div class="w-px h-3 bg-gray-200 dark:bg-gray-700" />
-        <div class="flex items-center gap-1 text-xs">
-          <span class="text-gray-500 dark:text-gray-400">logs:</span>
-          <span class="font-medium text-gray-900 dark:text-gray-100">{{ logCount }}</span>
-        </div>
-        <div class="w-px h-3 bg-gray-200 dark:bg-gray-700" />
-        <div class="flex items-center gap-1 text-xs">
-          <span class="text-gray-500 dark:text-gray-400">state:</span>
-          <span class="font-medium text-gray-900 dark:text-gray-100">{{ stateEventCount }}</span>
-        </div>
-        <div class="w-px h-3 bg-gray-200 dark:bg-gray-700" />
-        <div class="flex items-center gap-1 text-xs">
-          <span class="text-gray-500 dark:text-gray-400">streams:</span>
-          <span class="font-medium text-gray-900 dark:text-gray-100">{{ streamCount }}</span>
-        </div>
+        <select
+          v-if="showLoopFilter"
+          class="text-xs rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1"
+          :value="selectedLoopIndex !== null ? String(selectedLoopIndex) : ''"
+          @change="onLoopIndexChange"
+        >
+          <option
+            v-for="option in (loopIndexOptions || [])"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </option>
+        </select>
+        <button
+          v-if="hasMoreTimeline"
+          class="ml-2 text-xs rounded border border-gray-200 dark:border-gray-700 px-2 py-1 hover:border-blue-400 dark:hover:border-blue-600 disabled:opacity-50"
+          :disabled="Boolean(timelineLoadingMore) || Boolean(timelinePending)"
+          @click="loadMore"
+        >
+          {{ timelineLoadingMore ? 'Loading...' : 'Load more' }}
+        </button>
       </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto overflow-x-hidden">
+    <UScrollArea
+      ref="scrollArea"
+      class="flex-1"
+      :ui="{ viewport: 'flex flex-col min-h-full' }"
+      shadow
+    >
+      <div
+        v-if="timelineError"
+        class="px-4 py-3 text-xs text-red-600 dark:text-red-400 border-b border-red-200 dark:border-red-900"
+      >
+        Timeline loading failed.
+      </div>
+
       <template v-if="mode === 'streams'">
         <div
           v-if="streamItems.length === 0"
@@ -108,135 +123,267 @@
           height-class="min-h-full"
         />
       </template>
-    </div>
+
+      <div
+        v-if="timelinePending || timelineLoadingMore"
+        class="px-4 py-2 text-xs text-gray-500 dark:text-gray-400"
+      >
+        Loading {{ mode }}...
+      </div>
+    </UScrollArea>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from '#imports'
+import { ref, computed, watch, onMounted, onUnmounted, useFetch } from '#imports'
+import { useInfiniteScroll } from '@vueuse/core'
 import TimelineList from '../TimelineList.vue'
 
+type TimelineMode = 'traces' | 'logs' | 'states' | 'streams'
+
+interface TimelineItem {
+  id: string
+  ts: number
+  type: string
+  stepName?: string
+  level?: string
+  message?: string
+  data?: Record<string, unknown>
+}
+
+interface TracesResponse {
+  type: TimelineMode
+  items: TimelineItem[]
+  has_more: boolean
+  next_offset: number
+}
+
 const props = defineProps<{
-  events: any[]
-  logs: any[]
-  states: any[]
-  streams: any[]
+  runId: string
+  runStatus: string
+  startedAt?: number
+  completedAt?: number
+  nodeCheckpoints?: Record<string, unknown>
   selectedStep?: string | null
-  isLive?: boolean
+  selectedStepNodeIds?: string[]
+  loopIndexOptions?: Array<{ value: string, label: string }>
 }>()
 
-defineEmits<{
-  export: []
-}>()
+const mode = ref<TimelineMode>('traces')
+const pageSize = 20
+const offset = ref(0)
+const items = ref<TimelineItem[]>([])
+const hasMoreTimeline = ref(false)
+const timelineLoadingMore = ref(false)
+const selectedLoopIndex = ref<number | null>(null)
+const scrollArea = ref<{ $el?: HTMLElement } | null>(null)
 
-const mode = ref<'traces' | 'logs' | 'state-events' | 'streams'>('traces')
+const selectedNodeUids = computed(() => {
+  const value = props.selectedStep
+  if (!value) return undefined
+  if (value.startsWith('loop-group:')) {
+    return props.selectedStepNodeIds?.length ? props.selectedStepNodeIds : undefined
+  }
+
+  const base = value.split('#')[0]
+  return base ? [base] : undefined
+})
+
+const tracesQuery = computed(() => ({
+  run_id: props.runId,
+  type: mode.value,
+  limit: pageSize,
+  offset: offset.value,
+  node_uids: selectedNodeUids.value,
+  loop_index: selectedLoopIndex.value ?? undefined,
+}))
+
+const {
+  data: tracesData,
+  pending: timelinePending,
+  error: timelineError,
+  execute: executeFetch,
+} = useFetch<TracesResponse>('/api/_workflows/traces', {
+  query: tracesQuery,
+  immediate: false,
+  server: false,
+  watch: false,
+})
+
+async function fetchCurrentMode(append = false) {
+  if (append) {
+    if (timelinePending.value || timelineLoadingMore.value || !hasMoreTimeline.value) return
+    timelineLoadingMore.value = true
+  }
+  else {
+    offset.value = 0
+    hasMoreTimeline.value = false
+    items.value = []
+  }
+
+  await executeFetch()
+
+  const response = tracesData.value
+  const nextItems = Array.isArray(response?.items) ? response.items : []
+
+  items.value = append ? [...items.value, ...nextItems] : nextItems
+  hasMoreTimeline.value = Boolean(response?.has_more)
+  offset.value = Number(response?.next_offset || 0)
+  timelineLoadingMore.value = false
+}
+
+async function loadMore() {
+  await fetchCurrentMode(true)
+}
+
+const isLive = computed(() => {
+  return props.runStatus === 'running' || props.runStatus === 'awaiting_nodes' || props.runStatus === 'awaiting'
+})
+
+function baseStepName(stepName?: string | null): string | null {
+  if (!stepName) return null
+  return String(stepName).split('#')[0] || null
+}
+
+function stepMatchesSelection(stepName: string | null | undefined, selection: string | null | undefined): boolean {
+  if (!selection) return true
+  const base = baseStepName(stepName)
+  if (!base) return false
+
+  if (selection.startsWith('loop-group:')) {
+    const members = props.selectedStepNodeIds || []
+    return members.includes(base)
+  }
+
+  return base === selection
+}
+
+const filteredEvents = computed(() => {
+  if (!props.selectedStep) return items.value
+  return items.value.filter((item: TimelineItem) => {
+    if (!item.stepName) {
+      return item.type === 'flow.start' || item.type === 'flow.completed' || item.type === 'flow.failed'
+    }
+    return stepMatchesSelection(item.stepName, props.selectedStep)
+  })
+})
+
+const filteredLogs = computed(() => {
+  if (!props.selectedStep) return items.value
+  return items.value.filter((item: TimelineItem) => stepMatchesSelection(item.stepName, props.selectedStep))
+})
+
+let refreshInterval: any = null
+onMounted(() => {
+  void fetchCurrentMode(false)
+
+  useInfiniteScroll(
+    () => scrollArea.value?.$el,
+    () => loadMore(),
+    {
+      distance: 200,
+      canLoadMore: () => hasMoreTimeline.value && !timelinePending.value && !timelineLoadingMore.value,
+    },
+  )
+
+  refreshInterval = setInterval(() => {
+    if (isLive.value) {
+      void fetchCurrentMode(false)
+    }
+  }, 3000)
+})
+
+onUnmounted(() => {
+  if (refreshInterval) clearInterval(refreshInterval)
+})
+
+watch(() => props.runId, () => {
+  selectedLoopIndex.value = null
+  void fetchCurrentMode(false)
+})
+
+watch(mode, () => {
+  void fetchCurrentMode(false)
+})
+
+watch(selectedLoopIndex, () => {
+  void fetchCurrentMode(false)
+})
+
+watch(() => props.selectedStep, () => {
+  void fetchCurrentMode(false)
+})
+
+watch(() => props.loopIndexOptions, (options) => {
+  const visible = Array.isArray(options) && options.length > 1
+  if (!visible && selectedLoopIndex.value !== null) {
+    selectedLoopIndex.value = null
+  }
+})
+
+function onLoopIndexChange(event: Event) {
+  const target = event.target as HTMLSelectElement | null
+  selectedLoopIndex.value = target?.value === '' ? null : Number(target?.value)
+}
 
 const modeOptions = [
   { value: 'traces', label: 'Traces' },
   { value: 'logs', label: 'Logs' },
-  { value: 'state-events', label: 'States' },
+  { value: 'states', label: 'States' },
   { value: 'streams', label: 'Streams' },
 ]
 
-const eventCount = computed(() => props.events.length)
-const logCount = computed(() => props.logs.length)
-const stateCount = computed(() => props.states.length)
-const streamCount = computed(() => props.streams.length)
+const eventCount = computed(() => mode.value === 'traces' ? filteredEvents.value.length : 0)
+const logCount = computed(() => mode.value === 'logs' ? filteredLogs.value.length : 0)
+const stateCount = computed(() => mode.value === 'states' ? modeItems.value.length : 0)
+const streamCount = computed(() => mode.value === 'streams' ? streamItems.value.length : 0)
+
 const currentCount = computed(() => {
   if (mode.value === 'logs') return logCount.value
-  if (mode.value === 'state-events') return stateEventCount.value
+  if (mode.value === 'states') return stateCount.value
   if (mode.value === 'streams') return streamCount.value
   return eventCount.value
 })
 const currentLabelSingular = computed(() => {
   if (mode.value === 'logs') return 'log'
-  if (mode.value === 'state-events') return 'event'
+  if (mode.value === 'states') return 'state'
   if (mode.value === 'streams') return 'stream'
-  return 'event'
+  return 'trace'
 })
 const currentLabelPlural = computed(() => {
   if (mode.value === 'logs') return 'logs'
-  if (mode.value === 'state-events') return 'events'
+  if (mode.value === 'states') return 'states'
   if (mode.value === 'streams') return 'streams'
-  return 'events'
+  return 'traces'
 })
-
-// Filter state events from logs (workflow.state.set, workflow.state.delete events)
-const stateEvents = computed(() => {
-  return props.events.filter((event: any) =>
-    event?.event_name === 'workflow.state.set'
-    || event?.event_name === 'workflow.state.delete'
-    || event?.type === 'state.set'
-    || event?.type === 'state.delete',
-  )
-})
-const stateEventCount = computed(() => stateEvents.value.length)
-
-function toTimelineLog(log: any) {
-  return {
-    id: `log-${log.ts}-${log.stepName || ''}`,
-    ts: log.ts,
-    type: 'log',
-    stepName: log.step || log.stepName,
-    level: log.level,
-    message: log.message || log.msg,
-    data: {
-      level: log.level || log?.data?.level,
-      message: log.message || log.msg || log?.data?.message,
-      ...log.data,
-    },
-  }
-}
 
 const modeItems = computed(() => {
-  const selected =
-    mode.value === 'traces' ? props.events
-      : mode.value === 'logs' ? props.logs.map(toTimelineLog)
-        : mode.value === 'state-events' ? stateEvents.value
-          : []
+  const selected = mode.value === 'traces'
+    ? filteredEvents.value
+    : mode.value === 'logs'
+      ? filteredLogs.value
+      : mode.value === 'states'
+        ? items.value
+        : []
 
-  const items = Array.isArray(selected) ? [...selected] : []
-  items.sort((a: any, b: any) => {
-    const aTs = typeof a?.ts_unix_ms === 'number' ? a.ts_unix_ms : (typeof a?.ts === 'number' ? a.ts : Number(a?.ts || 0))
-    const bTs = typeof b?.ts_unix_ms === 'number' ? b.ts_unix_ms : (typeof b?.ts === 'number' ? b.ts : Number(b?.ts || 0))
+  const output = Array.isArray(selected) ? [...selected] : []
+  output.sort((a: TimelineItem, b: TimelineItem) => {
+    const aTs = Number(a?.ts || 0)
+    const bTs = Number(b?.ts || 0)
     return bTs - aTs
   })
-  return items
+  return output
 })
 
 const streamItems = computed(() => {
-  return props.streams.map((stream: any, index: number) => {
-    const data = stream && typeof stream === 'object' ? stream : { streamName: String(stream || '') }
-    const streamName = String(data.streamName || data.name || data.key || data.id || '')
-    const preview = data.preview || data.payloadSummary || data.summary || data.data || data.value || ''
-    return {
-      id: data.id || `stream-${streamName || index}`,
-      ts: Number(data.ts || data.ts_unix_ms || Date.now() - index),
-      type: String(data.type || data.eventName || 'stream.publish'),
-      data: {
-        streamName,
-        runId: String(data.runId || data.groupId || data.group_id || ''),
-        itemId: data.itemId || data.item_id || undefined,
-        nodeUid: data.nodeUid || data.node_uid || undefined,
-        functionId: data.functionId || data.function_id || undefined,
-        preview: typeof preview === 'string' ? preview : JSON.stringify(preview),
-      },
-    }
-  }).sort((a, b) => b.ts - a.ts)
+  const list = items.value
+    .filter(item => item.type === 'stream.publish' || item.type === 'stream.delete')
+    .filter(item => !props.selectedStep || stepMatchesSelection(item.stepName, props.selectedStep))
+
+  return [...list].sort((a, b) => b.ts - a.ts)
 })
 
-function formatTimestamp(ts: number) {
-  if (!ts) return 'unknown'
-  return new Date(ts).toLocaleTimeString()
-}
-
-const latestTimestampLabel = computed(() => {
-  const first = modeItems.value[0]
-  if (!first) return 'No activity yet'
-
-  const ts = typeof first.ts === 'number' ? first.ts : new Date(first.ts).getTime()
-  if (!Number.isFinite(ts)) return 'No activity yet'
-
-  return `Latest update ${new Date(ts).toLocaleTimeString()}`
+const showLoopFilter = computed(() => {
+  return Array.isArray(props.loopIndexOptions) && props.loopIndexOptions.length > 1
 })
 </script>

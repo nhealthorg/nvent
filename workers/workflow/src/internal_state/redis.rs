@@ -394,6 +394,51 @@ impl RedisWorkflowInternalStateStore {
         Ok(out)
     }
 
+    async fn list_json_records_latest_page<T: serde::de::DeserializeOwned>(
+        &self,
+        conn: &mut redis::aio::MultiplexedConnection,
+        key: &str,
+        label: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<T>, bool), WorkflowError> {
+        let total: i64 = conn
+            .llen(key)
+            .await
+            .map_err(|err| WorkflowError::State(format!("redis llen {label} failed: {err}")))?;
+
+        if total <= 0 {
+            return Ok((Vec::new(), false));
+        }
+
+        let Some((start, end, has_more)) = latest_page_bounds(total, offset, limit) else {
+            return Ok((Vec::new(), false));
+        };
+
+        let start_isize = isize::try_from(start).map_err(|_| {
+            WorkflowError::State(format!(
+                "redis paged list {label} start index out of range: {start}"
+            ))
+        })?;
+        let end_isize = isize::try_from(end).map_err(|_| {
+            WorkflowError::State(format!(
+                "redis paged list {label} end index out of range: {end}"
+            ))
+        })?;
+
+        let lines: Vec<String> = conn
+            .lrange(key, start_isize, end_isize)
+            .await
+            .map_err(|err| WorkflowError::State(format!("redis paged list {label} failed: {err}")))?;
+
+        let mut out = Vec::with_capacity(lines.len());
+        for line in lines {
+            out.push(serde_json::from_str::<T>(&line).map_err(WorkflowError::Serde)?);
+        }
+        out.reverse();
+        Ok((out, has_more))
+    }
+
     async fn overwrite_json_records<T: serde::Serialize>(
         &self,
         conn: &mut redis::aio::MultiplexedConnection,
@@ -413,6 +458,48 @@ impl RedisWorkflowInternalStateStore {
             .map_err(|err| WorkflowError::State(format!("redis overwrite list failed for {key}: {err}")))?;
 
         Ok(())
+    }
+}
+
+fn latest_page_bounds(total: i64, offset: u32, limit: u32) -> Option<(i64, i64, bool)> {
+    if total <= 0 {
+        return None;
+    }
+
+    let offset_i = offset as i64;
+    if offset_i >= total {
+        return None;
+    }
+
+    let limit_i = limit.max(1) as i64;
+    let end = total - offset_i - 1;
+    let start = (end - limit_i + 1).max(0);
+    let has_more = start > 0;
+    Some((start, end, has_more))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::latest_page_bounds;
+
+    fn apply_latest_page(values: &[i32], offset: u32, limit: u32) -> Vec<i32> {
+        let Some((start, end, _)) = latest_page_bounds(values.len() as i64, offset, limit) else {
+            return Vec::new();
+        };
+
+        let mut page = values[start as usize..=end as usize].to_vec();
+        page.reverse();
+        page
+    }
+
+    #[test]
+    fn latest_page_bounds_match_latest_first_paging() {
+        let values = vec![1, 2, 3, 4, 5];
+
+        assert_eq!(apply_latest_page(&values, 0, 2), vec![5, 4]);
+        assert_eq!(apply_latest_page(&values, 1, 2), vec![4, 3]);
+        assert_eq!(apply_latest_page(&values, 4, 2), vec![1]);
+        assert!(apply_latest_page(&values, 5, 2).is_empty());
     }
 }
 
@@ -800,6 +887,27 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             .await
     }
 
+    async fn list_run_logs_paged(
+        &self,
+        run_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<WorkflowRunLogRecord>, bool), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.list_run_logs_paged(run_id, offset, limit).await;
+        }
+
+        let mut conn = self.conn().await?;
+        self.list_json_records_latest_page(
+            &mut conn,
+            &self.run_log_key(run_id),
+            "run logs",
+            offset,
+            limit,
+        )
+        .await
+    }
+
     async fn delete_run_log_key(&self, run_id: &str, id: &str) -> Result<(), WorkflowError> {
         if !self.has_redis() {
             return self.fallback.delete_run_log_key(run_id, id).await;
@@ -889,6 +997,27 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let mut conn = self.conn().await?;
         self.list_json_records(&mut conn, &self.run_trace_key(run_id), "run traces")
             .await
+    }
+
+    async fn list_run_traces_paged(
+        &self,
+        run_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<WorkflowRunTraceRecord>, bool), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.list_run_traces_paged(run_id, offset, limit).await;
+        }
+
+        let mut conn = self.conn().await?;
+        self.list_json_records_latest_page(
+            &mut conn,
+            &self.run_trace_key(run_id),
+            "run traces",
+            offset,
+            limit,
+        )
+        .await
     }
 
     async fn delete_run_trace_key(&self, run_id: &str, id: &str) -> Result<(), WorkflowError> {

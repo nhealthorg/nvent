@@ -1,5 +1,5 @@
 <template>
   <div>
-    <NventApp />
+    <NventApp :page-offset="64" />
   </div>
 </template>

@@ -16,11 +16,22 @@ export interface WorkflowTimelineResponse {
 }
 
 export interface WorkflowStatesResponse {
-  states: Array<{ key: string, value: unknown }>
+  states: Array<{ key: string, value: unknown, ts_unix_ms?: number, kind?: 'set' | 'delete' }>
 }
 
 export interface WorkflowStreamsResponse {
-  streams: string[]
+  streams: Array<{
+    streamName: string
+    items: Array<{
+      id: string
+      item_id?: string
+      run_id?: string
+      node_uid?: string
+      function_id?: string
+      ts_unix_ms?: number
+      data?: unknown
+    }>
+  }>
 }
 
 export interface UseWorkflowRunDetailResult {
@@ -94,9 +105,19 @@ export function useWorkflowRunDetail(runId: Ref<string>): UseWorkflowRunDetailRe
     statesPending.value = true
     statesError.value = null
     try {
-      workflowStates.value = await $fetch<WorkflowStatesResponse>('/api/_workflows/states', {
-        params: { run_id: runId.value, limit: 500 },
+      const response = await $fetch<{ items?: Array<any> }>('/api/_workflows/traces', {
+        params: { run_id: runId.value, type: 'states', limit: 500, offset: 0 },
       })
+
+      const rows = Array.isArray(response?.items) ? response.items : []
+      workflowStates.value = {
+        states: rows.map((row: any, index: number) => ({
+          key: String(row?.data?.key || `state-${index + 1}`),
+          value: row?.data?.value,
+          ts_unix_ms: Number(row?.ts || 0),
+          kind: String(row?.type || '').includes('delete') ? 'delete' : 'set',
+        })),
+      }
     }
     catch (error) {
       statesError.value = error
@@ -110,9 +131,32 @@ export function useWorkflowRunDetail(runId: Ref<string>): UseWorkflowRunDetailRe
     streamsPending.value = true
     streamsError.value = null
     try {
-      workflowStreams.value = await $fetch<WorkflowStreamsResponse>('/api/_workflows/streams', {
-        params: { run_id: runId.value, limit: 500 },
+      const response = await $fetch<{ items?: Array<any> }>('/api/_workflows/traces', {
+        params: { run_id: runId.value, type: 'streams', limit: 500, offset: 0 },
       })
+
+      const rows = Array.isArray(response?.items) ? response.items : []
+      const groups = new Map<string, WorkflowStreamsResponse['streams'][number]>()
+
+      for (const row of rows) {
+        const streamName = String(row?.data?.streamName || 'stream')
+        if (!groups.has(streamName)) {
+          groups.set(streamName, { streamName, items: [] })
+        }
+        groups.get(streamName)?.items.push({
+          id: String(row?.id || ''),
+          item_id: typeof row?.data?.itemId === 'string' ? row.data.itemId : undefined,
+          run_id: typeof row?.data?.runId === 'string' ? row.data.runId : undefined,
+          node_uid: typeof row?.data?.nodeUid === 'string' ? row.data.nodeUid : undefined,
+          function_id: typeof row?.data?.functionId === 'string' ? row.data.functionId : undefined,
+          ts_unix_ms: Number(row?.ts || 0),
+          data: row?.data?.payload,
+        })
+      }
+
+      workflowStreams.value = {
+        streams: [...groups.values()],
+      }
     }
     catch (error) {
       streamsError.value = error

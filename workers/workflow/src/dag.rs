@@ -744,6 +744,7 @@ mod tests {
         nodes.insert(
             "plan".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "plan-fn".to_string(),
                     timeout_ms: None,
@@ -763,6 +764,7 @@ mod tests {
         nodes.insert(
             "read".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "read-fn".to_string(),
                     timeout_ms: None,
@@ -785,6 +787,7 @@ mod tests {
         nodes.insert(
             "synthesize".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "synthesize-fn".to_string(),
                     timeout_ms: None,
@@ -1023,6 +1026,23 @@ mod tests {
     }
 
     #[test]
+    fn fanned_uids_preserve_namespaced_node_ids() {
+        let mut r = record();
+        r.fanout_src.insert(
+            "playground::process-text".to_string(),
+            vec![json!("a"), json!("b")],
+        );
+
+        assert_eq!(
+            fanned_uids(&r, "playground::process-text"),
+            vec![
+                "playground::process-text#0".to_string(),
+                "playground::process-text#1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn frontier_does_not_include_fanout_node_id_before_expansion() {
         let (d, mut r) = (def(), record());
         // plan is done, but read has not been expanded yet.
@@ -1154,6 +1174,7 @@ mod tests {
         nodes.insert(
             "b".to_string(),
             NodeDef {
+                label: None,
                 function: function("fn-b"),
                 input: InputSpec {
                     from: "run_input".into(),
@@ -1166,6 +1187,7 @@ mod tests {
         nodes.insert(
             "c".to_string(),
             NodeDef {
+                label: None,
                 function: function("fn-c"),
                 input: InputSpec {
                     from: "run_input".into(),
@@ -1178,6 +1200,7 @@ mod tests {
         nodes.insert(
             "join".to_string(),
             NodeDef {
+                label: None,
                 function: function("fn-join"),
                 input: InputSpec {
                     from: InputFrom::Many(vec!["node:b".to_string(), "node:c".to_string()]),

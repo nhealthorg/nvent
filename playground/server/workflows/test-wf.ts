@@ -29,7 +29,11 @@ export default defineWorkflow({
       }),
     ] as const)
 
-    const result = await ctx.call('analyze-text', input)
+    const result = await ctx.call('analyze-text', {
+      text: input.text
+    })
+
+    await ctx.call('test::end-test', { result })
 
     return result
   }

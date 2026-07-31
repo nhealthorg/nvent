@@ -491,6 +491,13 @@ async fn finalize(
     let rec: &WorkflowRunRecord = record;
     crate::events::emit_notify(deps, rec).await;
 
+    let hook_result = if status == RunStatus::Completed {
+        state::get_run_result(&deps.iii, &record.run_id).await?
+    } else {
+        None
+    };
+    super::lifecycle_hooks::emit_terminal(deps, def, rec, hook_result).await;
+
     Ok(())
 }
 
@@ -637,6 +644,7 @@ mod tests {
         nodes.insert(
             "plan".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "plan_function".to_string(),
                     timeout_ms: None,
@@ -656,6 +664,7 @@ mod tests {
         nodes.insert(
             "read".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "read_function".to_string(),
                     timeout_ms: None,
@@ -678,6 +687,7 @@ mod tests {
         nodes.insert(
             "synthesize".to_string(),
             NodeDef {
+                label: None,
                 function: FunctionSpec {
                     id: "synthesize_function".to_string(),
                     timeout_ms: None,

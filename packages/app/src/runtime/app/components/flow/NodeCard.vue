@@ -17,9 +17,9 @@
           />
           <p
             class="truncate font-medium"
-            :title="data?.label"
+            :title="displayName"
           >
-            {{ data?.label }}
+            {{ displayName }}
           </p>
         </div>
         <div class="flex items-center gap-2">
@@ -302,6 +302,26 @@ const headerClass = computed(() => props.kind === 'entry'
   : props.data?.isLoop
     ? 'px-3 py-2 bg-gradient-to-br from-cyan-800 to-sky-700 text-cyan-50 rounded-t'
     : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
+
+const displayName = computed(() => {
+  const label = typeof props.data?.label === 'string' ? props.data.label.trim() : ''
+  if (label) return label
+
+  const workerId = typeof props.data?.workerId === 'string' ? props.data.workerId.trim() : ''
+  if (workerId) {
+    if (workerId.includes('::')) {
+      return workerId.split('::').filter(Boolean).pop() || workerId
+    }
+    return workerId
+  }
+
+  const id = typeof props.id === 'string' ? props.id : ''
+  const raw = id.includes(':') ? id.split(':').slice(1).join(':') : id
+  if (raw.includes('::')) {
+    return raw.split('::').filter(Boolean).pop() || raw
+  }
+  return raw || 'Unnamed Step'
+})
 
 const runnerIcon = computed(() => {
   // Use explicit runtime field if available

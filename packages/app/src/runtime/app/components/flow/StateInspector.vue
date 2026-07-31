@@ -33,7 +33,7 @@
           variant="ghost"
           icon="i-lucide-download"
           :disabled="stateEntries.length === 0 || isLoading"
-          @click="$emit('export')"
+          @click="exportStates"
         >
           Export
         </UButton>
@@ -138,29 +138,57 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from '#imports'
+import { ref, computed, useFetch, watch, onMounted, onUnmounted } from '#imports'
 
 interface StateItem {
   key: string
   value: unknown
 }
 
-const props = defineProps<{
-  states: Array<Record<string, unknown>>
-  isLive?: boolean
-  isLoading?: boolean
-  errorMessage?: string | null
-}>()
+interface WorkflowStatesResponse {
+  states?: Array<Record<string, unknown>>
+}
 
-defineEmits<{
-  export: []
+const props = defineProps<{
+  runId: string
+  isLive?: boolean
 }>()
 
 const filterText = ref('')
 const expanded = ref<Set<number>>(new Set())
+const refreshTick = ref(0)
+
+const {
+  data: statesData,
+  pending: statesPending,
+  error: statesFetchError,
+  execute: executeStatesFetch,
+} = useFetch<WorkflowStatesResponse>('/api/_workflows/states', {
+  query: computed(() => ({
+    run_id: props.runId,
+    limit: 1000,
+    _t: refreshTick.value,
+  })),
+  immediate: false,
+  server: false,
+  watch: false,
+})
+
+const isLoading = computed(() => statesPending.value)
+const errorMessage = computed(() => {
+  if (!statesFetchError.value) return null
+  return 'State data could not be loaded'
+})
+
+async function refreshStates() {
+  expanded.value.clear()
+  refreshTick.value += 1
+  await executeStatesFetch()
+}
 
 const stateEntries = computed<StateItem[]>(() => {
-  return props.states
+  const list = Array.isArray(statesData.value?.states) ? statesData.value?.states : []
+  return list
     .map((item, index) => {
       const key = String(item.key || item.id || item.name || item.state_key || `state-${index + 1}`)
       const value = (item.value ?? item.data ?? item.state_value ?? item.payload ?? item) as unknown
@@ -206,4 +234,35 @@ function getValuePreview(value: unknown): string {
   if (typeof value === 'object') return '{...}'
   return '?'
 }
+
+function exportStates() {
+  const data = stateEntries.value.map(item => ({ key: item.key, value: item.value }))
+  const json = JSON.stringify(data, null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `workflow-states-${props.runId}-${Date.now()}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+let refreshInterval: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  void refreshStates()
+  refreshInterval = setInterval(() => {
+    if (props.isLive) {
+      void refreshStates()
+    }
+  }, 3000)
+})
+
+onUnmounted(() => {
+  if (refreshInterval) clearInterval(refreshInterval)
+})
+
+watch(() => props.runId, () => {
+  void refreshStates()
+})
 </script>
