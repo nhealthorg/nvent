@@ -125,7 +125,7 @@
       </template>
 
       <div
-        v-if="timelinePending || timelineLoadingMore"
+        v-if="(timelinePending && !backgroundRefreshing) || timelineLoadingMore"
         class="px-4 py-2 text-xs text-gray-500 dark:text-gray-400"
       >
         Loading {{ mode }}...
@@ -139,7 +139,7 @@ import { ref, computed, watch, onMounted, onUnmounted, useFetch } from '#imports
 import { useInfiniteScroll } from '@vueuse/core'
 import TimelineList from '../TimelineList.vue'
 
-type TimelineMode = 'traces' | 'logs' | 'states' | 'streams'
+type TimelineMode = 'traces' | 'logs' | 'states' | 'streams' | 'vars'
 
 interface TimelineItem {
   id: string
@@ -177,6 +177,8 @@ const hasMoreTimeline = ref(false)
 const timelineLoadingMore = ref(false)
 const selectedLoopIndex = ref<number | null>(null)
 const scrollArea = ref<{ $el?: HTMLElement } | null>(null)
+const backgroundRefreshing = ref(false)
+let inFlight: Promise<void> | null = null
 
 const selectedNodeUids = computed(() => {
   const value = props.selectedStep
@@ -210,7 +212,13 @@ const {
   watch: false,
 })
 
-async function fetchCurrentMode(append = false) {
+async function fetchCurrentMode(append = false, options?: { silent?: boolean }) {
+  if (!props.runId) return
+  if (inFlight && !append) return inFlight
+
+  const silent = Boolean(options?.silent)
+
+  const run = async () => {
   if (append) {
     if (timelinePending.value || timelineLoadingMore.value || !hasMoreTimeline.value) return
     timelineLoadingMore.value = true
@@ -218,9 +226,9 @@ async function fetchCurrentMode(append = false) {
   else {
     offset.value = 0
     hasMoreTimeline.value = false
-    items.value = []
   }
 
+  backgroundRefreshing.value = silent
   await executeFetch()
 
   const response = tracesData.value
@@ -230,6 +238,15 @@ async function fetchCurrentMode(append = false) {
   hasMoreTimeline.value = Boolean(response?.has_more)
   offset.value = Number(response?.next_offset || 0)
   timelineLoadingMore.value = false
+  backgroundRefreshing.value = false
+  }
+
+  inFlight = run().finally(() => {
+    backgroundRefreshing.value = false
+    inFlight = null
+  })
+
+  return inFlight
 }
 
 async function loadMore() {
@@ -275,8 +292,6 @@ const filteredLogs = computed(() => {
 
 let refreshInterval: any = null
 onMounted(() => {
-  void fetchCurrentMode(false)
-
   useInfiniteScroll(
     () => scrollArea.value?.$el,
     () => loadMore(),
@@ -288,7 +303,7 @@ onMounted(() => {
 
   refreshInterval = setInterval(() => {
     if (isLive.value) {
-      void fetchCurrentMode(false)
+      void fetchCurrentMode(false, { silent: true })
     }
   }, 3000)
 })
@@ -300,7 +315,7 @@ onUnmounted(() => {
 watch(() => props.runId, () => {
   selectedLoopIndex.value = null
   void fetchCurrentMode(false)
-})
+}, { immediate: true })
 
 watch(mode, () => {
   void fetchCurrentMode(false)
@@ -330,29 +345,34 @@ const modeOptions = [
   { value: 'traces', label: 'Traces' },
   { value: 'logs', label: 'Logs' },
   { value: 'states', label: 'States' },
+  { value: 'vars', label: 'Vars' },
   { value: 'streams', label: 'Streams' },
 ]
 
 const eventCount = computed(() => mode.value === 'traces' ? filteredEvents.value.length : 0)
 const logCount = computed(() => mode.value === 'logs' ? filteredLogs.value.length : 0)
 const stateCount = computed(() => mode.value === 'states' ? modeItems.value.length : 0)
+const varCount = computed(() => mode.value === 'vars' ? modeItems.value.length : 0)
 const streamCount = computed(() => mode.value === 'streams' ? streamItems.value.length : 0)
 
 const currentCount = computed(() => {
   if (mode.value === 'logs') return logCount.value
   if (mode.value === 'states') return stateCount.value
+  if (mode.value === 'vars') return varCount.value
   if (mode.value === 'streams') return streamCount.value
   return eventCount.value
 })
 const currentLabelSingular = computed(() => {
   if (mode.value === 'logs') return 'log'
   if (mode.value === 'states') return 'state'
+  if (mode.value === 'vars') return 'var'
   if (mode.value === 'streams') return 'stream'
   return 'trace'
 })
 const currentLabelPlural = computed(() => {
   if (mode.value === 'logs') return 'logs'
   if (mode.value === 'states') return 'states'
+  if (mode.value === 'vars') return 'vars'
   if (mode.value === 'streams') return 'streams'
   return 'traces'
 })
@@ -364,6 +384,8 @@ const modeItems = computed(() => {
       ? filteredLogs.value
       : mode.value === 'states'
         ? items.value
+      : mode.value === 'vars'
+        ? (props.selectedStep ? items.value.filter((item: TimelineItem) => stepMatchesSelection(item.stepName, props.selectedStep)) : items.value)
         : []
 
   const output = Array.isArray(selected) ? [...selected] : []

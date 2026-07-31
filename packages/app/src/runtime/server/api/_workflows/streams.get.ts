@@ -128,15 +128,21 @@ export default defineEventHandler(async (event) => {
       },
     })
 
-    const resultStreams = (result as any)?.streams
-    const streamNames = (Array.isArray(resultStreams)
-      ? resultStreams
-      : Array.isArray(result)
-        ? result.filter((item): item is string => typeof item === 'string')
-        : []) as string[]
+    const rawStreams: unknown = (result as any)?.streams
+    const streamNameList: string[] = []
+    if (Array.isArray(rawStreams)) {
+      for (const item of rawStreams) {
+        if (typeof item === 'string') streamNameList.push(item)
+      }
+    }
+    else if (Array.isArray(result)) {
+      for (const item of result) {
+        if (typeof item === 'string') streamNameList.push(item)
+      }
+    }
 
     const streams: WorkflowStreamGroup[] = await Promise.all(
-      streamNames.map(async (streamName) => {
+      streamNameList.map(async (streamName) => {
         const streamResult = await iii.trigger({
           function_id: 'stream::list',
           payload: {

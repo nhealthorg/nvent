@@ -11,8 +11,7 @@ use crate::{
 
 fn effective_max_retries(def: &WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
     let base_id = node_uid.split('#').next().unwrap_or(node_uid);
-    def
-        .nodes
+    def.nodes
         .get(base_id)
         .and_then(|n| n.function.engine_retry.as_ref())
         .and_then(|r| r.max_attempts)
@@ -95,11 +94,7 @@ pub fn classify_terminal(
     }
 }
 
-fn function_failure_action(
-    retries: u32,
-    max_retries: u32,
-    error: &str,
-) -> FunctionFailureAction {
+fn function_failure_action(retries: u32, max_retries: u32, error: &str) -> FunctionFailureAction {
     if retries < max_retries {
         return FunctionFailureAction::Retry {
             attempt: retries + 1,
@@ -212,7 +207,7 @@ pub async fn reconcile_function_nodes(
 
     for uid in running_functions {
         let result_key = node_result_key(&record.run_id, &uid);
-        
+
         // Try to read the result from state
         match state::get_node_result(&deps.iii, &record.run_id, &uid).await {
             Ok(Some(v)) => {
@@ -244,12 +239,12 @@ pub async fn reconcile_function_nodes(
                     node_uid = %uid,
                     "function node completed - result found in state"
                 );
-                
+
                 // Result is present: node completed successfully
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_ref = Some(result_key);
                     cp.state = NodeState::Done;
-                    cp.completed_at = Some(now);  // Track completion time
+                    cp.completed_at = Some(now); // Track completion time
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -277,7 +272,7 @@ pub async fn reconcile_function_nodes(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_error = Some(format!("state read error: {}", e));
                     cp.state = NodeState::Failed;
-                    cp.completed_at = Some(now);  // Track completion time (failure)
+                    cp.completed_at = Some(now); // Track completion time (failure)
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -379,7 +374,7 @@ pub async fn reconcile_run(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_ref = Some(node_result_key(&record.run_id, &uid));
                     cp.state = NodeState::Done;
-                    cp.completed_at = Some(now);  // Track completion time
+                    cp.completed_at = Some(now); // Track completion time
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -391,7 +386,7 @@ pub async fn reconcile_run(
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_error = Some(err);
                     cp.state = NodeState::Failed;
-                    cp.completed_at = Some(now);  // Track completion time (failure)
+                    cp.completed_at = Some(now); // Track completion time (failure)
                     let dur = cp
                         .pending_at
                         .map(|p| (now - p).max(0) as f64)
@@ -402,7 +397,7 @@ pub async fn reconcile_run(
             NodeOutcome::Cancelled => {
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.state = NodeState::Cancelled;
-                    cp.completed_at = Some(now);  // Track completion time (cancellation)
+                    cp.completed_at = Some(now); // Track completion time (cancellation)
                 }
             }
         }
@@ -418,9 +413,7 @@ pub async fn reconcile_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        EngineRetrySpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowDef,
-    };
+    use crate::types::{EngineRetrySpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowDef};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -440,6 +433,7 @@ mod tests {
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec![],
                 fanout: None,

@@ -2,8 +2,8 @@ use crate::error::WorkflowError;
 use crate::functions::{start, Deps};
 use crate::types::{NodeState, RunStatus, WorkflowDef};
 use iii_sdk::protocol::TriggerRequest;
-use serde_json::json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
@@ -103,7 +103,9 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
             .await;
         match stop_res {
             Ok(_) => stopped_sessions += 1,
-            Err(e) => tracing::warn!(run_id = %req.run_id, error = %e, "cancel: harness::stop failed"),
+            Err(e) => {
+                tracing::warn!(run_id = %req.run_id, error = %e, "cancel: harness::stop failed")
+            }
         }
     }
 
@@ -148,7 +150,10 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
     // Force cancel now: do not wait for a future tick/sweep cycle.
     let now = deps.now_ms();
     for cp in record.nodes.values_mut() {
-        if !matches!(cp.state, NodeState::Done | NodeState::Failed | NodeState::Cancelled) {
+        if !matches!(
+            cp.state,
+            NodeState::Done | NodeState::Failed | NodeState::Cancelled
+        ) {
             cp.state = NodeState::Cancelled;
             cp.completed_at = Some(now);
             if cp.result_error.is_none() {

@@ -8,31 +8,32 @@ use crate::config::WorkerConfig;
 use crate::internal_state::WorkflowInternalStateStore;
 use crate::locks::WorkflowLocks;
 
+pub mod config_get;
+pub mod lifecycle_hooks;
+pub mod list_runs;
+pub mod log_delete;
+pub mod log_read;
+pub mod log_write;
 pub mod node_completed;
 pub mod node_result;
-pub mod run_result;
-pub mod run_delete;
-pub mod lifecycle_hooks;
 pub mod node_result_write;
+pub mod run_delete;
+pub mod run_result;
 pub mod start;
+pub mod state_delete;
+pub mod state_get;
+pub mod state_list;
+pub mod state_set;
 pub mod status;
 pub mod stop;
+pub mod stream_list;
+pub mod stream_publish;
 pub mod sweep;
 pub mod tick;
-pub mod log_write;
-pub mod log_read;
-pub mod log_delete;
-pub mod trace_write;
-pub mod trace_read;
 pub mod trace_delete;
-pub mod state_set;
-pub mod state_get;
-pub mod state_delete;
-pub mod state_list;
-pub mod stream_publish;
-pub mod stream_list;
-pub mod list_runs;
-pub mod config_get;
+pub mod trace_read;
+pub mod trace_write;
+pub mod var_list;
 
 pub type ConfigCell = Arc<tokio::sync::RwLock<Arc<WorkerConfig>>>;
 
@@ -208,6 +209,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
+        "workflow::var-list",
+        RegisterFunction::new_async(move |req: var_list::VarListRequest| {
+            let d = d.clone();
+            async move { var_list::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description("List workflow-scoped ctx.var values for a run from internal state."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
         "workflow::stream-publish",
         RegisterFunction::new_async(move |req: stream_publish::StreamPublishRequest| {
             let d = d.clone();
@@ -306,7 +317,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         "workflow::node-result-write",
         RegisterFunction::new_async(move |req: node_result_write::NodeResultWriteRequest| {
             let d = d.clone();
-            async move { node_result_write::handle(&d, req).await.map_err(Error::from) }
+            async move {
+                node_result_write::handle(&d, req)
+                    .await
+                    .map_err(Error::from)
+            }
         })
         .description(
             "Internal: persist a node result in workflow internal state by run_id and node_uid.",

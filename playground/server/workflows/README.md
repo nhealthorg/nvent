@@ -90,8 +90,40 @@ const join = await ctx.node('join', {
 
 - No inline data transformation (use dedicated functions for transforms)
 - No conditional branching yet (if/else)
-- No loops yet (forEach, while)
 - Input must match the exact shape expected by the called function
+
+## E2E Workflow For New Features
+
+Use `server/workflows/e2e-new-features.ts` (ID: `e2e-new-features`) to validate the latest workflow features end-to-end:
+
+- Partial payload refs in `ctx.call(...)` (including nested refs)
+- Workflow variables via `ctx.var(...)`
+- Passing var payload into later calls
+- Loop item field refs (`loop.item.id`, `loop.item.text`) in loop calls
+
+Trigger example:
+
+```typescript
+const iii = useIii()
+const res = await iii.trigger({
+  function_id: 'e2e-new-features',
+  payload: { seed: 'hello-e2e' }
+})
+```
+
+Expected final result shape:
+
+```json
+{
+  "success": true,
+  "summary": {
+    "partialOk": true,
+    "varAccepted": true,
+    "loopCount": 3
+  },
+  "details": { "...": "full intermediate outputs" }
+}
+```
 
 ## Workflow DAG Compilation
 

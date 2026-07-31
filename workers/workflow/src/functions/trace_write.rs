@@ -38,16 +38,16 @@ pub async fn handle(deps: &Deps, req: TraceWriteRequest) -> Result<(), WorkflowE
         .write_trace(
             &deps.iii,
             &state::WorkflowRunTraceRecord {
-            id: req.id,
-            run_id: req.run_id,
-            node_uid: req.node_uid,
-            function_id: req.function_id,
-            runtime: req.runtime,
-            event_name: req.event_name,
-            ts_unix_ms: req.ts_unix_ms,
-            attributes: req.attributes,
-            trace_id: req.trace_id,
-            span_id: req.span_id,
+                id: req.id,
+                run_id: req.run_id,
+                node_uid: req.node_uid,
+                function_id: req.function_id,
+                runtime: req.runtime,
+                event_name: req.event_name,
+                ts_unix_ms: req.ts_unix_ms,
+                attributes: req.attributes,
+                trace_id: req.trace_id,
+                span_id: req.span_id,
             },
         )
         .await

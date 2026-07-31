@@ -62,7 +62,9 @@ async fn fetch_registry_entries(
 
     let mut entries = Vec::new();
     while let Some(result) = tasks.join_next().await {
-        if let Some(entry) = result.map_err(|error| WorkflowError::State(format!("state::list task failed: {error}")))?? {
+        if let Some(entry) = result
+            .map_err(|error| WorkflowError::State(format!("state::list task failed: {error}")))??
+        {
             entries.push(entry);
         }
 
@@ -148,8 +150,8 @@ fn registry_keys_from_map(map: &std::collections::BTreeMap<String, bool>) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn collect_scanned_entries_strips_run_prefix() {
@@ -162,8 +164,12 @@ mod tests {
         let entries = collect_scanned_entries(&list, "r_1");
 
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().any(|entry| entry.key == "count" && entry.value == json!(3)));
-        assert!(entries.iter().any(|entry| entry.key == "result" && entry.value == json!({"ok": true})));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.key == "count" && entry.value == json!(3)));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.key == "result" && entry.value == json!({"ok": true})));
     }
 
     #[test]

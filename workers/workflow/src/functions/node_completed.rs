@@ -6,15 +6,15 @@
 //! the run_id and node_uid; the handler enqueues a new tick if the run is still
 //! non-terminal.
 
-use serde::Deserialize;
 use schemars::JsonSchema;
+use serde::Deserialize;
 
-use crate::functions::{Deps, start};
 use crate::error::WorkflowError;
+use crate::functions::{start, Deps};
 
 pub const NODE_COMPLETED_ID: &str = "workflow::node-completed";
 
-pub const NODE_COMPLETED_DESC: &str = 
+pub const NODE_COMPLETED_DESC: &str =
     "Internal: called by workflow functions when they complete asynchronously to wake \
      the orchestrator. Payload: {run_id, node_uid}. Functions running via queue \
      should emit this after storing their result via state::put to enable instant \
@@ -52,7 +52,7 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
         node_uid = %event.node_uid,
         "received node-completed event"
     );
-    
+
     let _g = deps.locks.guard(&event.run_id).await;
 
     let Some(record) = crate::state::get_run(&deps.iii, &event.run_id).await? else {
@@ -99,7 +99,10 @@ mod tests {
         .expect("valid NodeCompletedEvent");
         assert_eq!(event.run_id, "run_abc");
         assert_eq!(event.node_uid, "gen#2");
-        assert_eq!(event.trace_id.as_deref(), Some("1234567890abcdef1234567890abcdef"));
+        assert_eq!(
+            event.trace_id.as_deref(),
+            Some("1234567890abcdef1234567890abcdef")
+        );
         assert_eq!(event.function_id.as_deref(), Some("process-text"));
         assert_eq!(event.runtime.as_deref(), Some("nodejs"));
     }

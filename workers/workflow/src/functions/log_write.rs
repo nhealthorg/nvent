@@ -35,15 +35,15 @@ pub async fn handle(deps: &Deps, req: LogWriteRequest) -> Result<(), WorkflowErr
         .write_log(
             &deps.iii,
             &state::WorkflowRunLogRecord {
-            id: req.id,
-            run_id: req.run_id,
-            node_uid: req.node_uid,
-            function_id: req.function_id,
-            runtime: req.runtime,
-            level: req.level,
-            message: req.message,
-            ts_unix_ms: req.ts_unix_ms,
-            data: req.data,
+                id: req.id,
+                run_id: req.run_id,
+                node_uid: req.node_uid,
+                function_id: req.function_id,
+                runtime: req.runtime,
+                level: req.level,
+                message: req.message,
+                ts_unix_ms: req.ts_unix_ms,
+                data: req.data,
             },
         )
         .await

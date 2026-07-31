@@ -1,0 +1,246 @@
+type WorkflowPlanLike = {
+  nodes?: Record<string, any>
+  output?: { from?: unknown }
+  metadata?: unknown
+}
+
+type PlanIssue = {
+  path: string
+  message: string
+  value: unknown
+}
+
+function toFallbackFrom(node: any): string {
+  const deps = Array.isArray(node?.depends_on)
+    ? node.depends_on.filter((dep: unknown) => typeof dep === 'string')
+    : []
+  if (deps.length === 1) return `node:${deps[0]}`
+  return 'run_input'
+}
+
+function toStringFromArray(from: unknown[]): string[] {
+  const mapped = from
+    .map((item) => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object' && '$ref' in item && typeof (item as any).$ref === 'string') {
+        return (item as any).$ref
+      }
+      return null
+    })
+    .filter((item): item is string => typeof item === 'string' && item.length > 0)
+
+  return mapped.length > 0 ? mapped : ['run_input']
+}
+
+export function sanitizeWorkflowPlanInputFrom(plan: WorkflowPlanLike) {
+  const nodes = plan?.nodes
+  if (!nodes || typeof nodes !== 'object') return
+
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    if (!node || typeof node !== 'object') continue
+
+    const input = (node as any).input
+    if (!input || typeof input !== 'object' || Array.isArray(input)) continue
+
+    const from = (input as any).from
+    if (typeof from === 'string') continue
+    if (Array.isArray(from) && from.every(item => typeof item === 'string')) continue
+
+    if (Array.isArray(from)) {
+      ;(input as any).from = toStringFromArray(from)
+      continue
+    }
+
+    if (from && typeof from === 'object' && '$ref' in from && typeof (from as any).$ref === 'string') {
+      ;(input as any).from = (from as any).$ref
+      continue
+    }
+
+    const fallbackFrom = toFallbackFrom(node)
+    ;(input as any).from = fallbackFrom
+    console.warn(`[nvent/workflow] Sanitized invalid input.from for node '${nodeId}' to '${fallbackFrom}'.`)
+  }
+}
+
+export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): PlanIssue[] {
+  const issues: PlanIssue[] = []
+  const nodes = plan?.nodes
+
+  if (!nodes || typeof nodes !== 'object') {
+    issues.push({
+      path: 'definition.nodes',
+      message: 'nodes must be an object',
+      value: nodes,
+    })
+    return issues
+  }
+
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    if (!node || typeof node !== 'object') {
+      issues.push({
+        path: `definition.nodes.${nodeId}`,
+        message: 'node definition must be an object',
+        value: node,
+      })
+      continue
+    }
+
+    const label = (node as any).label
+    if (label != null && typeof label !== 'string') {
+      issues.push({
+        path: `definition.nodes.${nodeId}.label`,
+        message: 'label must be a string when provided',
+        value: label,
+      })
+    }
+
+    const fn = (node as any).function
+    if (!fn || typeof fn !== 'object' || Array.isArray(fn)) {
+      issues.push({
+        path: `definition.nodes.${nodeId}.function`,
+        message: 'function must be an object',
+        value: fn,
+      })
+    } else {
+      const functionId = (fn as any).id
+      if (typeof functionId !== 'string' || functionId.length === 0) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.function.id`,
+          message: 'function.id must be a non-empty string',
+          value: functionId,
+        })
+      }
+
+      const queue = (fn as any).queue
+      if (queue != null && typeof queue !== 'string') {
+        issues.push({
+          path: `definition.nodes.${nodeId}.function.queue`,
+          message: 'function.queue must be a string when provided',
+          value: queue,
+        })
+      }
+    }
+
+    const input = (node as any).input
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      issues.push({
+        path: `definition.nodes.${nodeId}.input`,
+        message: 'input must be an object',
+        value: input,
+      })
+      continue
+    }
+
+    const from = (input as any).from
+    const fromIsString = typeof from === 'string'
+    const fromIsStringArray = Array.isArray(from) && from.every(item => typeof item === 'string')
+
+    if (!fromIsString && !fromIsStringArray) {
+      issues.push({
+        path: `definition.nodes.${nodeId}.input.from`,
+        message: 'from must be a string or string[]',
+        value: from,
+      })
+    }
+
+    const template = (input as any).template
+    if (template != null && typeof template !== 'string') {
+      issues.push({
+        path: `definition.nodes.${nodeId}.input.template`,
+        message: 'template must be a string when provided',
+        value: template,
+      })
+    }
+
+    const dependsOn = (node as any).depends_on
+    if (dependsOn != null) {
+      if (!Array.isArray(dependsOn) || !dependsOn.every((dep) => typeof dep === 'string')) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.depends_on`,
+          message: 'depends_on must be string[] when provided',
+          value: dependsOn,
+        })
+      }
+    }
+
+    const fanout = (node as any).fanout
+    if (fanout != null) {
+      if (!fanout || typeof fanout !== 'object' || Array.isArray(fanout)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.fanout`,
+          message: 'fanout must be an object when provided',
+          value: fanout,
+        })
+      } else {
+        const over = (fanout as any).over
+        if (typeof over !== 'string' || over.length === 0) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.fanout.over`,
+            message: 'fanout.over must be a non-empty string',
+            value: over,
+          })
+        }
+
+        const mode = (fanout as any).mode
+        if (mode != null && mode !== 'parallel' && mode !== 'sequential') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.fanout.mode`,
+            message: 'fanout.mode must be parallel or sequential when provided',
+            value: mode,
+          })
+        }
+      }
+    }
+  }
+
+  const outFrom = plan?.output?.from
+  if (typeof outFrom !== 'string' || outFrom.length === 0) {
+    issues.push({
+      path: 'definition.output.from',
+      message: 'output.from must be a non-empty string',
+      value: outFrom,
+    })
+  }
+
+  return issues
+}
+
+export function serializeWorkflowDefinitionOrThrow(plan: WorkflowPlanLike) {
+  const serializable = JSON.parse(JSON.stringify(plan)) as WorkflowPlanLike
+  sanitizeWorkflowPlanInputFrom(serializable)
+
+  const issues = collectWorkflowPlanSerializationIssues(serializable)
+  if (issues.length === 0) return serializable
+
+  const details = issues
+    .map(issue => `${issue.path}: ${issue.message}; got=${JSON.stringify(issue.value)}`)
+    .join(' | ')
+
+  throw new Error(
+    `workflow definition contains non-serializable input references for workflow::start: ${details}`,
+  )
+}
+
+export function summarizeWorkflowDefinitionShape(plan: WorkflowPlanLike) {
+  const nodes = plan?.nodes && typeof plan.nodes === 'object' ? plan.nodes : {}
+
+  return Object.entries(nodes).map(([nodeId, node]) => {
+    const rec = node as any
+    const input = rec?.input
+    const functionSpec = rec?.function
+    const fanout = rec?.fanout
+
+    return {
+      nodeId,
+      functionIdType: typeof functionSpec?.id,
+      functionId: functionSpec?.id,
+      inputFromType: Array.isArray(input?.from) ? 'array' : typeof input?.from,
+      inputFrom: input?.from,
+      inputTemplateType: typeof input?.template,
+      fanoutOverType: typeof fanout?.over,
+      fanoutOver: fanout?.over,
+      dependsOnType: Array.isArray(rec?.depends_on) ? 'array' : typeof rec?.depends_on,
+      dependsOn: rec?.depends_on,
+    }
+  })
+}

@@ -36,7 +36,10 @@ pub struct TraceReadResponse {
     pub next_offset: u32,
 }
 
-pub async fn handle(deps: &Deps, req: TraceReadRequest) -> Result<TraceReadResponse, WorkflowError> {
+pub async fn handle(
+    deps: &Deps,
+    req: TraceReadRequest,
+) -> Result<TraceReadResponse, WorkflowError> {
     let (items, has_more, next_offset) = observability::adapter()
         .read_traces(
             &deps.iii,

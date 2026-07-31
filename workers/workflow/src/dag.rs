@@ -326,7 +326,9 @@ fn same_sequential_fanout_group(def: &WorkflowDef, a: &str, b: &str) -> bool {
         return false;
     };
 
-    if a_fanout.mode != Some(FanoutMode::Sequential) || b_fanout.mode != Some(FanoutMode::Sequential) {
+    if a_fanout.mode != Some(FanoutMode::Sequential)
+        || b_fanout.mode != Some(FanoutMode::Sequential)
+    {
         return false;
     }
 
@@ -364,7 +366,11 @@ fn sequential_group_members(def: &WorkflowDef, seed: &str) -> Vec<String> {
     out
 }
 
-fn sequential_group_active_index(def: &WorkflowDef, record: &WorkflowRunRecord, seed: &str) -> Option<usize> {
+fn sequential_group_active_index(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    seed: &str,
+) -> Option<usize> {
     let members = sequential_group_members(def, seed);
     if members.is_empty() {
         return None;
@@ -495,7 +501,10 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
 
                             let prev_done = (0..i).all(|j| {
                                 let prev_uid = node_uid(node_id, Some(j as u32));
-                                matches!(record.nodes.get(&prev_uid).map(|cp| cp.state), Some(NodeState::Done))
+                                matches!(
+                                    record.nodes.get(&prev_uid).map(|cp| cp.state),
+                                    Some(NodeState::Done)
+                                )
                             });
                             let in_active_slice = active_index.map(|idx| idx == i).unwrap_or(true);
                             if prev_done && in_active_slice {
@@ -755,6 +764,7 @@ mod tests {
                 input: InputSpec {
                     from: "run_input".into(),
                     template: Some("List the docs to read for: {{topic}}".to_string()),
+                    value: None,
                 },
                 depends_on: vec![],
                 fanout: None,
@@ -775,6 +785,7 @@ mod tests {
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: Some("Read and summarize: {{item}}".to_string()),
+                    value: None,
                 },
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
@@ -798,6 +809,7 @@ mod tests {
                 input: InputSpec {
                     from: "node:read".into(),
                     template: Some("Synthesize from: {{results}}".to_string()),
+                    value: None,
                 },
                 depends_on: vec!["read".to_string()],
                 fanout: None,
@@ -827,6 +839,7 @@ mod tests {
             abort: false,
             def_ref: "run_test".to_string(),
             input_ref: "run_test".to_string(),
+            vars_ref: Some("run_test".to_string()),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
             queue_receipts: Vec::new(),
@@ -1179,6 +1192,7 @@ mod tests {
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec![],
                 fanout: None,
@@ -1192,6 +1206,7 @@ mod tests {
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec![],
                 fanout: None,
@@ -1205,6 +1220,7 @@ mod tests {
                 input: InputSpec {
                     from: InputFrom::Many(vec!["node:b".to_string(), "node:c".to_string()]),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec!["b".to_string(), "c".to_string()],
                 fanout: None,

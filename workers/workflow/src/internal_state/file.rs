@@ -54,6 +54,10 @@ impl FileWorkflowInternalStateStore {
         self.base_dir.join("run-results")
     }
 
+    fn vars_dir(&self) -> PathBuf {
+        self.base_dir.join("vars")
+    }
+
     fn results_dir(&self) -> PathBuf {
         self.base_dir.join("results")
     }
@@ -75,19 +79,27 @@ impl FileWorkflowInternalStateStore {
     }
 
     fn run_path(&self, run_id: &str) -> PathBuf {
-        self.runs_dir().join(format!("{}.json", sanitize_segment(run_id)))
+        self.runs_dir()
+            .join(format!("{}.json", sanitize_segment(run_id)))
     }
 
     fn def_path(&self, run_id: &str) -> PathBuf {
-        self.defs_dir().join(format!("{}.json", sanitize_segment(run_id)))
+        self.defs_dir()
+            .join(format!("{}.json", sanitize_segment(run_id)))
     }
 
     fn input_path(&self, run_id: &str) -> PathBuf {
-        self.inputs_dir().join(format!("{}.json", sanitize_segment(run_id)))
+        self.inputs_dir()
+            .join(format!("{}.json", sanitize_segment(run_id)))
     }
 
     fn run_result_path(&self, run_id: &str) -> PathBuf {
         self.run_results_dir()
+            .join(format!("{}.json", sanitize_segment(run_id)))
+    }
+
+    fn vars_path(&self, run_id: &str) -> PathBuf {
+        self.vars_dir()
             .join(format!("{}.json", sanitize_segment(run_id)))
     }
 
@@ -98,11 +110,13 @@ impl FileWorkflowInternalStateStore {
     }
 
     fn log_path(&self, run_id: &str) -> PathBuf {
-        self.logs_dir().join(format!("{}.ndjson", sanitize_segment(run_id)))
+        self.logs_dir()
+            .join(format!("{}.ndjson", sanitize_segment(run_id)))
     }
 
     fn trace_path(&self, run_id: &str) -> PathBuf {
-        self.traces_dir().join(format!("{}.ndjson", sanitize_segment(run_id)))
+        self.traces_dir()
+            .join(format!("{}.ndjson", sanitize_segment(run_id)))
     }
 
     fn session_path(&self, session_id: &str) -> PathBuf {
@@ -218,6 +232,18 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         remove_if_exists(&self.input_path(run_id)).await
     }
 
+    async fn get_run_vars(&self, run_id: &str) -> Result<Option<Value>, WorkflowError> {
+        read_json_opt::<Value>(&self.vars_path(run_id)).await
+    }
+
+    async fn put_run_vars(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError> {
+        write_json_atomic(&self.vars_path(run_id), value).await
+    }
+
+    async fn delete_run_vars(&self, run_id: &str) -> Result<(), WorkflowError> {
+        remove_if_exists(&self.vars_path(run_id)).await
+    }
+
     async fn get_run_result(&self, run_id: &str) -> Result<Option<Value>, WorkflowError> {
         read_json_opt::<Value>(&self.run_result_path(run_id)).await
     }
@@ -230,11 +256,20 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         remove_if_exists(&self.run_result_path(run_id)).await
     }
 
-    async fn get_node_result(&self, run_id: &str, node_uid: &str) -> Result<Option<Value>, WorkflowError> {
+    async fn get_node_result(
+        &self,
+        run_id: &str,
+        node_uid: &str,
+    ) -> Result<Option<Value>, WorkflowError> {
         read_json_opt::<Value>(&self.result_path(run_id, node_uid)).await
     }
 
-    async fn put_node_result(&self, run_id: &str, node_uid: &str, value: &Value) -> Result<(), WorkflowError> {
+    async fn put_node_result(
+        &self,
+        run_id: &str,
+        node_uid: &str,
+        value: &Value,
+    ) -> Result<(), WorkflowError> {
         write_json_atomic(&self.result_path(run_id, node_uid), value).await
     }
 
@@ -242,11 +277,18 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         remove_if_exists(&self.result_path(run_id, node_uid)).await
     }
 
-    async fn put_run_log(&self, run_id: &str, entry: &WorkflowRunLogRecord) -> Result<(), WorkflowError> {
+    async fn put_run_log(
+        &self,
+        run_id: &str,
+        entry: &WorkflowRunLogRecord,
+    ) -> Result<(), WorkflowError> {
         append_ndjson_line(&self.log_path(run_id), entry).await
     }
 
-    async fn list_run_logs(&self, run_id: &str) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError> {
+    async fn list_run_logs(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError> {
         read_ndjson_lines(&self.log_path(run_id)).await
     }
 
@@ -256,7 +298,11 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         write_ndjson_lines(&self.log_path(run_id), &rows).await
     }
 
-    async fn prune_run_logs_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError> {
+    async fn prune_run_logs_before(
+        &self,
+        run_id: &str,
+        cutoff_unix_ms: i64,
+    ) -> Result<u64, WorkflowError> {
         let mut rows = self.list_run_logs(run_id).await?;
         let before = rows.len();
         rows.retain(|r| r.ts_unix_ms >= cutoff_unix_ms);
@@ -265,11 +311,18 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         Ok(removed)
     }
 
-    async fn put_run_trace(&self, run_id: &str, entry: &WorkflowRunTraceRecord) -> Result<(), WorkflowError> {
+    async fn put_run_trace(
+        &self,
+        run_id: &str,
+        entry: &WorkflowRunTraceRecord,
+    ) -> Result<(), WorkflowError> {
         append_ndjson_line(&self.trace_path(run_id), entry).await
     }
 
-    async fn list_run_traces(&self, run_id: &str) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
+    async fn list_run_traces(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
         read_ndjson_lines(&self.trace_path(run_id)).await
     }
 
@@ -279,7 +332,11 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         write_ndjson_lines(&self.trace_path(run_id), &rows).await
     }
 
-    async fn prune_run_traces_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError> {
+    async fn prune_run_traces_before(
+        &self,
+        run_id: &str,
+        cutoff_unix_ms: i64,
+    ) -> Result<u64, WorkflowError> {
         let mut rows = self.list_run_traces(run_id).await?;
         let before = rows.len();
         rows.retain(|r| r.ts_unix_ms >= cutoff_unix_ms);
@@ -336,10 +393,12 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
     }
 
     async fn put_queue_receipt(&self, receipt: &QueueReceiptRecord) -> Result<(), WorkflowError> {
-        let mut run = self
-            .get_run(&receipt.run_id)
-            .await?
-            .ok_or_else(|| WorkflowError::State(format!("put_queue_receipt: run not found: {}", receipt.run_id)))?;
+        let mut run = self.get_run(&receipt.run_id).await?.ok_or_else(|| {
+            WorkflowError::State(format!(
+                "put_queue_receipt: run not found: {}",
+                receipt.run_id
+            ))
+        })?;
 
         if let Some(existing) = run.queue_receipts.iter_mut().find(|r| r.id == receipt.id) {
             *existing = receipt.clone();
@@ -350,7 +409,10 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         self.put_run(&run, None).await
     }
 
-    async fn list_queue_receipts(&self, run_id: &str) -> Result<Vec<QueueReceiptRecord>, WorkflowError> {
+    async fn list_queue_receipts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<QueueReceiptRecord>, WorkflowError> {
         Ok(self
             .get_run(run_id)
             .await?
@@ -396,7 +458,11 @@ async fn ensure_parent_dir(path: &Path) -> Result<(), WorkflowError> {
         return Ok(());
     };
     fs::create_dir_all(parent).await.map_err(|err| {
-        WorkflowError::State(format!("create_dir_all failed for {}: {}", parent.display(), err))
+        WorkflowError::State(format!(
+            "create_dir_all failed for {}: {}",
+            parent.display(),
+            err
+        ))
     })
 }
 
@@ -417,7 +483,9 @@ async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), W
     })
 }
 
-async fn read_json_opt<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, WorkflowError> {
+async fn read_json_opt<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Result<Option<T>, WorkflowError> {
     let bytes = match fs::read(path).await {
         Ok(v) => v,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -470,16 +538,43 @@ mod tests {
         cfg.internal_state_file_dir = dir.to_string_lossy().into_owned();
 
         let store = FileWorkflowInternalStateStore::new(&cfg);
-        store.put_run_trace("run-1", &sample_trace("trace-1", 100)).await.expect("put trace 1");
-        store.put_run_trace("run-1", &sample_trace("trace-2", 300)).await.expect("put trace 2");
-        store.put_run_trace("run-1", &sample_trace("trace-3", 200)).await.expect("put trace 3");
+        store
+            .put_run_trace("run-1", &sample_trace("trace-1", 100))
+            .await
+            .expect("put trace 1");
+        store
+            .put_run_trace("run-1", &sample_trace("trace-2", 300))
+            .await
+            .expect("put trace 2");
+        store
+            .put_run_trace("run-1", &sample_trace("trace-3", 200))
+            .await
+            .expect("put trace 3");
 
-        let (first_page, first_has_more) = store.list_run_traces_paged("run-1", 0, 2).await.expect("page 1");
-        let (second_page, second_has_more) = store.list_run_traces_paged("run-1", 2, 2).await.expect("page 2");
+        let (first_page, first_has_more) = store
+            .list_run_traces_paged("run-1", 0, 2)
+            .await
+            .expect("page 1");
+        let (second_page, second_has_more) = store
+            .list_run_traces_paged("run-1", 2, 2)
+            .await
+            .expect("page 2");
 
-        assert_eq!(first_page.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["trace-2", "trace-3"]);
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["trace-2", "trace-3"]
+        );
         assert!(first_has_more);
-        assert_eq!(second_page.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["trace-1"]);
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["trace-1"]
+        );
         assert!(!second_has_more);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -505,16 +600,28 @@ async fn append_ndjson_line<T: Serialize>(path: &Path, value: &T) -> Result<(), 
         .append(true)
         .open(path)
         .await
-        .map_err(|err| WorkflowError::State(format!("open append failed for {}: {}", path.display(), err)))?;
+        .map_err(|err| {
+            WorkflowError::State(format!(
+                "open append failed for {}: {}",
+                path.display(),
+                err
+            ))
+        })?;
 
     let mut bytes = serde_json::to_vec(value).map_err(WorkflowError::Serde)?;
     bytes.push(b'\n');
     file.write_all(&bytes).await.map_err(|err| {
-        WorkflowError::State(format!("append write failed for {}: {}", path.display(), err))
+        WorkflowError::State(format!(
+            "append write failed for {}: {}",
+            path.display(),
+            err
+        ))
     })
 }
 
-async fn read_ndjson_lines<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>, WorkflowError> {
+async fn read_ndjson_lines<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Result<Vec<T>, WorkflowError> {
     let raw = match fs::read_to_string(path).await {
         Ok(v) => v,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -545,9 +652,9 @@ async fn write_ndjson_lines<T: Serialize>(path: &Path, items: &[T]) -> Result<()
     }
 
     let tmp = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp)
-        .await
-        .map_err(|err| WorkflowError::State(format!("create failed for {}: {}", tmp.display(), err)))?;
+    let mut file = fs::File::create(&tmp).await.map_err(|err| {
+        WorkflowError::State(format!("create failed for {}: {}", tmp.display(), err))
+    })?;
 
     for item in items {
         let mut bytes = serde_json::to_vec(item).map_err(WorkflowError::Serde)?;

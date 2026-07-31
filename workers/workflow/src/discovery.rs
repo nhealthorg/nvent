@@ -1,10 +1,12 @@
+use iii_sdk::{
+    protocol::RegisterTriggerInput, protocol::TriggerRequest, IIIClient, RegisterFunction,
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde::Deserialize;
-use schemars::JsonSchema;
-use iii_sdk::{IIIClient, RegisterFunction, protocol::RegisterTriggerInput, protocol::TriggerRequest};
-use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct FunctionsAvailable {
@@ -24,7 +26,7 @@ pub type DiscoveryRegistry = Arc<RwLock<HashSet<String>>>;
 
 pub async fn init(iii: &Arc<IIIClient>) -> DiscoveryRegistry {
     let registry = Arc::new(RwLock::new(HashSet::new()));
-    
+
     // Initial fetch
     if let Err(e) = refresh_registry(iii, &registry).await {
         tracing::warn!(error = %e, "initial function discovery failed");
@@ -66,15 +68,18 @@ pub async fn init(iii: &Arc<IIIClient>) -> DiscoveryRegistry {
 }
 
 pub async fn refresh_registry(iii: &IIIClient, registry: &DiscoveryRegistry) -> Result<(), String> {
-    let resp = iii.trigger(TriggerRequest {
-        function_id: "engine::functions::list".into(),
-        payload: json!({ "include_internal": false }),
-        action: None,
-        timeout_ms: Some(5000),
-    }).await.map_err(|e| e.to_string())?;
+    let resp = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".into(),
+            payload: json!({ "include_internal": false }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
 
     let input: FunctionsListResponse = serde_json::from_value(resp).map_err(|e| e.to_string())?;
-    
+
     let mut w = registry.write().await;
     w.clear();
     for f in &input.functions {

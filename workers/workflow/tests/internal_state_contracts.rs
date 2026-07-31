@@ -18,7 +18,10 @@ fn workflow_function_state_handlers_do_not_mutate_workflow_run_via_state_update(
     let state_set = read_repo_file("workers/workflow/src/functions/state_set.rs");
     let state_delete = read_repo_file("workers/workflow/src/functions/state_delete.rs");
 
-    for (name, content) in [("state_set.rs", state_set), ("state_delete.rs", state_delete)] {
+    for (name, content) in [
+        ("state_set.rs", state_set),
+        ("state_delete.rs", state_delete),
+    ] {
         assert!(
             !content.contains("state::state_update("),
             "{name} must not write registry via iii state::update on workflow_run"
@@ -36,14 +39,10 @@ fn workflow_function_state_handlers_do_not_mutate_workflow_run_via_state_update(
 
 #[test]
 fn workflow_wrappers_write_node_results_via_internal_worker_function() {
-    let node_wrapper =
-        read_repo_file("packages/nvent/src/runtime/nitro/utils/workers/node.ts");
+    let node_wrapper = read_repo_file("packages/nvent/src/runtime/nitro/utils/workers/node.ts");
     let py_wrapper = read_repo_file("packages/nvent/src/runtime/python/worker_runtime.py");
 
-    for (name, content) in [
-        ("node.ts", node_wrapper),
-        ("worker_runtime.py", py_wrapper),
-    ] {
+    for (name, content) in [("node.ts", node_wrapper), ("worker_runtime.py", py_wrapper)] {
         assert!(
             content.contains("workflow::node-result-write"),
             "{name} must call workflow::node-result-write for workflow node results"

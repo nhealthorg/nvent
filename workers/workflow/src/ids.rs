@@ -50,6 +50,11 @@ pub fn input_key(run_id: &str) -> String {
     run_id.to_string()
 }
 
+/// Key for run-scoped workflow variables blob in internal state.
+pub fn vars_key(run_id: &str) -> String {
+    run_id.to_string()
+}
+
 /// Key for the terminal workflow output blob in internal state.
 pub fn run_result_key(run_id: &str) -> String {
     run_id.to_string()

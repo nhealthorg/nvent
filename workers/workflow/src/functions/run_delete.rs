@@ -30,11 +30,17 @@ pub struct RunDeleteResponse {
     pub queue_cleanup_errors: BTreeMap<String, String>,
 }
 
-pub async fn handle(deps: &Deps, req: RunDeleteRequest) -> Result<RunDeleteResponse, WorkflowError> {
+pub async fn handle(
+    deps: &Deps,
+    req: RunDeleteRequest,
+) -> Result<RunDeleteResponse, WorkflowError> {
     delete_run_by_id(deps, &req.run_id).await
 }
 
-pub async fn delete_run_by_id(deps: &Deps, run_id: &str) -> Result<RunDeleteResponse, WorkflowError> {
+pub async fn delete_run_by_id(
+    deps: &Deps,
+    run_id: &str,
+) -> Result<RunDeleteResponse, WorkflowError> {
     let _g = deps.locks.guard(run_id).await;
 
     let Some(record) = crate::state::get_run(&deps.iii, run_id).await? else {
@@ -161,7 +167,9 @@ async fn cleanup_queue_receipt(deps: &Deps, queue: &str, receipt_id: &str) -> Re
     }
 }
 
-fn collect_running_sessions(nodes: &std::collections::BTreeMap<String, crate::types::NodeCheckpoint>) -> Vec<String> {
+fn collect_running_sessions(
+    nodes: &std::collections::BTreeMap<String, crate::types::NodeCheckpoint>,
+) -> Vec<String> {
     nodes
         .values()
         .filter(|cp| cp.state == NodeState::Running)

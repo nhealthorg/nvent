@@ -127,10 +127,7 @@ impl ObservabilityAdapter for StateObservabilityAdapter {
         let mut items = state::list_run_logs(iii, run_id).await?;
 
         items.retain(|item| {
-            matches_node_uid_filter(
-                item.node_uid.as_deref(),
-                filter.node_uids.as_deref(),
-            )
+            matches_node_uid_filter(item.node_uid.as_deref(), filter.node_uids.as_deref())
         });
         if let Some(function_id) = filter.function_id.as_deref() {
             items.retain(|item| item.function_id.as_deref() == Some(function_id));
@@ -147,8 +144,7 @@ impl ObservabilityAdapter for StateObservabilityAdapter {
         if let Some(loop_index) = filter.loop_index {
             let suffix = format!("#{loop_index}");
             items.retain(|item| {
-                item
-                    .node_uid
+                item.node_uid
                     .as_deref()
                     .map(|uid| uid.ends_with(&suffix))
                     .unwrap_or(false)
@@ -159,7 +155,11 @@ impl ObservabilityAdapter for StateObservabilityAdapter {
         let limit = limit as usize;
         let offset = offset as usize;
         let total = items.len();
-        let page = items.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+        let page = items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
         let next_offset = (offset + page.len()) as u32;
         let has_more = offset + page.len() < total;
 
@@ -244,10 +244,7 @@ impl ObservabilityAdapter for StateObservabilityAdapter {
 }
 
 fn trace_matches_filter(item: &state::WorkflowRunTraceRecord, filter: &TraceReadFilter) -> bool {
-    if !matches_node_uid_filter(
-        item.node_uid.as_deref(),
-        filter.node_uids.as_deref(),
-    ) {
+    if !matches_node_uid_filter(item.node_uid.as_deref(), filter.node_uids.as_deref()) {
         return false;
     }
 
@@ -296,10 +293,7 @@ fn trace_matches_filter(item: &state::WorkflowRunTraceRecord, filter: &TraceRead
     true
 }
 
-fn matches_node_uid_filter(
-    item_node_uid: Option<&str>,
-    node_uids: Option<&[String]>,
-) -> bool {
+fn matches_node_uid_filter(item_node_uid: Option<&str>, node_uids: Option<&[String]>) -> bool {
     let Some(node_uids) = node_uids else {
         return true;
     };
@@ -327,7 +321,8 @@ async fn read_traces_filtered_paged(
     let mut page = Vec::new();
 
     loop {
-        let (rows, has_more_raw) = state::list_run_traces_paged(iii, run_id, raw_offset, raw_chunk_size).await?;
+        let (rows, has_more_raw) =
+            state::list_run_traces_paged(iii, run_id, raw_offset, raw_chunk_size).await?;
 
         if rows.is_empty() {
             let next_offset = offset.saturating_add(page.len() as u32);
@@ -352,11 +347,7 @@ async fn read_traces_filtered_paged(
 
             // Found one more matching row beyond requested page.
             let next_offset = offset.saturating_add(limit.min(page.len() as u32));
-            return Ok((
-                page,
-                true,
-                next_offset,
-            ));
+            return Ok((page, true, next_offset));
         }
 
         if !has_more_raw {

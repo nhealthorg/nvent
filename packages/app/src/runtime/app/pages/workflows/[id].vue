@@ -72,7 +72,7 @@ interface UseWorkflowRunDetailResult {
   status: Ref<WorkflowRunStatusResponse | null>
   statusPending: Ref<boolean>
   statusError: Ref<unknown>
-  refreshStatus: () => Promise<void>
+  refreshStatus: (options?: { silent?: boolean }) => Promise<void>
   refreshAll: () => Promise<void>
 }
 
@@ -80,20 +80,40 @@ function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult
   const status = ref<WorkflowRunStatusResponse | null>(null)
   const statusPending = ref(false)
   const statusError = ref<unknown>(null)
+  let inFlight: Promise<void> | null = null
 
-  async function refreshStatus() {
-    statusPending.value = true
-    statusError.value = null
+  async function refreshStatus(options?: { silent?: boolean }) {
+    if (inFlight) {
+      await inFlight
+      return
+    }
+
+    const silent = Boolean(options?.silent)
+    const run = async () => {
+      if (!silent) {
+        statusPending.value = true
+      }
+      statusError.value = null
+      try {
+        status.value = await $fetch<WorkflowRunStatusResponse>('/api/_workflows/status', {
+          params: { run_id: runIdRef.value },
+        })
+      }
+      catch (error) {
+        statusError.value = error
+      }
+      finally {
+        if (!silent) {
+          statusPending.value = false
+        }
+      }
+    }
+
+    inFlight = run()
     try {
-      status.value = await $fetch<WorkflowRunStatusResponse>('/api/_workflows/status', {
-        params: { run_id: runIdRef.value },
-      })
-    }
-    catch (error) {
-      statusError.value = error
-    }
-    finally {
-      statusPending.value = false
+      await inFlight
+    } finally {
+      inFlight = null
     }
   }
 
@@ -132,9 +152,9 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   refreshInterval = setInterval(() => {
     if (status.value?.status === 'running' || status.value?.status === 'awaiting_nodes' || status.value?.status === 'awaiting') {
-      refreshAllData()
+      refresh({ silent: true })
     }
-  }, 3000)
+  }, 1000)
 })
 
 onUnmounted(() => {
@@ -496,6 +516,7 @@ const stepList = computed(() => {
       inLoopGroup: Boolean(group),
       isLoopLeader: Boolean(group?.nodeIds[0] === id),
       functionId: node?.function?.id,
+      isVarStep: node?.function?.id === 'workflow::internal-var-set',
       canInspectResult: Boolean(state?.result) || loopChildResultUids.length > 0,
       loopChildResultUids,
     })

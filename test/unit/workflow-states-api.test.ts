@@ -1,4 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('#imports', () => ({
+  createError: (value: any) => value,
+  defineEventHandler: (handler: any) => handler,
+  getQuery: () => ({}),
+  useIii: () => ({ trigger: vi.fn() }),
+}))
+
 import { normalizeStateItems } from '../../packages/app/src/runtime/server/api/_workflows/states.get'
 
 describe('normalizeStateItems', () => {

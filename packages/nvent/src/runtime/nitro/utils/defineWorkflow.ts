@@ -1,6 +1,8 @@
 import { useIii } from '#imports'
 import type { TriggerConfig } from './defineFunction'
 import type { WorkflowRunRecord } from './workflow-types'
+import { normalizeWorkflowInput } from './workflow/input-spec'
+import { serializeWorkflowDefinitionOrThrow, summarizeWorkflowDefinitionShape } from './workflow/definition-serialization'
 
 /**
  * Lazy-loaded registry cache to avoid circular dependencies.
@@ -58,59 +60,8 @@ async function getFunctionExecutionConfig(functionId: string): Promise<{
   return { runtime: 'unknown' }
 }
 
-/**
- * Normalizes various input formats into the InputSpec format expected by the workflow worker.
- * 
- * InputSpec shape: { from: string | string[], template?: string }
- */
 function normalizeInput(input: any, deps: string[]): { from: string | string[], template?: string } {
-  // Case 1: String shorthand - wrap in { from }
-  if (typeof input === 'string') {
-    return { from: input }
-  }
-  
-  // Case 2: Array shorthand (for multi-node joins) - wrap in { from }
-  if (Array.isArray(input)) {
-    return {
-      from: input.map((item) => {
-        if (item && typeof item === 'object' && '$ref' in item && typeof item.$ref === 'string') {
-          return item.$ref
-        }
-        return item
-      }),
-    }
-  }
-  
-  // Case 3: Already a valid InputSpec with 'from' field
-  if (input && typeof input === 'object' && 'from' in input) {
-    return input
-  }
-  
-  // Case 4: Node reference via $ref (returned by ctx.node) - convert to 'from'
-  if (input && typeof input === 'object' && '$ref' in input && typeof input.$ref === 'string') {
-    return { from: input.$ref }
-  }
-  
-  // Case 5: No input provided - infer from dependencies
-  if (!input) {
-    if (deps.length === 1) {
-      return { from: `node:${deps[0]}` }
-    }
-    return { from: 'run_input' }
-  }
-
-  // Case 6: User passed a raw object (e.g. from the workflow handler's `input` argument)
-  // In a static DAG, we can't embed the actual values in the plan reliably, 
-  // so we treat passing ANY object that looks like the root input as a request for 'run_input'.
-  if (typeof input === 'object' && !Array.isArray(input)) {
-    return { from: 'run_input' }
-  }
-  
-  // Case 7: Invalid - fallback
-  console.warn(
-    `[nvent/workflow] Unexpected input type: ${typeof input}. Defaulting to 'run_input'.`
-  )
-  return { from: 'run_input' }
+  return normalizeWorkflowInput(input, deps, isWorkflowValueRef)
 }
 
 /**
@@ -168,6 +119,12 @@ export interface WorkflowContext {
    * const result2 = await ctx.call('analyze', result1)
    */
   call: <T = any>(...args: any[]) => Promise<T>
+
+  /**
+   * Persist a workflow-scoped variable and return its current value reference.
+   * The value can include dynamic refs (e.g. previous-step fields).
+   */
+  var: <T = any>(key: string, value: any, options?: { label?: string }) => Promise<T>
 
   /**
    * Loop over a runtime array source and execute one or more calls per item.
@@ -246,6 +203,7 @@ export interface WorkflowLoopOptions {
 
 const WORKFLOW_BRANCH = Symbol('workflow.branch')
 const WORKFLOW_LOOP_ITEM = Symbol('workflow.loop.item')
+const WORKFLOW_VALUE_REF = Symbol('workflow.value.ref')
 
 export type WorkflowParallelBranch<T = any> = {
   [WORKFLOW_BRANCH]: true
@@ -254,6 +212,13 @@ export type WorkflowParallelBranch<T = any> = {
 
 export type WorkflowLoopItemRef = {
   [WORKFLOW_LOOP_ITEM]: true
+}
+
+type WorkflowValueRef = {
+  [WORKFLOW_VALUE_REF]: true
+  $ref: string
+  $path?: string[]
+  $source: 'node' | 'fanout_item'
 }
 
 function isWorkflowParallelBranch(value: unknown): value is WorkflowParallelBranch<any> {
@@ -269,6 +234,44 @@ function isWorkflowLoopItemRef(value: unknown): value is WorkflowLoopItemRef {
   return Boolean(value && typeof value === 'object' && (value as any)[WORKFLOW_LOOP_ITEM] === true)
 }
 
+function isWorkflowValueRef(value: unknown): value is WorkflowValueRef {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && (value as any)[WORKFLOW_VALUE_REF] === true
+    && typeof (value as any).$ref === 'string',
+  )
+}
+
+function createWorkflowValueRef(source: 'node' | 'fanout_item', ref: string, path: string[] = []): any {
+  const target: Record<string | symbol, any> = {
+    [WORKFLOW_VALUE_REF]: true,
+    $source: source,
+    $ref: ref,
+    $path: path,
+    toJSON: () => ({
+      [WORKFLOW_VALUE_REF]: true,
+      $source: source,
+      $ref: ref,
+      $path: path,
+    }),
+  }
+
+  if (source === 'fanout_item' && path.length === 0) {
+    target[WORKFLOW_LOOP_ITEM] = true
+  }
+
+  return new Proxy(target, {
+    get(obj, prop) {
+      if (prop === 'then') return undefined
+      if (prop in obj || typeof prop === 'symbol') {
+        return (obj as any)[prop]
+      }
+      return createWorkflowValueRef(source, ref, [...path, String(prop)])
+    },
+  })
+}
+
 type CallOptions = {
   label?: string
   queue?: string
@@ -280,7 +283,30 @@ type CallOptions = {
 function isCallOptions(value: unknown): value is CallOptions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const v = value as Record<string, unknown>
-  return 'label' in v || 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
+
+  const keys = Object.keys(v)
+  if (keys.length === 0) return false
+
+  const allowedKeys = new Set(['label', 'queue', 'runtime', 'engine_retry', 'retry'])
+  if (keys.some(key => !allowedKeys.has(key))) return false
+
+  if ('label' in v && v.label != null && typeof v.label !== 'string') return false
+  if ('queue' in v && v.queue != null && typeof v.queue !== 'string') return false
+  if ('runtime' in v && v.runtime != null && !['nodejs', 'python', 'rust', 'unknown'].includes(String(v.runtime))) return false
+
+  const hasRetryShape = (candidate: unknown): boolean => {
+    if (candidate == null) return true
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false
+    const rec = candidate as Record<string, unknown>
+    if ('max_attempts' in rec && rec.max_attempts != null && typeof rec.max_attempts !== 'number') return false
+    return true
+  }
+
+  if ('engine_retry' in v && !hasRetryShape(v.engine_retry)) return false
+  if ('retry' in v && !hasRetryShape(v.retry)) return false
+
+  // `label` alone is too ambiguous with normal payload objects.
+  return 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
 }
 
 type ParsedCall = {
@@ -404,28 +430,40 @@ export function defineWorkflow<
     // the workflow and starts the execution via the workflow-worker.
     async handler(input: TInput) {
       const plan = await workflow.compile(input)
+      const definitionCandidate: Record<string, unknown> = {
+        ...plan,
+        // Add workflow metadata for UI display
+        metadata: {
+          name: options.name,
+          description: options.description,
+          hooks: options.hooks ? {
+            on_start: options.hooks.onStart,
+            on_end: options.hooks.onEnd,
+            on_error: options.hooks.onError,
+            on_delete: options.hooks.onDelete,
+          } : undefined,
+          created_by_worker: `nvent-nodejs-${process.pid}`,
+        },
+      }
+      const definition = serializeWorkflowDefinitionOrThrow(definitionCandidate)
+
       const iii = useIii()
-      return iii.trigger({
-        function_id: 'workflow::start',
-        payload: {
-          definition: {
-            ...plan,
-            // Add workflow metadata for UI display
-            metadata: {
-              name: options.name,
-              description: options.description,
-              hooks: options.hooks ? {
-                on_start: options.hooks.onStart,
-                on_end: options.hooks.onEnd,
-                on_error: options.hooks.onError,
-                on_delete: options.hooks.onDelete,
-              } : undefined,
-              created_by_worker: `nvent-nodejs-${process.pid}`,
-            },
-          },
-          input
-        }
-      })
+      try {
+        return await iii.trigger({
+          function_id: 'workflow::start',
+          payload: {
+            definition,
+            input
+          }
+        })
+      } catch (error) {
+        console.error('[nvent/workflow] workflow::start invocation failed; definition shape summary:', {
+          workflowName: options.name,
+          outputFrom: (definition as any)?.output?.from,
+          nodes: summarizeWorkflowDefinitionShape(definition as any),
+        })
+        throw error
+      }
     },
     async compile(input: TInput = {} as any) {
       const nodes: Record<string, any> = {}
@@ -437,8 +475,16 @@ export function defineWorkflow<
 
       const collectNodeRefs = (obj: any, refs: Set<string>) => {
         if (!obj || typeof obj !== 'object') return
-        if (obj.$ref && typeof obj.$ref === 'string' && obj.$ref.startsWith('node:')) {
-          refs.add(obj.$ref.split(':')[1])
+        const dynamicRef = (obj as { $ref?: unknown }).$ref
+        const dynamicSource = (obj as { $source?: unknown }).$source
+        const isValueRef = (obj as { [WORKFLOW_VALUE_REF]?: unknown })[WORKFLOW_VALUE_REF] === true
+
+        if (typeof dynamicRef === 'string' && dynamicRef.startsWith('node:')) {
+          // For value refs, only node-based refs create DAG data dependencies.
+          if (!isValueRef || dynamicSource === 'node') {
+            const refNodeId = dynamicRef.substring('node:'.length)
+            if (refNodeId) refs.add(refNodeId)
+          }
           return
         }
         if (Array.isArray(obj)) {
@@ -498,6 +544,14 @@ export function defineWorkflow<
         return id
       }
 
+      const toVarNodeIdBase = (key: string): string => {
+        const cleaned = String(key || 'var')
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, '_')
+          .replace(/^_+|_+$/g, '')
+        return `var_${cleaned || 'value'}`
+      }
+
       const ctx: WorkflowContext = {
         node: async (id, spec) => {
           const dataDepSet = new Set<string>()
@@ -541,6 +595,10 @@ export function defineWorkflow<
           } else if (spec.function) {
             const fnSpec = typeof spec.function === 'string' ? { id: spec.function } : spec.function
 
+            if (!fnSpec.id || typeof fnSpec.id !== 'string') {
+              throw new Error(`Invalid function id for workflow node '${id}'.`)
+            }
+
             if (!fnSpec.engine_retry && spec.retry) {
               fnSpec.engine_retry = spec.retry
             }
@@ -563,7 +621,7 @@ export function defineWorkflow<
 
           nodes[id] = nodeDef
           nodeOrder.push(id)
-          return { $ref: `node:${id}` } as any
+          return createWorkflowValueRef('node', `node:${id}`) as any
         },
         
         call: async (...args: any[]) => {
@@ -578,12 +636,22 @@ export function defineWorkflow<
           })
         },
 
+        var: async <T = any>(key: string, value: any, options?: { label?: string }): Promise<T> => {
+          const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(key))
+          return ctx.node(nodeId, {
+            label: options?.label ?? `var:${key}`,
+            function: 'workflow::internal-var-set',
+            input: {
+              key,
+              value,
+            },
+          })
+        },
+
         loop: async <T = any>(items: any, fn: (loopCtx: WorkflowLoopContext) => T | Promise<T>, options?: WorkflowLoopOptions): Promise<T> => {
           const fanoutOver = resolveFanoutOver(items)
           const loopMode = resolveLoopMode(options)
-          const loopItemRef: WorkflowLoopItemRef = {
-            [WORKFLOW_LOOP_ITEM]: true,
-          }
+          const loopItemRef = createWorkflowValueRef('fanout_item', 'fanout_item') as WorkflowLoopItemRef
 
           const loopCtx: WorkflowLoopContext = {
             ...ctx,

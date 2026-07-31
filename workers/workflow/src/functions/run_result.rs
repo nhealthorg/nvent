@@ -18,7 +18,10 @@ pub struct RunResultResponse {
     pub result: Option<Value>,
 }
 
-pub async fn handle(deps: &Deps, req: RunResultRequest) -> Result<RunResultResponse, WorkflowError> {
+pub async fn handle(
+    deps: &Deps,
+    req: RunResultRequest,
+) -> Result<RunResultResponse, WorkflowError> {
     let result = state::get_run_result(&deps.iii, &req.run_id).await?;
     Ok(RunResultResponse { result })
 }

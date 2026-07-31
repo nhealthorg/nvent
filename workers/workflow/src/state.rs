@@ -11,7 +11,10 @@ use crate::{
     error::WorkflowError,
     ids,
     internal_state::{ListRunsFilter, WorkflowInternalStateStore},
-    types::{NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{
+        NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+        WorkflowVarRecord,
+    },
 };
 
 static INTERNAL_STATE_STORE: OnceLock<Arc<dyn WorkflowInternalStateStore>> = OnceLock::new();
@@ -26,7 +29,8 @@ fn internal_state_store() -> Option<&'static Arc<dyn WorkflowInternalStateStore>
     INTERNAL_STATE_STORE.get()
 }
 
-fn require_internal_state_store() -> Result<&'static Arc<dyn WorkflowInternalStateStore>, WorkflowError> {
+fn require_internal_state_store(
+) -> Result<&'static Arc<dyn WorkflowInternalStateStore>, WorkflowError> {
     internal_state_store().ok_or_else(|| {
         WorkflowError::State(
             "internal workflow state store is not initialized; call state::set_internal_state_store at boot"
@@ -81,7 +85,11 @@ pub fn decode_state_registry_key(encoded: &str) -> Option<String> {
 }
 
 pub fn state_registry_encoded_key(key: &str) -> String {
-    format!("{}{}", STATE_REGISTRY_KEY_PREFIX, encode_state_registry_key(key))
+    format!(
+        "{}{}",
+        STATE_REGISTRY_KEY_PREFIX,
+        encode_state_registry_key(key)
+    )
 }
 
 fn nibble_to_hex(n: u8) -> char {
@@ -208,7 +216,11 @@ pub async fn state_list(iii: &IIIClient, scope: &str) -> Result<Value, WorkflowE
     .map_err(|e| WorkflowError::State(format!("state::list {scope}: {e}")))
 }
 
-async fn stream_list(iii: &IIIClient, stream_name: &str, group_id: &str) -> Result<Value, WorkflowError> {
+async fn stream_list(
+    iii: &IIIClient,
+    stream_name: &str,
+    group_id: &str,
+) -> Result<Value, WorkflowError> {
     iii.trigger(TriggerRequest {
         function_id: "stream::list".into(),
         payload: json!({ "stream_name": stream_name, "group_id": group_id }),
@@ -219,7 +231,12 @@ async fn stream_list(iii: &IIIClient, stream_name: &str, group_id: &str) -> Resu
     .map_err(|e| WorkflowError::State(format!("stream::list {stream_name}/{group_id}: {e}")))
 }
 
-async fn stream_delete(iii: &IIIClient, stream_name: &str, group_id: &str, item_id: &str) -> Result<(), WorkflowError> {
+async fn stream_delete(
+    iii: &IIIClient,
+    stream_name: &str,
+    group_id: &str,
+    item_id: &str,
+) -> Result<(), WorkflowError> {
     iii.trigger(TriggerRequest {
         function_id: "stream::delete".into(),
         payload: json!({ "stream_name": stream_name, "group_id": group_id, "item_id": item_id }),
@@ -228,7 +245,11 @@ async fn stream_delete(iii: &IIIClient, stream_name: &str, group_id: &str, item_
     })
     .await
     .map(|_| ())
-    .map_err(|e| WorkflowError::State(format!("stream::delete {stream_name}/{group_id}/{item_id}: {e}")))
+    .map_err(|e| {
+        WorkflowError::State(format!(
+            "stream::delete {stream_name}/{group_id}/{item_id}: {e}"
+        ))
+    })
 }
 
 fn parse_stream_item_ids(v: &Value) -> Vec<String> {
@@ -306,7 +327,11 @@ async fn delete_run_state_entries_from_registry(
     Ok(())
 }
 
-async fn delete_run_stream_entries(iii: &IIIClient, stream_name: &str, group_id: &str) -> Result<(), WorkflowError> {
+async fn delete_run_stream_entries(
+    iii: &IIIClient,
+    stream_name: &str,
+    group_id: &str,
+) -> Result<(), WorkflowError> {
     let v = stream_list(iii, stream_name, group_id).await?;
 
     for item_id in parse_stream_item_ids(&v) {
@@ -336,7 +361,11 @@ pub fn parse_record_list(v: &Value) -> Vec<WorkflowRunRecord> {
 
 fn normalize_numeric_object_arrays(value: Value) -> Value {
     match value {
-        Value::Array(arr) => Value::Array(arr.into_iter().map(normalize_numeric_object_arrays).collect()),
+        Value::Array(arr) => Value::Array(
+            arr.into_iter()
+                .map(normalize_numeric_object_arrays)
+                .collect(),
+        ),
         Value::Object(obj) => {
             let normalized: BTreeMap<String, Value> = obj
                 .into_iter()
@@ -481,12 +510,15 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
 
     // No backward-compat cleanup paths: this worker runs only the v1 data model.
     delete_run_input(iii, &record.run_id).await?;
+    delete_run_vars(iii, &record.run_id).await?;
     delete_run_result(iii, &record.run_id).await?;
     delete_def(iii, &record.run_id).await?;
     delete_run_logs(iii, &record.run_id).await?;
     delete_run_traces(iii, &record.run_id).await?;
     delete_run_queue_receipts(iii, &record.run_id).await?;
-    require_internal_state_store()?.delete_run(&record.run_id).await
+    require_internal_state_store()?
+        .delete_run(&record.run_id)
+        .await
 }
 
 pub async fn put_queue_receipt(
@@ -511,9 +543,9 @@ pub async fn put_queue_receipt(
         ts_unix_ms,
     };
 
-    let mut run = get_run(iii, run_id)
-        .await?
-        .ok_or_else(|| WorkflowError::State(format!("put_queue_receipt: run not found: {run_id}")))?;
+    let mut run = get_run(iii, run_id).await?.ok_or_else(|| {
+        WorkflowError::State(format!("put_queue_receipt: run not found: {run_id}"))
+    })?;
 
     // Replace-by-id to keep updates idempotent for retried enqueue paths.
     if let Some(existing) = run.queue_receipts.iter_mut().find(|r| r.id == id) {
@@ -573,7 +605,9 @@ pub async fn put_run_input(
     run_id: &str,
     input: &Value,
 ) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.put_run_input(run_id, input).await
+    require_internal_state_store()?
+        .put_run_input(run_id, input)
+        .await
 }
 
 pub async fn get_run_input(_iii: &IIIClient, run_id: &str) -> Result<Option<Value>, WorkflowError> {
@@ -581,7 +615,33 @@ pub async fn get_run_input(_iii: &IIIClient, run_id: &str) -> Result<Option<Valu
 }
 
 pub async fn delete_run_input(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.delete_run_input(run_id).await
+    require_internal_state_store()?
+        .delete_run_input(run_id)
+        .await
+}
+
+pub async fn put_run_vars(
+    _iii: &IIIClient,
+    run_id: &str,
+    vars: &BTreeMap<String, WorkflowVarRecord>,
+) -> Result<(), WorkflowError> {
+    let encoded = serde_json::to_value(vars).map_err(WorkflowError::Serde)?;
+    require_internal_state_store()?.put_run_vars(run_id, &encoded).await
+}
+
+pub async fn get_run_vars(
+    _iii: &IIIClient,
+    run_id: &str,
+) -> Result<BTreeMap<String, WorkflowVarRecord>, WorkflowError> {
+    let Some(raw) = require_internal_state_store()?.get_run_vars(run_id).await? else {
+        return Ok(BTreeMap::new());
+    };
+
+    serde_json::from_value::<BTreeMap<String, WorkflowVarRecord>>(raw).map_err(WorkflowError::Serde)
+}
+
+pub async fn delete_run_vars(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
+    require_internal_state_store()?.delete_run_vars(run_id).await
 }
 
 pub async fn put_run_result(
@@ -589,15 +649,22 @@ pub async fn put_run_result(
     run_id: &str,
     result: &Value,
 ) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.put_run_result(run_id, result).await
+    require_internal_state_store()?
+        .put_run_result(run_id, result)
+        .await
 }
 
-pub async fn get_run_result(_iii: &IIIClient, run_id: &str) -> Result<Option<Value>, WorkflowError> {
+pub async fn get_run_result(
+    _iii: &IIIClient,
+    run_id: &str,
+) -> Result<Option<Value>, WorkflowError> {
     require_internal_state_store()?.get_run_result(run_id).await
 }
 
 pub async fn delete_run_result(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.delete_run_result(run_id).await
+    require_internal_state_store()?
+        .delete_run_result(run_id)
+        .await
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +841,9 @@ pub async fn list_run_traces(
     _iii: &IIIClient,
     run_id: &str,
 ) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
-    require_internal_state_store()?.list_run_traces(run_id).await
+    require_internal_state_store()?
+        .list_run_traces(run_id)
+        .await
 }
 
 pub async fn list_run_traces_paged(
@@ -908,7 +977,10 @@ mod tests {
         let list = parse_record_list(&json!([rec]));
         assert_eq!(list.len(), 1, "numeric-keyed sequence object should parse");
         assert_eq!(list[0].stream_ids, vec!["workflow", "timeline"]);
-        assert_eq!(list[0].fanout_src.get("classify").map(|items| items.len()), Some(2));
+        assert_eq!(
+            list[0].fanout_src.get("classify").map(|items| items.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -924,7 +996,10 @@ mod tests {
 
     #[test]
     fn registry_key_decode_rejects_invalid_hex() {
-        assert!(decode_state_registry_key("abc").is_none(), "missing prefix must fail");
+        assert!(
+            decode_state_registry_key("abc").is_none(),
+            "missing prefix must fail"
+        );
         assert!(
             decode_state_registry_key("k_abc").is_none(),
             "odd-length hex must fail"
@@ -937,8 +1012,8 @@ mod tests {
 
     #[test]
     fn apply_state_registry_key_presence_sets_encoded_key_and_timestamp() {
-        let mut record: WorkflowRunRecord = serde_json::from_value(minimal_record_json())
-            .expect("minimal record should decode");
+        let mut record: WorkflowRunRecord =
+            serde_json::from_value(minimal_record_json()).expect("minimal record should decode");
 
         apply_state_registry_key_presence(&mut record, "result.value", true, 42);
 
@@ -949,8 +1024,8 @@ mod tests {
 
     #[test]
     fn apply_state_registry_key_presence_can_flip_presence_false() {
-        let mut record: WorkflowRunRecord = serde_json::from_value(minimal_record_json())
-            .expect("minimal record should decode");
+        let mut record: WorkflowRunRecord =
+            serde_json::from_value(minimal_record_json()).expect("minimal record should decode");
 
         apply_state_registry_key_presence(&mut record, "counter", true, 10);
         apply_state_registry_key_presence(&mut record, "counter", false, 11);
@@ -959,5 +1034,4 @@ mod tests {
         assert_eq!(record.state_keys_map.get(&encoded_key), Some(&false));
         assert_eq!(record.updated_at, 11);
     }
-
 }

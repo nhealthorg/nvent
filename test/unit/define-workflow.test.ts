@@ -5,13 +5,13 @@ const registryMock: { functions: any[] } = { functions: [] }
 vi.mock('#nvent/iii-registry', () => ({
   default: registryMock,
   registry: registryMock,
-}), { virtual: true })
+}))
 
 vi.mock('#imports', () => ({
   useIii: () => ({
     trigger: vi.fn(),
   }),
-}), { virtual: true })
+}))
 
 import { defineWorkflow } from '../../packages/nvent/src/runtime/nitro/utils/defineWorkflow'
 
@@ -430,5 +430,114 @@ describe('defineWorkflow compilation', () => {
     expect(plan.output).toEqual({ from: 'process' })
     expect(plan.nodes.process.depends_on).toEqual([])
     expect(plan.nodes['wait-error'].depends_on).toEqual(['process'])
+  })
+
+  it('compiles partial object payloads with dynamic property refs', async () => {
+    const workflow = defineWorkflow({
+      name: 'partial-payload-refs',
+      async handler(input: { text: string }, ctx) {
+        const data1 = await ctx.call('get-values-1', input)
+        const data2 = await ctx.call('get-values-2', input)
+
+        return ctx.call('next', {
+          static: 'true',
+          el: data1.wichtig,
+          data: {
+            data1,
+            data2,
+          },
+        })
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['next'].input).toEqual({
+      from: 'run_input',
+      value: {
+        static: 'true',
+        el: {
+          $wf_ref: 'node:get-values-1',
+          $wf_path: ['wichtig'],
+        },
+        data: {
+          data1: {
+            $wf_ref: 'node:get-values-1',
+            $wf_path: [],
+          },
+          data2: {
+            $wf_ref: 'node:get-values-2',
+            $wf_path: [],
+          },
+        },
+      },
+    })
+    expect(plan.nodes['next'].depends_on).toEqual(['get-values-2'])
+  })
+
+  it('compiles ctx.var into internal var set node and allows passing it to later calls', async () => {
+    const workflow = defineWorkflow({
+      name: 'ctx-var-flow',
+      async handler(input: { text: string }, ctx) {
+        const processed = await ctx.call('process', input)
+        const cfg = await ctx.var('config', {
+          active: true,
+          resultValue: processed.value,
+        })
+        return ctx.call('final', cfg)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['var_config'].function).toMatchObject({ id: 'workflow::internal-var-set' })
+    expect(plan.nodes['var_config'].input).toEqual({
+      from: 'node:process',
+      value: {
+        key: 'config',
+        value: {
+          active: true,
+          resultValue: {
+            $wf_ref: 'node:process',
+            $wf_path: ['value'],
+          },
+        },
+      },
+    })
+    expect(plan.nodes['final'].input).toEqual({ from: 'node:var_config' })
+    expect(plan.nodes['final'].depends_on).toEqual(['var_config'])
+  })
+
+  it('does not treat payload objects with label field as call options', async () => {
+    const workflow = defineWorkflow({
+      name: 'label-payload-regression',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('e2e::make-items', input)
+        return ctx.loop(items, async loop => {
+          const loopItem = loop.item as any
+          return loop.call('e2e::finalize-item', {
+            id: loopItem.id,
+            label: loopItem.text,
+          })
+        }, { mode: 'sequential' })
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'hello' })
+
+    expect(plan.nodes['e2e::finalize-item'].label).toBeUndefined()
+    expect(plan.nodes['e2e::finalize-item'].input).toEqual({
+      from: 'run_input',
+      value: {
+        id: {
+          $wf_ref: 'fanout_item',
+          $wf_path: ['id'],
+        },
+        label: {
+          $wf_ref: 'fanout_item',
+          $wf_path: ['text'],
+        },
+      },
+    })
   })
 })

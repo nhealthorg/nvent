@@ -12,12 +12,17 @@ use workflow::{
     functions::tick::{decide, TickDecision},
     reconcile::{classify_terminal, NodeOutcome},
     types::{
-        FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef,
-        RunStatus, WorkflowDef, WorkflowRunRecord, FanoutMode,
+        FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState,
+        OutputRef, RunStatus, WorkflowDef, WorkflowRunRecord,
     },
 };
 
-fn function_node(id: &str, input: InputSpec, depends_on: Vec<String>, fanout: Option<FanoutSpec>) -> NodeDef {
+fn function_node(
+    id: &str,
+    input: InputSpec,
+    depends_on: Vec<String>,
+    fanout: Option<FanoutSpec>,
+) -> NodeDef {
     NodeDef {
         label: None,
         function: FunctionSpec {
@@ -47,6 +52,7 @@ fn three_node_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: Some("List the docs to read for: {{topic}}".to_string()),
+                value: None,
             },
             vec![],
             None,
@@ -60,6 +66,7 @@ fn three_node_def() -> WorkflowDef {
             InputSpec {
                 from: "fanout_item".into(),
                 template: Some("Read and summarize: {{item}}".to_string()),
+                value: None,
             },
             vec!["plan".to_string()],
             Some(FanoutSpec {
@@ -76,6 +83,7 @@ fn three_node_def() -> WorkflowDef {
             InputSpec {
                 from: "node:read".into(),
                 template: Some("Synthesize from: {{results}}".to_string()),
+                value: None,
             },
             vec!["read".to_string()],
             None,
@@ -103,6 +111,7 @@ fn two_node_linear_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec![],
             None,
@@ -116,6 +125,7 @@ fn two_node_linear_def() -> WorkflowDef {
             InputSpec {
                 from: "node:first".into(),
                 template: None,
+                value: None,
             },
             vec!["first".to_string()],
             None,
@@ -150,6 +160,7 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         abort: false,
         def_ref: "run_test".to_string(),
         input_ref: format!("run_test_input_{}", def_input.to_string().len()),
+        vars_ref: Some("run_test".to_string()),
         state_keys_map: BTreeMap::new(),
         stream_ids: Vec::new(),
         queue_receipts: Vec::new(),
@@ -283,7 +294,13 @@ fn fanout_barrier_synthesize_completes_in_order() {
 
     // Assert gather_input returns results in NUMERIC order (read#0 first, then read#1),
     // NOT in completion order (which was read#1, read#0).
-    let gathered = dag::gather_input(&def, &record, &json!({"topic": "rust"}), "synthesize", &results);
+    let gathered = dag::gather_input(
+        &def,
+        &record,
+        &json!({"topic": "rust"}),
+        "synthesize",
+        &results,
+    );
     let arr = gathered
         .as_array()
         .expect("gather_input must return an array");
@@ -469,6 +486,7 @@ fn diamond_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec![],
             None,
@@ -482,6 +500,7 @@ fn diamond_def() -> WorkflowDef {
             InputSpec {
                 from: "node:a".into(),
                 template: None,
+                value: None,
             },
             vec!["a".to_string()],
             None,
@@ -495,6 +514,7 @@ fn diamond_def() -> WorkflowDef {
             InputSpec {
                 from: "node:a".into(),
                 template: None,
+                value: None,
             },
             vec!["a".to_string()],
             None,
@@ -513,6 +533,7 @@ fn diamond_def() -> WorkflowDef {
                     "node:c".to_string(),
                 ]),
                 template: None,
+                value: None,
             },
             vec!["b".to_string(), "c".to_string()],
             None,
@@ -686,6 +707,7 @@ fn fanout_empty_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: Some("t".to_string()),
+                value: None,
             },
             vec![],
             None,
@@ -699,6 +721,7 @@ fn fanout_empty_def() -> WorkflowDef {
             InputSpec {
                 from: "fanout_item".into(),
                 template: Some("t".to_string()),
+                value: None,
             },
             vec!["a".to_string()],
             Some(FanoutSpec {
@@ -715,6 +738,7 @@ fn fanout_empty_def() -> WorkflowDef {
             InputSpec {
                 from: "node:b".into(),
                 template: Some("t".to_string()),
+                value: None,
             },
             vec!["b".to_string()],
             None,
@@ -858,7 +882,10 @@ fn diamond_failed_branch_blocks_join_and_fails_run() {
     let decision = decide(&def, &record);
     match decision {
         TickDecision::Finalize(RunStatus::Failed) => {}
-        other => panic!("expected Finalize(Failed) after failed branch, got {:?}", other),
+        other => panic!(
+            "expected Finalize(Failed) after failed branch, got {:?}",
+            other
+        ),
     }
 
     let q = dag::quiescence(&def, &record);
@@ -899,12 +926,18 @@ fn diamond_join_waits_while_other_branch_running() {
 
     // No join yet; scheduler should park.
     let frontier = dag::ready_frontier(&def, &record);
-    assert!(frontier.is_empty(), "join must not be ready while c is still running");
+    assert!(
+        frontier.is_empty(),
+        "join must not be ready while c is still running"
+    );
 
     let decision = decide(&def, &record);
     match decision {
         TickDecision::Park => {}
-        other => panic!("expected Park while one branch still running, got {:?}", other),
+        other => panic!(
+            "expected Park while one branch still running, got {:?}",
+            other
+        ),
     }
 }
 
@@ -967,6 +1000,7 @@ fn orphan_after_output_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec![],
             None,
@@ -980,6 +1014,7 @@ fn orphan_after_output_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec!["process".to_string()],
             None,
@@ -1006,7 +1041,11 @@ fn output_node_done_still_runs_later_declared_steps() {
     let step1 = drive_step(&def, &mut record, &results);
     match &step1 {
         TickDecision::Fire(uids) => {
-            assert_eq!(uids, &vec!["process".to_string()], "step 1 must fire process");
+            assert_eq!(
+                uids,
+                &vec!["process".to_string()],
+                "step 1 must fire process"
+            );
         }
         other => panic!("expected Fire([process]) at step 1, got {:?}", other),
     }
@@ -1029,13 +1068,25 @@ fn output_node_done_still_runs_later_declared_steps() {
                 "decide must fire later declared step before finalizing"
             );
         }
-        other => panic!("expected Fire([wait-error]) after process done, got {:?}", other),
+        other => panic!(
+            "expected Fire([wait-error]) after process done, got {:?}",
+            other
+        ),
     }
 
-    complete(&mut record, &mut results, "wait-error", json!({ "ok": true }));
+    complete(
+        &mut record,
+        &mut results,
+        "wait-error",
+        json!({ "ok": true }),
+    );
 
     let q = dag::quiescence(&def, &record);
-    assert_eq!(q, RunStatus::Completed, "run should complete after wait-error");
+    assert_eq!(
+        q,
+        RunStatus::Completed,
+        "run should complete after wait-error"
+    );
 }
 
 fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
@@ -1048,6 +1099,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec![],
             None,
@@ -1061,6 +1113,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             InputSpec {
                 from: "fanout_item".into(),
                 template: None,
+                value: None,
             },
             vec!["plan".to_string()],
             Some(FanoutSpec {
@@ -1077,6 +1130,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             InputSpec {
                 from: "fanout_item".into(),
                 template: None,
+                value: None,
             },
             vec!["transform-item".to_string()],
             Some(FanoutSpec {
@@ -1123,7 +1177,10 @@ fn sequential_loop_pipeline_enforces_item_order() {
         TickDecision::Fire(uids) => {
             assert_eq!(uids, &vec!["transform-item#0".to_string()]);
         }
-        other => panic!("expected Fire([transform-item#0]) at step 2, got {:?}", other),
+        other => panic!(
+            "expected Fire([transform-item#0]) at step 2, got {:?}",
+            other
+        ),
     }
 
     complete(
@@ -1153,7 +1210,10 @@ fn sequential_loop_pipeline_enforces_item_order() {
         TickDecision::Fire(uids) => {
             assert_eq!(uids, &vec!["transform-item#1".to_string()]);
         }
-        other => panic!("expected Fire([transform-item#1]) at step 4, got {:?}", other),
+        other => panic!(
+            "expected Fire([transform-item#1]) at step 4, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1181,7 +1241,10 @@ fn parallel_loop_pipeline_releases_matching_items_without_global_barrier() {
     let step2 = drive_step(&def, &mut record, &results);
     let fired2 = match &step2 {
         TickDecision::Fire(uids) => uids.clone(),
-        other => panic!("expected Fire([transform-item#0, transform-item#1]) at step 2, got {:?}", other),
+        other => panic!(
+            "expected Fire([transform-item#0, transform-item#1]) at step 2, got {:?}",
+            other
+        ),
     };
     assert!(fired2.contains(&"transform-item#0".to_string()));
     assert!(fired2.contains(&"transform-item#1".to_string()));
@@ -1202,7 +1265,10 @@ fn parallel_loop_pipeline_releases_matching_items_without_global_barrier() {
                 "score-item#1 must wait for transform-item#1"
             );
         }
-        other => panic!("expected Fire including score-item#0 at step 3, got {:?}", other),
+        other => panic!(
+            "expected Fire including score-item#0 at step 3, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1216,6 +1282,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec![],
             None,
@@ -1229,6 +1296,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             InputSpec {
                 from: "fanout_item".into(),
                 template: None,
+                value: None,
             },
             vec!["plan".to_string()],
             Some(FanoutSpec {
@@ -1245,6 +1313,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             InputSpec {
                 from: "node:transform-item".into(),
                 template: None,
+                value: None,
             },
             vec!["transform-item".to_string()],
             Some(FanoutSpec {
@@ -1261,6 +1330,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             InputSpec {
                 from: "node:transform-item".into(),
                 template: None,
+                value: None,
             },
             vec!["transform-item".to_string()],
             Some(FanoutSpec {
@@ -1280,6 +1350,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
                     "node:score-b".to_string(),
                 ]),
                 template: None,
+                value: None,
             },
             vec!["score-a".to_string(), "score-b".to_string()],
             Some(FanoutSpec {
@@ -1326,7 +1397,10 @@ fn sequential_loop_allows_parallel_all_within_same_item() {
         TickDecision::Fire(uids) => {
             assert_eq!(uids, &vec!["transform-item#0".to_string()]);
         }
-        other => panic!("expected Fire([transform-item#0]) at step 2, got {:?}", other),
+        other => panic!(
+            "expected Fire([transform-item#0]) at step 2, got {:?}",
+            other
+        ),
     }
 
     complete(
@@ -1339,7 +1413,10 @@ fn sequential_loop_allows_parallel_all_within_same_item() {
     let step3 = drive_step(&def, &mut record, &results);
     let fired3 = match &step3 {
         TickDecision::Fire(uids) => uids.clone(),
-        other => panic!("expected Fire([score-a#0, score-b#0]) at step 3, got {:?}", other),
+        other => panic!(
+            "expected Fire([score-a#0, score-b#0]) at step 3, got {:?}",
+            other
+        ),
     };
     assert!(fired3.contains(&"score-a#0".to_string()));
     assert!(fired3.contains(&"score-b#0".to_string()));
@@ -1377,7 +1454,10 @@ fn sequential_loop_allows_parallel_all_within_same_item() {
         TickDecision::Fire(uids) => {
             assert_eq!(uids, &vec!["transform-item#1".to_string()]);
         }
-        other => panic!("expected Fire([transform-item#1]) at step 6, got {:?}", other),
+        other => panic!(
+            "expected Fire([transform-item#1]) at step 6, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1391,6 +1471,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
             InputSpec {
                 from: "run_input".into(),
                 template: None,
+                value: None,
             },
             vec![],
             None,
@@ -1404,6 +1485,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
             InputSpec {
                 from: "fanout_item".into(),
                 template: None,
+                value: None,
             },
             vec!["plan".to_string()],
             Some(FanoutSpec {
@@ -1421,6 +1503,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
                 InputSpec {
                     from: "node:transform-item".into(),
                     template: None,
+                    value: None,
                 },
                 vec!["transform-item".to_string()],
                 Some(FanoutSpec {
@@ -1442,6 +1525,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
                     "node:score-c".to_string(),
                 ]),
                 template: None,
+                value: None,
             },
             vec![
                 "score-a".to_string(),
@@ -1492,7 +1576,10 @@ fn sequential_loop_parallel_all_three_branches_fails_if_one_branch_fails() {
         TickDecision::Fire(uids) => {
             assert_eq!(uids, &vec!["transform-item#0".to_string()]);
         }
-        other => panic!("expected Fire([transform-item#0]) at step 2, got {:?}", other),
+        other => panic!(
+            "expected Fire([transform-item#0]) at step 2, got {:?}",
+            other
+        ),
     }
 
     complete(
@@ -1570,7 +1657,10 @@ fn regression_first_done_immediately_unblocks_second() {
         TickDecision::Fire(uids) => {
             assert_eq!(uids, &vec!["second".to_string()]);
         }
-        other => panic!("expected Fire([second]) after first result, got {:?}", other),
+        other => panic!(
+            "expected Fire([second]) after first result, got {:?}",
+            other
+        ),
     }
 
     // Sanity-check checkpoint states to catch regressions in state transitions.

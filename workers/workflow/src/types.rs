@@ -231,6 +231,11 @@ pub struct InputSpec {
     /// message — use it to instruct the agent what to do with the input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    /// Optional structured payload template emitted by defineWorkflow when input
+    /// uses dynamic field refs (e.g. previous_step.value.foo). The worker
+    /// resolves these refs at dispatch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
 }
 
 /// Per-item parallelism: expand a node into one child per element of an array.
@@ -290,6 +295,33 @@ pub struct QueueReceiptRecord {
     pub ts_unix_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct WorkflowVarDelta {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub set: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unset: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowVarVersionRecord {
+    pub version: u64,
+    pub ts_unix_ms: i64,
+    pub delta: WorkflowVarDelta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_value: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowVarRecord {
+    pub key: String,
+    pub version: u64,
+    pub updated_at: i64,
+    pub value: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<WorkflowVarVersionRecord>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunRecord {
     pub run_id: String,
@@ -313,6 +345,9 @@ pub struct WorkflowRunRecord {
     pub def_ref: String,
     /// Logical reference to the run input blob stored in internal workflow state.
     pub input_ref: String,
+    /// Logical reference to run-scoped workflow variables stored in internal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_ref: Option<String>,
     /// Registry of user-defined state keys for this run.
     /// Keys are hex-encoded for stable map-key storage.
     #[serde(default)]
@@ -438,6 +473,7 @@ mod tests {
             abort: false,
             def_ref: "run_abc123".to_string(),
             input_ref: "run_abc123".to_string(),
+            vars_ref: Some("run_abc123".to_string()),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
             queue_receipts: Vec::new(),
@@ -496,7 +532,10 @@ mod tests {
             record.fanout_src.is_empty(),
             "fanout_src should default to empty"
         );
-        assert!(record.result_ref.is_none(), "result_ref should default to None");
+        assert!(
+            record.result_ref.is_none(),
+            "result_ref should default to None"
+        );
         assert!(
             record.result_error.is_none(),
             "result_error should default to None"
@@ -532,7 +571,10 @@ mod tests {
         });
 
         let result: Result<WorkflowRunRecord, _> = serde_json::from_value(value);
-        assert!(result.is_err(), "legacy map stream_ids shape must be rejected");
+        assert!(
+            result.is_err(),
+            "legacy map stream_ids shape must be rejected"
+        );
     }
 
     #[test]
@@ -553,7 +595,10 @@ mod tests {
         });
 
         let result: Result<WorkflowRunRecord, _> = serde_json::from_value(value);
-        assert!(result.is_err(), "wrapped object stream_ids shape must be rejected");
+        assert!(
+            result.is_err(),
+            "wrapped object stream_ids shape must be rejected"
+        );
     }
 
     #[test]
@@ -577,6 +622,9 @@ mod tests {
         });
 
         let result: Result<WorkflowRunRecord, _> = serde_json::from_value(value);
-        assert!(result.is_err(), "legacy map fanout_src shape must be rejected");
+        assert!(
+            result.is_err(),
+            "legacy map fanout_src shape must be rejected"
+        );
     }
 }

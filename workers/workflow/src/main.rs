@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, IIIClient};
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -39,8 +39,8 @@ fn apply_boot_config_override(
         return Ok(base);
     };
 
-    let override_value: Value = serde_json::from_str(raw_override)
-        .with_context(|| "parsing --config as JSON object")?;
+    let override_value: Value =
+        serde_json::from_str(raw_override).with_context(|| "parsing --config as JSON object")?;
     let override_obj = override_value
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("--config must be a JSON object"))?;
@@ -132,7 +132,12 @@ async fn boot_sweep_with_retry(
     let mut delay_ms = initial_delay_ms.max(50);
 
     for attempt in 1..=attempts {
-        match workflow::functions::sweep::handle(deps, workflow::functions::sweep::SweepEvent::default()).await {
+        match workflow::functions::sweep::handle(
+            deps,
+            workflow::functions::sweep::SweepEvent::default(),
+        )
+        .await
+        {
             Ok(_) => return Ok(()),
             Err(e) => {
                 if attempt < attempts && is_boot_dependency_not_ready(&e.to_string()) {

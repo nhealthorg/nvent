@@ -15,8 +15,7 @@ use super::{run_delete, start};
 
 fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
     let base_id = node_uid.split('#').next().unwrap_or(node_uid);
-    def
-        .nodes
+    def.nodes
         .get(base_id)
         .and_then(|n| n.function.engine_retry.as_ref())
         .and_then(|r| r.max_attempts)

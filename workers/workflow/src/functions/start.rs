@@ -74,7 +74,13 @@ const SHAPE_HINT: &str = "Expected shape: \
     Each node is {label?, function, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
     run_input). Full field docs are inline in this function's request schema.";
 
-const ALLOWED_DEF_KEYS: &[&str] = &["version", "nodes", "output", "default_functions", "metadata"];
+const ALLOWED_DEF_KEYS: &[&str] = &[
+    "version",
+    "nodes",
+    "output",
+    "default_functions",
+    "metadata",
+];
 const ALLOWED_NODE_KEYS: &[&str] = &["label", "function", "input", "depends_on", "fanout"];
 const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "queue", "engine_retry", "runtime"];
 
@@ -412,7 +418,7 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     }
 
     // Functions always return JSON - no validation needed
-    
+
     // Collect nodes that must have JSON output.
     let mut must_have_json_output: std::collections::HashSet<String> =
         std::collections::HashSet::new();
@@ -644,7 +650,11 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     state::put_run_input(&deps.iii, &run_id, &req.input).await?;
 
     // Extract workflow name from metadata if present
-    let workflow_name = req.definition.metadata.as_ref().and_then(|m| m.name.clone());
+    let workflow_name = req
+        .definition
+        .metadata
+        .as_ref()
+        .and_then(|m| m.name.clone());
 
     // Bound sub-workflow nesting: a node that opted into `workflow::start` could
     // otherwise recurse (sub-workflow → node → sub-workflow → …) without limit.
@@ -688,6 +698,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         abort: false,
         def_ref: run_id.clone(),
         input_ref: crate::ids::input_key(&run_id),
+        vars_ref: Some(crate::ids::vars_key(&run_id)),
         state_keys_map: BTreeMap::new(),
         stream_ids: Vec::new(),
         queue_receipts: Vec::new(),
@@ -737,7 +748,9 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FanoutSpec, FunctionSpec, InputFrom, InputSpec, NodeDef, OutputRef, WorkflowDef};
+    use crate::types::{
+        FanoutSpec, FunctionSpec, InputFrom, InputSpec, NodeDef, OutputRef, WorkflowDef,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -754,6 +767,7 @@ mod tests {
             input: InputSpec {
                 from: input_from,
                 template: None,
+                value: None,
             },
             depends_on: vec![],
             fanout: fanout_over.map(|over| FanoutSpec {
@@ -814,7 +828,10 @@ mod tests {
         assert!(def.nodes["read"].depends_on.is_empty());
         assert!(def.nodes["summarize"].depends_on.is_empty());
         assert_eq!(prepared.nodes["read"].depends_on, vec!["plan".to_string()]);
-        assert_eq!(prepared.nodes["summarize"].depends_on, vec!["read".to_string()]);
+        assert_eq!(
+            prepared.nodes["summarize"].depends_on,
+            vec!["read".to_string()]
+        );
     }
 
     #[test]
@@ -826,11 +843,17 @@ mod tests {
         );
         nodes.insert(
             "wait".to_string(),
-            NodeDef { depends_on: vec!["process-text".to_string()], ..make_node("wait", None, "run_input".into()) },
+            NodeDef {
+                depends_on: vec!["process-text".to_string()],
+                ..make_node("wait", None, "run_input".into())
+            },
         );
         nodes.insert(
             "process-text_1".to_string(),
-            NodeDef { depends_on: vec!["process-text".to_string()], ..make_node("process-text", None, "run_input".into()) },
+            NodeDef {
+                depends_on: vec!["process-text".to_string()],
+                ..make_node("process-text", None, "run_input".into())
+            },
         );
         nodes.insert(
             "analyze-text".to_string(),

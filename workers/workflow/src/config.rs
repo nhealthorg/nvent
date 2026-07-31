@@ -65,6 +65,16 @@ pub struct WorkerConfig {
     /// Milliseconds. 30 days by default.
     #[serde(default = "default_idempotency_ttl_ms")]
     pub idempotency_ttl_ms: u64,
+
+    /// Minimum variable version at which checkpoint snapshots may be stored.
+    /// Versions below this threshold keep delta-only history.
+    #[serde(default = "default_var_checkpoint_start_version")]
+    pub var_checkpoint_start_version: u64,
+
+    /// Store a full variable checkpoint every N versions once the start
+    /// threshold is reached. Set to 0 to disable checkpoint snapshots.
+    #[serde(default = "default_var_checkpoint_every_versions")]
+    pub var_checkpoint_every_versions: u64,
 }
 
 fn default_pending_timeout_ms() -> u64 {
@@ -97,6 +107,12 @@ fn default_redis_global_log_trace_index() -> bool {
 fn default_idempotency_ttl_ms() -> u64 {
     30 * 24 * 60 * 60 * 1000
 }
+fn default_var_checkpoint_start_version() -> u64 {
+    25
+}
+fn default_var_checkpoint_every_versions() -> u64 {
+    25
+}
 
 impl Default for WorkerConfig {
     fn default() -> Self {
@@ -112,6 +128,8 @@ impl Default for WorkerConfig {
             internal_state_file_dir: default_internal_state_file_dir(),
             redis_global_log_trace_index: default_redis_global_log_trace_index(),
             idempotency_ttl_ms: default_idempotency_ttl_ms(),
+            var_checkpoint_start_version: default_var_checkpoint_start_version(),
+            var_checkpoint_every_versions: default_var_checkpoint_every_versions(),
         }
     }
 }
@@ -162,5 +180,7 @@ mod tests {
         assert_eq!(cfg.internal_state_file_dir, ".data/workflow-store");
         assert!(cfg.redis_global_log_trace_index);
         assert_eq!(cfg.idempotency_ttl_ms, 30 * 24 * 60 * 60 * 1000);
+        assert_eq!(cfg.var_checkpoint_start_version, 25);
+        assert_eq!(cfg.var_checkpoint_every_versions, 25);
     }
 }

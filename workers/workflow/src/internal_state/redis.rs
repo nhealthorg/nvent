@@ -8,7 +8,9 @@ use crate::config::WorkerConfig;
 use crate::error::WorkflowError;
 use crate::ids::now_ms;
 use crate::internal_state::file::FileWorkflowInternalStateStore;
-use crate::internal_state::{run_matches_workflow_filter, ListRunsFilter, WorkflowInternalStateStore};
+use crate::internal_state::{
+    run_matches_workflow_filter, ListRunsFilter, WorkflowInternalStateStore,
+};
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
 use crate::types::{QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord};
 
@@ -102,6 +104,10 @@ impl RedisWorkflowInternalStateStore {
         format!("nvent:wf:input:{}", sanitize_segment(run_id))
     }
 
+    fn run_vars_key(&self, run_id: &str) -> String {
+        format!("nvent:wf:vars:{}", sanitize_segment(run_id))
+    }
+
     fn run_result_key(&self, run_id: &str) -> String {
         format!("nvent:wf:run-result:{}", sanitize_segment(run_id))
     }
@@ -180,13 +186,15 @@ impl RedisWorkflowInternalStateStore {
     ) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
         let mut out = Vec::with_capacity(run_ids.len());
         for run_id in run_ids {
-            let raw: Option<String> = conn
-                .get(self.run_key(run_id))
-                .await
-                .map_err(|err| WorkflowError::State(format!("redis get run failed for {run_id}: {err}")))?;
+            let raw: Option<String> = conn.get(self.run_key(run_id)).await.map_err(|err| {
+                WorkflowError::State(format!("redis get run failed for {run_id}: {err}"))
+            })?;
 
             if let Some(raw) = raw {
-                out.push(serde_json::from_str::<WorkflowRunRecord>(&raw).map_err(WorkflowError::Serde)?);
+                out.push(
+                    serde_json::from_str::<WorkflowRunRecord>(&raw)
+                        .map_err(WorkflowError::Serde)?,
+                );
             }
         }
         Ok(out)
@@ -197,9 +205,9 @@ impl RedisWorkflowInternalStateStore {
         conn: &mut redis::aio::MultiplexedConnection,
         run_id: &str,
     ) -> Result<Option<u64>, WorkflowError> {
-        conn.get(self.run_ver_key(run_id))
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis get run version failed for {run_id}: {err}")))
+        conn.get(self.run_ver_key(run_id)).await.map_err(|err| {
+            WorkflowError::State(format!("redis get run version failed for {run_id}: {err}"))
+        })
     }
 
     async fn put_run_non_cas(
@@ -207,7 +215,10 @@ impl RedisWorkflowInternalStateStore {
         conn: &mut redis::aio::MultiplexedConnection,
         record: &WorkflowRunRecord,
     ) -> Result<(), WorkflowError> {
-        let current_version = self.get_run_version(conn, &record.run_id).await?.unwrap_or(0);
+        let current_version = self
+            .get_run_version(conn, &record.run_id)
+            .await?
+            .unwrap_or(0);
         let next_version = current_version.saturating_add(1);
         let payload = serde_json::to_string(record).map_err(WorkflowError::Serde)?;
         let run_key = self.run_key(&record.run_id);
@@ -257,10 +268,9 @@ impl RedisWorkflowInternalStateStore {
             pipe.cmd("SADD").arg(key).arg(&record.run_id).ignore();
         }
 
-        let _: () = pipe
-            .query_async(conn)
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis put run failed for {}: {err}", record.run_id)))?;
+        let _: () = pipe.query_async(conn).await.map_err(|err| {
+            WorkflowError::State(format!("redis put run failed for {}: {err}", record.run_id))
+        })?;
 
         Ok(())
     }
@@ -286,7 +296,10 @@ impl RedisWorkflowInternalStateStore {
                 })?;
 
             let current_version: Option<u64> = conn.get(&run_ver_key).await.map_err(|err| {
-                WorkflowError::State(format!("redis get version failed for {}: {err}", record.run_id))
+                WorkflowError::State(format!(
+                    "redis get version failed for {}: {err}",
+                    record.run_id
+                ))
             })?;
 
             let Some(current_version) = current_version else {
@@ -294,7 +307,10 @@ impl RedisWorkflowInternalStateStore {
                     .query_async::<()>(conn)
                     .await
                     .map_err(|err| {
-                        WorkflowError::State(format!("redis UNWATCH failed for {}: {err}", record.run_id))
+                        WorkflowError::State(format!(
+                            "redis UNWATCH failed for {}: {err}",
+                            record.run_id
+                        ))
                     })?;
 
                 return Err(WorkflowError::State(format!(
@@ -308,7 +324,10 @@ impl RedisWorkflowInternalStateStore {
                     .query_async::<()>(conn)
                     .await
                     .map_err(|err| {
-                        WorkflowError::State(format!("redis UNWATCH failed for {}: {err}", record.run_id))
+                        WorkflowError::State(format!(
+                            "redis UNWATCH failed for {}: {err}",
+                            record.run_id
+                        ))
                     })?;
 
                 return Err(WorkflowError::State(format!(
@@ -361,9 +380,13 @@ impl RedisWorkflowInternalStateStore {
                 pipe.cmd("SADD").arg(key).arg(&record.run_id).ignore();
             }
 
-            let exec_result: Option<Vec<redis::Value>> = pipe.query_async(conn).await.map_err(|err| {
-                WorkflowError::State(format!("redis CAS put run failed for {}: {err}", record.run_id))
-            })?;
+            let exec_result: Option<Vec<redis::Value>> =
+                pipe.query_async(conn).await.map_err(|err| {
+                    WorkflowError::State(format!(
+                        "redis CAS put run failed for {}: {err}",
+                        record.run_id
+                    ))
+                })?;
 
             if exec_result.is_some() {
                 return Ok(());
@@ -429,7 +452,9 @@ impl RedisWorkflowInternalStateStore {
         let lines: Vec<String> = conn
             .lrange(key, start_isize, end_isize)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis paged list {label} failed: {err}")))?;
+            .map_err(|err| {
+                WorkflowError::State(format!("redis paged list {label} failed: {err}"))
+            })?;
 
         let mut out = Vec::with_capacity(lines.len());
         for line in lines {
@@ -452,10 +477,9 @@ impl RedisWorkflowInternalStateStore {
             pipe.cmd("RPUSH").arg(key).arg(payload).ignore();
         }
 
-        let _: () = pipe
-            .query_async(conn)
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis overwrite list failed for {key}: {err}")))?;
+        let _: () = pipe.query_async(conn).await.map_err(|err| {
+            WorkflowError::State(format!("redis overwrite list failed for {key}: {err}"))
+        })?;
 
         Ok(())
     }
@@ -527,13 +551,14 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         }
 
         let mut conn = self.conn().await?;
-        let raw: Option<String> = conn
-            .get(self.run_key(run_id))
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis get run failed for {run_id}: {err}")))?;
+        let raw: Option<String> = conn.get(self.run_key(run_id)).await.map_err(|err| {
+            WorkflowError::State(format!("redis get run failed for {run_id}: {err}"))
+        })?;
 
         match raw {
-            Some(json) => Ok(Some(serde_json::from_str::<WorkflowRunRecord>(&json).map_err(WorkflowError::Serde)?)),
+            Some(json) => Ok(Some(
+                serde_json::from_str::<WorkflowRunRecord>(&json).map_err(WorkflowError::Serde)?,
+            )),
             None => Ok(None),
         }
     }
@@ -569,7 +594,10 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         self.load_runs_by_ids(&mut conn, &run_ids).await
     }
 
-    async fn list_runs_filtered(&self, filter: &ListRunsFilter) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
+    async fn list_runs_filtered(
+        &self,
+        filter: &ListRunsFilter,
+    ) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
         if !self.has_redis() {
             return self.fallback.list_runs_filtered(filter).await;
         }
@@ -590,15 +618,20 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             (Some(status), None) => conn
                 .smembers(self.runs_status_index_key(*status))
                 .await
-                .map_err(|err| WorkflowError::State(format!("redis list runs status index failed: {err}")))?,
-            (None, Some(workflow)) if self.workflow_trigrams(workflow).is_empty() => conn
-                .smembers(self.runs_index_key())
-                .await
-                .map_err(|err| WorkflowError::State(format!("redis list runs index failed: {err}")))?,
+                .map_err(|err| {
+                    WorkflowError::State(format!("redis list runs status index failed: {err}"))
+                })?,
+            (None, Some(workflow)) if self.workflow_trigrams(workflow).is_empty() => {
+                conn.smembers(self.runs_index_key()).await.map_err(|err| {
+                    WorkflowError::State(format!("redis list runs index failed: {err}"))
+                })?
+            }
             (Some(status), Some(workflow)) if self.workflow_trigrams(workflow).is_empty() => conn
                 .smembers(self.runs_status_index_key(*status))
                 .await
-                .map_err(|err| WorkflowError::State(format!("redis list runs status index failed: {err}")))?,
+                .map_err(|err| {
+                    WorkflowError::State(format!("redis list runs status index failed: {err}"))
+                })?,
             (status, Some(workflow)) => {
                 let trigrams = self.workflow_trigrams(workflow);
                 let mut cmd = redis::cmd("SINTER");
@@ -608,9 +641,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 for trigram in trigrams {
                     cmd.arg(self.runs_workflow_trigram_index_key(&trigram));
                 }
-                cmd.query_async(&mut conn)
-                    .await
-                    .map_err(|err| WorkflowError::State(format!("redis list runs workflow index failed: {err}")))?
+                cmd.query_async(&mut conn).await.map_err(|err| {
+                    WorkflowError::State(format!("redis list runs workflow index failed: {err}"))
+                })?
             }
             (None, None) => Vec::new(),
         };
@@ -634,10 +667,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
 
         let mut conn = self.conn().await?;
         let run_key = self.run_key(run_id);
-        let raw_run: Option<String> = conn
-            .get(&run_key)
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis get run failed for {run_id}: {err}")))?;
+        let raw_run: Option<String> = conn.get(&run_key).await.map_err(|err| {
+            WorkflowError::State(format!("redis get run failed for {run_id}: {err}"))
+        })?;
 
         let workflow_index_keys = raw_run
             .as_deref()
@@ -684,7 +716,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             .ignore()
             .query_async(&mut conn)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis delete run failed for {run_id}: {err}")))?;
+            .map_err(|err| {
+                WorkflowError::State(format!("redis delete run failed for {run_id}: {err}"))
+            })?;
         Ok(())
     }
 
@@ -694,13 +728,14 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         }
 
         let mut conn = self.conn().await?;
-        let raw: Option<String> = conn
-            .get(self.def_key(run_id))
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis get def failed for {run_id}: {err}")))?;
+        let raw: Option<String> = conn.get(self.def_key(run_id)).await.map_err(|err| {
+            WorkflowError::State(format!("redis get def failed for {run_id}: {err}"))
+        })?;
 
         match raw {
-            Some(json) => Ok(Some(serde_json::from_str::<WorkflowDef>(&json).map_err(WorkflowError::Serde)?)),
+            Some(json) => Ok(Some(
+                serde_json::from_str::<WorkflowDef>(&json).map_err(WorkflowError::Serde)?,
+            )),
             None => Ok(None),
         }
     }
@@ -714,7 +749,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let payload = serde_json::to_string(def).map_err(WorkflowError::Serde)?;
         conn.set(self.def_key(run_id), payload)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis put def failed for {run_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!("redis put def failed for {run_id}: {err}"))
+            })
     }
 
     async fn delete_def(&self, run_id: &str) -> Result<(), WorkflowError> {
@@ -725,7 +762,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let mut conn = self.conn().await?;
         conn.del::<_, ()>(self.def_key(run_id))
             .await
-            .map_err(|err| WorkflowError::State(format!("redis delete def failed for {run_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!("redis delete def failed for {run_id}: {err}"))
+            })
     }
 
     async fn get_run_input(&self, run_id: &str) -> Result<Option<Value>, WorkflowError> {
@@ -734,13 +773,14 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         }
 
         let mut conn = self.conn().await?;
-        let raw: Option<String> = conn
-            .get(self.input_key(run_id))
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis get input failed for {run_id}: {err}")))?;
+        let raw: Option<String> = conn.get(self.input_key(run_id)).await.map_err(|err| {
+            WorkflowError::State(format!("redis get input failed for {run_id}: {err}"))
+        })?;
 
         match raw {
-            Some(json) => Ok(Some(serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?)),
+            Some(json) => Ok(Some(
+                serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?,
+            )),
             None => Ok(None),
         }
     }
@@ -754,7 +794,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let payload = serde_json::to_string(value).map_err(WorkflowError::Serde)?;
         conn.set(self.input_key(run_id), payload)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis put input failed for {run_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!("redis put input failed for {run_id}: {err}"))
+            })
     }
 
     async fn delete_run_input(&self, run_id: &str) -> Result<(), WorkflowError> {
@@ -765,7 +807,54 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let mut conn = self.conn().await?;
         conn.del::<_, ()>(self.input_key(run_id))
             .await
-            .map_err(|err| WorkflowError::State(format!("redis delete input failed for {run_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!("redis delete input failed for {run_id}: {err}"))
+            })
+    }
+
+    async fn get_run_vars(&self, run_id: &str) -> Result<Option<Value>, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.get_run_vars(run_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let raw: Option<String> = conn.get(self.run_vars_key(run_id)).await.map_err(|err| {
+            WorkflowError::State(format!("redis get vars failed for {run_id}: {err}"))
+        })?;
+
+        match raw {
+            Some(json) => Ok(Some(
+                serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn put_run_vars(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.put_run_vars(run_id, value).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let payload = serde_json::to_string(value).map_err(WorkflowError::Serde)?;
+        conn.set(self.run_vars_key(run_id), payload)
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!("redis put vars failed for {run_id}: {err}"))
+            })
+    }
+
+    async fn delete_run_vars(&self, run_id: &str) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.delete_run_vars(run_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        conn.del::<_, ()>(self.run_vars_key(run_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!("redis delete vars failed for {run_id}: {err}"))
+            })
     }
 
     async fn get_run_result(&self, run_id: &str) -> Result<Option<Value>, WorkflowError> {
@@ -774,13 +863,14 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         }
 
         let mut conn = self.conn().await?;
-        let raw: Option<String> = conn
-            .get(self.run_result_key(run_id))
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis get run result failed for {run_id}: {err}")))?;
+        let raw: Option<String> = conn.get(self.run_result_key(run_id)).await.map_err(|err| {
+            WorkflowError::State(format!("redis get run result failed for {run_id}: {err}"))
+        })?;
 
         match raw {
-            Some(json) => Ok(Some(serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?)),
+            Some(json) => Ok(Some(
+                serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?,
+            )),
             None => Ok(None),
         }
     }
@@ -794,7 +884,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let payload = serde_json::to_string(value).map_err(WorkflowError::Serde)?;
         conn.set(self.run_result_key(run_id), payload)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis put run result failed for {run_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!("redis put run result failed for {run_id}: {err}"))
+            })
     }
 
     async fn delete_run_result(&self, run_id: &str) -> Result<(), WorkflowError> {
@@ -805,29 +897,46 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let mut conn = self.conn().await?;
         conn.del::<_, ()>(self.run_result_key(run_id))
             .await
-            .map_err(|err| WorkflowError::State(format!("redis delete run result failed for {run_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis delete run result failed for {run_id}: {err}"
+                ))
+            })
     }
 
-    async fn get_node_result(&self, run_id: &str, node_uid: &str) -> Result<Option<Value>, WorkflowError> {
+    async fn get_node_result(
+        &self,
+        run_id: &str,
+        node_uid: &str,
+    ) -> Result<Option<Value>, WorkflowError> {
         if !self.has_redis() {
             return self.fallback.get_node_result(run_id, node_uid).await;
         }
 
         let mut conn = self.conn().await?;
-        let raw: Option<String> = conn
-            .get(self.result_key(run_id, node_uid))
-            .await
-            .map_err(|err| {
-                WorkflowError::State(format!("redis get node result failed for {run_id}/{node_uid}: {err}"))
-            })?;
+        let raw: Option<String> =
+            conn.get(self.result_key(run_id, node_uid))
+                .await
+                .map_err(|err| {
+                    WorkflowError::State(format!(
+                        "redis get node result failed for {run_id}/{node_uid}: {err}"
+                    ))
+                })?;
 
         match raw {
-            Some(json) => Ok(Some(serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?)),
+            Some(json) => Ok(Some(
+                serde_json::from_str::<Value>(&json).map_err(WorkflowError::Serde)?,
+            )),
             None => Ok(None),
         }
     }
 
-    async fn put_node_result(&self, run_id: &str, node_uid: &str, value: &Value) -> Result<(), WorkflowError> {
+    async fn put_node_result(
+        &self,
+        run_id: &str,
+        node_uid: &str,
+        value: &Value,
+    ) -> Result<(), WorkflowError> {
         if !self.has_redis() {
             return self.fallback.put_node_result(run_id, node_uid, value).await;
         }
@@ -837,7 +946,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         conn.set(self.result_key(run_id, node_uid), payload)
             .await
             .map_err(|err| {
-                WorkflowError::State(format!("redis put node result failed for {run_id}/{node_uid}: {err}"))
+                WorkflowError::State(format!(
+                    "redis put node result failed for {run_id}/{node_uid}: {err}"
+                ))
             })
     }
 
@@ -850,11 +961,17 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         conn.del::<_, ()>(self.result_key(run_id, node_uid))
             .await
             .map_err(|err| {
-                WorkflowError::State(format!("redis delete node result failed for {run_id}/{node_uid}: {err}"))
+                WorkflowError::State(format!(
+                    "redis delete node result failed for {run_id}/{node_uid}: {err}"
+                ))
             })
     }
 
-    async fn put_run_log(&self, run_id: &str, entry: &WorkflowRunLogRecord) -> Result<(), WorkflowError> {
+    async fn put_run_log(
+        &self,
+        run_id: &str,
+        entry: &WorkflowRunLogRecord,
+    ) -> Result<(), WorkflowError> {
         if !self.has_redis() {
             return self.fallback.put_run_log(run_id, entry).await;
         }
@@ -863,21 +980,28 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let payload = serde_json::to_string(entry).map_err(WorkflowError::Serde)?;
         conn.rpush::<_, _, ()>(self.run_log_key(run_id), payload)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis put run log failed for {run_id}: {err}")))?;
+            .map_err(|err| {
+                WorkflowError::State(format!("redis put run log failed for {run_id}: {err}"))
+            })?;
 
         if self.redis_global_log_trace_index {
             let member = format!("{}:{}", run_id, entry.id);
             conn.zadd::<_, _, _, ()>(self.run_log_global_index_key(), member, entry.ts_unix_ms)
                 .await
                 .map_err(|err| {
-                    WorkflowError::State(format!("redis zadd run log index failed for {run_id}: {err}"))
+                    WorkflowError::State(format!(
+                        "redis zadd run log index failed for {run_id}: {err}"
+                    ))
                 })?;
         }
 
         Ok(())
     }
 
-    async fn list_run_logs(&self, run_id: &str) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError> {
+    async fn list_run_logs(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError> {
         if !self.has_redis() {
             return self.fallback.list_run_logs(run_id).await;
         }
@@ -894,7 +1018,10 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         limit: u32,
     ) -> Result<(Vec<WorkflowRunLogRecord>, bool), WorkflowError> {
         if !self.has_redis() {
-            return self.fallback.list_run_logs_paged(run_id, offset, limit).await;
+            return self
+                .fallback
+                .list_run_logs_paged(run_id, offset, limit)
+                .await;
         }
 
         let mut conn = self.conn().await?;
@@ -925,16 +1052,25 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             conn.zrem::<_, _, ()>(self.run_log_global_index_key(), member)
                 .await
                 .map_err(|err| {
-                    WorkflowError::State(format!("redis zrem run log index failed for {run_id}: {err}"))
+                    WorkflowError::State(format!(
+                        "redis zrem run log index failed for {run_id}: {err}"
+                    ))
                 })?;
         }
 
         Ok(())
     }
 
-    async fn prune_run_logs_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError> {
+    async fn prune_run_logs_before(
+        &self,
+        run_id: &str,
+        cutoff_unix_ms: i64,
+    ) -> Result<u64, WorkflowError> {
         if !self.has_redis() {
-            return self.fallback.prune_run_logs_before(run_id, cutoff_unix_ms).await;
+            return self
+                .fallback
+                .prune_run_logs_before(run_id, cutoff_unix_ms)
+                .await;
         }
 
         let rows = self.list_run_logs(run_id).await?;
@@ -960,13 +1096,19 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 .collect();
             conn.zrem::<_, _, ()>(self.run_log_global_index_key(), members)
                 .await
-                .map_err(|err| WorkflowError::State(format!("redis zrem run log index failed: {err}")))?;
+                .map_err(|err| {
+                    WorkflowError::State(format!("redis zrem run log index failed: {err}"))
+                })?;
         }
 
         Ok(removed)
     }
 
-    async fn put_run_trace(&self, run_id: &str, entry: &WorkflowRunTraceRecord) -> Result<(), WorkflowError> {
+    async fn put_run_trace(
+        &self,
+        run_id: &str,
+        entry: &WorkflowRunTraceRecord,
+    ) -> Result<(), WorkflowError> {
         if !self.has_redis() {
             return self.fallback.put_run_trace(run_id, entry).await;
         }
@@ -975,21 +1117,28 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let payload = serde_json::to_string(entry).map_err(WorkflowError::Serde)?;
         conn.rpush::<_, _, ()>(self.run_trace_key(run_id), payload)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis put run trace failed for {run_id}: {err}")))?;
+            .map_err(|err| {
+                WorkflowError::State(format!("redis put run trace failed for {run_id}: {err}"))
+            })?;
 
         if self.redis_global_log_trace_index {
             let member = format!("{}:{}", run_id, entry.id);
             conn.zadd::<_, _, _, ()>(self.run_trace_global_index_key(), member, entry.ts_unix_ms)
                 .await
                 .map_err(|err| {
-                    WorkflowError::State(format!("redis zadd run trace index failed for {run_id}: {err}"))
+                    WorkflowError::State(format!(
+                        "redis zadd run trace index failed for {run_id}: {err}"
+                    ))
                 })?;
         }
 
         Ok(())
     }
 
-    async fn list_run_traces(&self, run_id: &str) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
+    async fn list_run_traces(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError> {
         if !self.has_redis() {
             return self.fallback.list_run_traces(run_id).await;
         }
@@ -1006,7 +1155,10 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         limit: u32,
     ) -> Result<(Vec<WorkflowRunTraceRecord>, bool), WorkflowError> {
         if !self.has_redis() {
-            return self.fallback.list_run_traces_paged(run_id, offset, limit).await;
+            return self
+                .fallback
+                .list_run_traces_paged(run_id, offset, limit)
+                .await;
         }
 
         let mut conn = self.conn().await?;
@@ -1037,16 +1189,25 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             conn.zrem::<_, _, ()>(self.run_trace_global_index_key(), member)
                 .await
                 .map_err(|err| {
-                    WorkflowError::State(format!("redis zrem run trace index failed for {run_id}: {err}"))
+                    WorkflowError::State(format!(
+                        "redis zrem run trace index failed for {run_id}: {err}"
+                    ))
                 })?;
         }
 
         Ok(())
     }
 
-    async fn prune_run_traces_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError> {
+    async fn prune_run_traces_before(
+        &self,
+        run_id: &str,
+        cutoff_unix_ms: i64,
+    ) -> Result<u64, WorkflowError> {
         if !self.has_redis() {
-            return self.fallback.prune_run_traces_before(run_id, cutoff_unix_ms).await;
+            return self
+                .fallback
+                .prune_run_traces_before(run_id, cutoff_unix_ms)
+                .await;
         }
 
         let rows = self.list_run_traces(run_id).await?;
@@ -1072,7 +1233,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 .collect();
             conn.zrem::<_, _, ()>(self.run_trace_global_index_key(), members)
                 .await
-                .map_err(|err| WorkflowError::State(format!("redis zrem run trace index failed: {err}")))?;
+                .map_err(|err| {
+                    WorkflowError::State(format!("redis zrem run trace index failed: {err}"))
+                })?;
         }
 
         Ok(removed)
@@ -1086,7 +1249,11 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let mut conn = self.conn().await?;
         conn.set(self.session_key(session_id), run_id)
             .await
-            .map_err(|err| WorkflowError::State(format!("redis put session index failed for {session_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis put session index failed for {session_id}: {err}"
+                ))
+            })
     }
 
     async fn run_id_for_session(&self, session_id: &str) -> Result<Option<String>, WorkflowError> {
@@ -1096,7 +1263,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
 
         let mut conn = self.conn().await?;
         conn.get(self.session_key(session_id)).await.map_err(|err| {
-            WorkflowError::State(format!("redis get session index failed for {session_id}: {err}"))
+            WorkflowError::State(format!(
+                "redis get session index failed for {session_id}: {err}"
+            ))
         })
     }
 
@@ -1108,7 +1277,11 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let mut conn = self.conn().await?;
         conn.del::<_, ()>(self.session_key(session_id))
             .await
-            .map_err(|err| WorkflowError::State(format!("redis delete session index failed for {session_id}: {err}")))
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis delete session index failed for {session_id}: {err}"
+                ))
+            })
     }
 
     async fn put_idempotency_key(
@@ -1126,9 +1299,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let key = self.idempotency_key(key);
 
         if ttl == 0 {
-            conn.set::<_, _, ()>(&key, run_id)
-                .await
-                .map_err(|err| WorkflowError::State(format!("redis put idempotency failed for {key}: {err}")))
+            conn.set::<_, _, ()>(&key, run_id).await.map_err(|err| {
+                WorkflowError::State(format!("redis put idempotency failed for {key}: {err}"))
+            })
         } else {
             redis::cmd("PSETEX")
                 .arg(&key)
@@ -1137,7 +1310,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 .query_async::<()>(&mut conn)
                 .await
                 .map_err(|err| {
-                    WorkflowError::State(format!("redis put idempotency with ttl failed for {key}: {err}"))
+                    WorkflowError::State(format!(
+                        "redis put idempotency with ttl failed for {key}: {err}"
+                    ))
                 })
         }
     }
@@ -1154,10 +1329,12 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
     }
 
     async fn put_queue_receipt(&self, receipt: &QueueReceiptRecord) -> Result<(), WorkflowError> {
-        let mut run = self
-            .get_run(&receipt.run_id)
-            .await?
-            .ok_or_else(|| WorkflowError::State(format!("put_queue_receipt: run not found: {}", receipt.run_id)))?;
+        let mut run = self.get_run(&receipt.run_id).await?.ok_or_else(|| {
+            WorkflowError::State(format!(
+                "put_queue_receipt: run not found: {}",
+                receipt.run_id
+            ))
+        })?;
 
         if let Some(existing) = run.queue_receipts.iter_mut().find(|r| r.id == receipt.id) {
             *existing = receipt.clone();
@@ -1168,7 +1345,10 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         self.put_run(&run, None).await
     }
 
-    async fn list_queue_receipts(&self, run_id: &str) -> Result<Vec<QueueReceiptRecord>, WorkflowError> {
+    async fn list_queue_receipts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<QueueReceiptRecord>, WorkflowError> {
         Ok(self
             .get_run(run_id)
             .await?

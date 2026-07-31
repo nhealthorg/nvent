@@ -7,7 +7,9 @@ use serde_json::Value;
 use crate::{
     error::WorkflowError,
     state,
-    types::{NodeCheckpoint, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{
+        NodeCheckpoint, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+    },
 };
 
 use super::Deps;
@@ -86,7 +88,10 @@ pub struct LoopStats {
     pub active_index: Option<usize>,
 }
 
-fn collect_loop_stats(definition: &WorkflowDef, record: &WorkflowRunRecord) -> BTreeMap<String, LoopStats> {
+fn collect_loop_stats(
+    definition: &WorkflowDef,
+    record: &WorkflowRunRecord,
+) -> BTreeMap<String, LoopStats> {
     let mut out = BTreeMap::new();
 
     for (node_id, node_def) in &definition.nodes {
@@ -117,7 +122,10 @@ fn collect_loop_stats(definition: &WorkflowDef, record: &WorkflowRunRecord) -> B
         let active_index = if fanout.mode == Some(crate::types::FanoutMode::Sequential) {
             (0..total_items).find(|idx| {
                 let uid = format!("{}#{}", node_id, idx);
-                !matches!(record.nodes.get(&uid).map(|cp| cp.state), Some(NodeState::Done))
+                !matches!(
+                    record.nodes.get(&uid).map(|cp| cp.state),
+                    Some(NodeState::Done)
+                )
             })
         } else {
             None
@@ -222,8 +230,8 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use crate::types::NodeState;
+    use serde_json::json;
 
     #[test]
     fn status_response_serde_round_trip() {
@@ -248,10 +256,7 @@ mod tests {
         node_errors.insert("read".to_string(), "boom".to_string());
 
         let mut node_results = BTreeMap::new();
-        node_results.insert(
-            "plan".to_string(),
-            "r_abc123/plan".to_string(),
-        );
+        node_results.insert("plan".to_string(), "r_abc123/plan".to_string());
 
         let queue_receipts = vec![QueueReceiptRecord {
             id: "r_abc123:plan:receipt-1".to_string(),
@@ -364,7 +369,9 @@ mod tests {
 
     #[test]
     fn collect_loop_stats_reports_item_progress() {
-        use crate::types::{FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowRunRecord};
+        use crate::types::{
+            FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowRunRecord,
+        };
 
         let mut def_nodes = BTreeMap::new();
         def_nodes.insert(
@@ -381,6 +388,7 @@ mod tests {
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec![],
                 fanout: Some(FanoutSpec {
@@ -411,6 +419,7 @@ mod tests {
             abort: false,
             def_ref: "r_loop".to_string(),
             input_ref: "r_loop".to_string(),
+            vars_ref: Some("r_loop".to_string()),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
             queue_receipts: Vec::new(),
@@ -424,7 +433,10 @@ mod tests {
             updated_at: 0,
         };
 
-        record.fanout_src.insert("loop-node".to_string(), vec![json!("a"), json!("b"), json!("c")]);
+        record.fanout_src.insert(
+            "loop-node".to_string(),
+            vec![json!("a"), json!("b"), json!("c")],
+        );
         record.nodes.insert(
             "loop-node#0".to_string(),
             NodeCheckpoint {

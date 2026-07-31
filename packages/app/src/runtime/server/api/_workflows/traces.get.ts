@@ -1,6 +1,6 @@
 import { createError, defineEventHandler, getQuery, useIii } from '#imports'
 
-type TimelineMode = 'traces' | 'logs' | 'states' | 'streams'
+type TimelineMode = 'traces' | 'logs' | 'states' | 'streams' | 'vars'
 
 interface WorkflowRunLogRecord {
   id: string
@@ -72,6 +72,7 @@ function mapTraceEventType(eventName: string): string {
   if (eventName === 'workflow.state.delete') return 'state.delete'
   if (eventName === 'workflow.stream.publish' || eventName === 'workflow.stream.set') return 'stream.publish'
   if (eventName === 'workflow.stream.delete') return 'stream.delete'
+  if (eventName === 'workflow.var.updated') return 'var.updated'
   return eventName || 'trace.event'
 }
 
@@ -217,6 +218,48 @@ export default defineEventHandler(async (event) => {
         })),
         has_more: Boolean(traceResult?.has_more),
         next_offset: Number(traceResult?.next_offset || (offset + stateItems.length)),
+      }
+    }
+
+    if (type === 'vars') {
+      const traceResult = await iii.trigger({
+        function_id: 'workflow::trace-read',
+        payload: {
+          run_id: runId,
+          node_uids: nodeUids,
+          loop_index: loopIndex,
+          event_name_prefix: 'workflow.var.',
+          limit,
+          offset,
+        },
+      }) as {
+        traces?: WorkflowRunTraceRecord[]
+        has_more?: boolean
+        next_offset?: number
+      }
+
+      const varItems = Array.isArray(traceResult?.traces) ? traceResult.traces : []
+
+      return {
+        type,
+        items: varItems.map((item, index) => ({
+          id: item.id || `${runId}-var-${offset + index}`,
+          ts: Number(item.ts_unix_ms || 0),
+          type: mapTraceEventType(String(item.event_name || 'workflow.var.updated')),
+          stepName: String(item.node_uid || item.function_id || ''),
+          data: {
+            eventName: item.event_name,
+            key: asObject(item.attributes)['workflow.var.key'],
+            version: asObject(item.attributes)['workflow.var.version'],
+            preview: asObject(item.attributes)['workflow.var.preview'],
+            attributes: asObject(item.attributes),
+            runId: item.run_id,
+            nodeUid: item.node_uid,
+            functionId: item.function_id,
+          },
+        })),
+        has_more: Boolean(traceResult?.has_more),
+        next_offset: Number(traceResult?.next_offset || (offset + varItems.length)),
       }
     }
 

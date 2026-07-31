@@ -72,6 +72,19 @@
             <span>{{ item.step.loopGroupId ? `In ${String(item.step.loopGroupId).toUpperCase()}` : 'In Loop' }}</span>
           </UBadge>
           <UBadge
+            v-if="isVarStep(item.step)"
+            size="xs"
+            color="success"
+            variant="soft"
+            class="flex items-center gap-1"
+          >
+            <UIcon
+              name="i-lucide-variable"
+              class="w-3 h-3"
+            />
+            <span>Var</span>
+          </UBadge>
+          <UBadge
             v-if="item.step.isLoopGroup"
             size="xs"
             :color="getLoopModeColor(item.step.loopMode)"
@@ -81,7 +94,7 @@
           </UBadge>
           <!-- Await Badge with Type Icon -->
           <UBadge
-            v-if="isAwaitStep(item.step.key)"
+            v-if="isAwaitStepKey(item.step.key)"
             size="xs"
             :color="getAwaitBadgeColor(item.step.status)"
             variant="subtle"
@@ -229,16 +242,16 @@
           </span>
           <!-- Await Position Badge -->
           <UBadge
-            v-if="isAwaitStep(item.step.key)"
+            v-if="isAwaitStepKey(item.step.key)"
             size="xs"
             color="neutral"
             variant="outline"
           >
-            {{ getAwaitPosition(item.step.key) }}
+            {{ getAwaitPositionLabel(item.step.key) }}
           </UBadge>
           <!-- Step Timeout Badge (only for regular steps, not await steps) -->
           <span
-            v-if="item.step.stepTimeout && !isAwaitStep(item.step.key)"
+            v-if="item.step.stepTimeout && !isAwaitStepKey(item.step.key)"
             class="flex items-center gap-1"
             :title="`Step Execution Timeout: ${formatDuration(item.step.stepTimeout)}`"
           >
@@ -528,6 +541,29 @@ import { computed, ref } from 'vue'
 import { tv } from 'tailwind-variants'
 import { twMerge } from 'tailwind-merge'
 import type { ClassValue } from 'tailwind-variants'
+import {
+  formatDuration,
+  formatScheduledTime,
+  formatTimeAgo,
+  getAwaitBadgeColor,
+  getAwaitConfigBgClass,
+  getAwaitIconColor,
+  getAwaitPositionLabel,
+  getAwaitTextColor,
+  getAwaitTypeIcon,
+  getAwaitTypeLabel,
+  getLoopModeColor,
+  getLoopModeLabel,
+  getMethodBadgeColor,
+  getStepDisplayName,
+  getStepStatusBg,
+  getStepStatusIcon,
+  getStepStatusIconColor,
+  getStepStatusTextColor,
+  getTimeoutActionColor,
+  isAwaitStepKey,
+  isVarStep,
+} from './step-selector.utils'
 
 const props = defineProps<{
   modelValue: string
@@ -631,223 +667,5 @@ function loopChildClasses(child: any): string {
   return isSelected ? `${base} ${selected}` : base
 }
 
-// Helper to format timestamps
-const formatTime = (timestamp: string | number | Date) => {
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 0)
-    return `${days}d ago`
-  if (hours > 0)
-    return `${hours}h ago`
-  if (minutes > 0)
-    return `${minutes}m ago`
-  if (seconds > 10)
-    return `${seconds}s ago`
-  return 'just now'
-}
-
-// Step status helpers
-const getStepStatusBg = (status?: string) => {
-  switch (status) {
-    case 'completed': return 'bg-emerald-50 dark:bg-emerald-900/20'
-    case 'failed': return 'bg-red-50 dark:bg-red-900/20'
-    case 'stalled': return 'bg-amber-50 dark:bg-amber-900/20'
-    case 'running': return 'bg-blue-50 dark:bg-blue-900/20'
-    default: return 'bg-gray-50 dark:bg-gray-900/20'
-  }
-}
-
-const getStepStatusIcon = (status?: string) => {
-  switch (status) {
-    case 'completed': return 'i-lucide-check-circle'
-    case 'failed': return 'i-lucide-x-circle'
-    case 'stalled': return 'i-lucide-alert-triangle'
-    case 'running': return 'i-lucide-loader-circle'
-    default: return 'i-lucide-circle'
-  }
-}
-
-const getStepStatusIconColor = (status?: string) => {
-  switch (status) {
-    case 'completed': return 'text-emerald-600 dark:text-emerald-400'
-    case 'failed': return 'text-red-600 dark:text-red-400'
-    case 'stalled': return 'text-amber-600 dark:text-amber-400'
-    case 'running': return 'text-blue-600 dark:text-blue-400 animate-spin'
-    default: return 'text-gray-400'
-  }
-}
-
-const getStepStatusTextColor = (status?: string) => {
-  switch (status) {
-    case 'completed': return 'text-emerald-600 dark:text-emerald-400'
-    case 'failed': return 'text-red-600 dark:text-red-400'
-    case 'stalled': return 'text-amber-600 dark:text-amber-400'
-    case 'running': return 'text-blue-600 dark:text-blue-400'
-    default: return 'text-gray-500'
-  }
-}
-
-// Await step helpers
-const isAwaitStep = (key: string) => {
-  return key.includes(':await-')
-}
-
-const getAwaitPosition = (key: string) => {
-  if (key.includes(':await-before')) return 'before'
-  if (key.includes(':await-after')) return 'after'
-  return ''
-}
-
-const getStepDisplayName = (step: any) => {
-  const key = String(step?.key || '')
-  if (key.startsWith('loop-group:')) {
-    const groupId = key.split(':')[1] || 'loop'
-    return `Loop ${groupId.toUpperCase()}`
-  }
-
-  const label = typeof step?.label === 'string' ? step.label.trim() : ''
-  if (label.length > 0) return label
-
-  // Remove :await-before or :await-after suffix for display
-  if (key.includes(':await-')) {
-    const base = key.split(':await-')[0] || key
-    if (base.includes('::')) {
-      return base.split('::').filter(Boolean).pop() || base
-    }
-    return base
-  }
-
-  if (key.includes('::')) {
-    return key.split('::').filter(Boolean).pop() || key
-  }
-  return key
-}
-
-const getLoopModeLabel = (mode?: string) => {
-  return mode === 'sequential' ? 'Sequential' : 'Parallel'
-}
-
-const getLoopModeColor = (mode?: string) => {
-  return mode === 'sequential' ? 'warning' : 'success'
-}
-
-const getAwaitTypeIcon = (type?: string) => {
-  switch (type) {
-    case 'webhook': return 'i-lucide-webhook'
-    case 'event': return 'i-lucide-zap'
-    case 'time': return 'i-lucide-clock'
-    case 'schedule': return 'i-lucide-calendar-clock'
-    default: return 'i-lucide-timer'
-  }
-}
-
-const getAwaitTypeLabel = (type?: string) => {
-  switch (type) {
-    case 'webhook': return 'Webhook'
-    case 'event': return 'Event'
-    case 'time': return 'Time'
-    case 'schedule': return 'Schedule'
-    default: return 'Await'
-  }
-}
-
-const getAwaitBadgeColor = (status?: string) => {
-  switch (status) {
-    case 'waiting': return 'warning'
-    case 'completed': return 'success'
-    case 'timeout': return 'error'
-    default: return 'neutral'
-  }
-}
-
-const getAwaitConfigBgClass = (status?: string) => {
-  switch (status) {
-    case 'waiting':
-      return 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-900/30 text-amber-700 dark:text-amber-300'
-    case 'completed':
-      return 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-900/30 text-emerald-700 dark:text-emerald-300'
-    case 'timeout':
-      return 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-900/30 text-red-700 dark:text-red-300'
-    default:
-      return 'bg-gray-50 dark:bg-gray-900/10 border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-300'
-  }
-}
-
-const getAwaitIconColor = (status?: string) => {
-  switch (status) {
-    case 'waiting': return 'text-amber-600 dark:text-amber-400'
-    case 'completed': return 'text-emerald-600 dark:text-emerald-400'
-    case 'timeout': return 'text-red-600 dark:text-red-400'
-    default: return 'text-gray-600 dark:text-gray-400'
-  }
-}
-
-const getAwaitTextColor = (status?: string) => {
-  switch (status) {
-    case 'waiting': return 'text-amber-700 dark:text-amber-300'
-    case 'completed': return 'text-emerald-700 dark:text-emerald-300'
-    case 'timeout': return 'text-red-700 dark:text-red-300'
-    default: return 'text-gray-700 dark:text-gray-300'
-  }
-}
-
-const getMethodBadgeColor = (method?: string) => {
-  switch (method?.toUpperCase()) {
-    case 'GET': return 'primary'
-    case 'POST': return 'success'
-    case 'PUT': return 'warning'
-    case 'DELETE': return 'error'
-    default: return 'neutral'
-  }
-}
-
-const getTimeoutActionColor = (action?: string) => {
-  switch (action) {
-    case 'fail': return 'error'
-    case 'continue': return 'success'
-    case 'retry': return 'warning'
-    default: return 'neutral'
-  }
-}
-
-const formatDuration = (ms: number) => {
-  if (!ms) return '—'
-  const seconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 0) {
-    const remainingHours = hours % 24
-    return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`
-  }
-  if (hours > 0) {
-    const remainingMinutes = minutes % 60
-    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
-  }
-  if (minutes > 0) {
-    const remainingSeconds = seconds % 60
-    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`
-  }
-  return `${seconds}s`
-}
-
-const formatScheduledTime = (timestamp: string | number | Date) => {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return 'No schedule'
-
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  })
-}
+const formatTime = formatTimeAgo
 </script>

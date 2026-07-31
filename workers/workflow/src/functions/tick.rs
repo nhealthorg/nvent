@@ -1,15 +1,18 @@
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
 use iii_sdk::TriggerAction;
+use serde_json::{json, Map, Value};
 
 use crate::{
     dag,
     error::WorkflowError,
-    ids, state,
+    ids,
+    observability::ObservabilityAdapter,
+    state,
     types::{
-        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef,
-        WorkflowRunRecord,
+        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeState, QueueReceiptRecord, RunStatus,
+        WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
+        WorkflowVarVersionRecord,
     },
 };
 
@@ -73,6 +76,18 @@ fn resolve_node_input(
     node: &NodeDef,
     results: &BTreeMap<String, Value>,
 ) -> Value {
+    let fanout_item = if node_uid.contains('#') {
+        let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
+        let i: usize = idx_str.parse().unwrap_or(0);
+        record
+            .fanout_src
+            .get(base_id)
+            .and_then(|items| items.get(i))
+            .cloned()
+    } else {
+        None
+    };
+
     if node_uid.contains('#') {
         // Per-item binding: parse the index i after '#'
         let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
@@ -93,11 +108,7 @@ fn resolve_node_input(
         let maybe_item_from_dep = match &node.input.from {
             InputFrom::One(src) if src.starts_with("node:") && node.fanout.is_some() => {
                 let dep = src.strip_prefix("node:").unwrap_or(src.as_str());
-                let dep_is_fanout = def
-                    .nodes
-                    .get(dep)
-                    .and_then(|n| n.fanout.as_ref())
-                    .is_some();
+                let dep_is_fanout = def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some();
 
                 if dep_is_fanout {
                     let dep_uid = format!("{}#{}", dep, i);
@@ -109,10 +120,403 @@ fn resolve_node_input(
             _ => None,
         };
 
-        return maybe_item_from_dep.unwrap_or_else(|| dag::gather_input(def, record, run_input, base_id, results));
+        let base = maybe_item_from_dep
+            .unwrap_or_else(|| dag::gather_input(def, record, run_input, base_id, results));
+        return resolve_dynamic_template(
+            def,
+            record,
+            run_input,
+            base_id,
+            &node.input,
+            &base,
+            fanout_item.as_ref(),
+            results,
+        );
     }
 
-    dag::gather_input(def, record, run_input, base_id, results)
+    let base = dag::gather_input(def, record, run_input, base_id, results);
+    resolve_dynamic_template(
+        def,
+        record,
+        run_input,
+        base_id,
+        &node.input,
+        &base,
+        fanout_item.as_ref(),
+        results,
+    )
+}
+
+fn value_at_path(value: &Value, path: &[String]) -> Value {
+    let mut cur = value;
+    for segment in path {
+        match cur {
+            Value::Object(map) => {
+                if let Some(next) = map.get(segment) {
+                    cur = next;
+                } else {
+                    return Value::Null;
+                }
+            }
+            Value::Array(arr) => {
+                if let Ok(idx) = segment.parse::<usize>() {
+                    if let Some(next) = arr.get(idx) {
+                        cur = next;
+                    } else {
+                        return Value::Null;
+                    }
+                } else {
+                    return Value::Null;
+                }
+            }
+            _ => return Value::Null,
+        }
+    }
+    cur.clone()
+}
+
+fn resolve_dynamic_payload_value(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    run_input: &Value,
+    node_id: &str,
+    payload: &Value,
+    fanout_item: Option<&Value>,
+    results: &BTreeMap<String, Value>,
+) -> Value {
+    match payload {
+        Value::Object(map) => {
+            if let Some(ref_source) = map.get("$wf_ref").and_then(|v| v.as_str()) {
+                let path = map
+                    .get("$wf_path")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(ToString::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                if ref_source.starts_with("node:") {
+                    let dep = ref_source.strip_prefix("node:").unwrap_or(ref_source);
+                    let dep_value = if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some()
+                    {
+                        let n = record.fanout_src.get(dep).map(|v| v.len()).unwrap_or(0);
+                        let arr = (0..n)
+                            .map(|i| {
+                                let uid = format!("{}#{}", dep, i);
+                                results.get(&uid).cloned().unwrap_or(Value::Null)
+                            })
+                            .collect::<Vec<_>>();
+                        Value::Array(arr)
+                    } else {
+                        results.get(dep).cloned().unwrap_or(Value::Null)
+                    };
+                    return value_at_path(&dep_value, &path);
+                }
+
+                if ref_source == "fanout_item" {
+                    let base = fanout_item.cloned().unwrap_or(Value::Null);
+                    return value_at_path(&base, &path);
+                }
+            }
+
+            let mut out = Map::new();
+            for (k, v) in map {
+                out.insert(
+                    k.clone(),
+                    resolve_dynamic_payload_value(
+                        def,
+                        record,
+                        run_input,
+                        node_id,
+                        v,
+                        fanout_item,
+                        results,
+                    ),
+                );
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| {
+                    resolve_dynamic_payload_value(
+                        def,
+                        record,
+                        run_input,
+                        node_id,
+                        v,
+                        fanout_item,
+                        results,
+                    )
+                })
+                .collect(),
+        ),
+        _ => payload.clone(),
+    }
+}
+
+fn resolve_dynamic_template(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    run_input: &Value,
+    node_id: &str,
+    input_spec: &crate::types::InputSpec,
+    base: &Value,
+    fanout_item: Option<&Value>,
+    results: &BTreeMap<String, Value>,
+) -> Value {
+    let Some(payload) = input_spec.value.as_ref() else {
+        return base.clone();
+    };
+    resolve_dynamic_payload_value(
+        def,
+        record,
+        run_input,
+        node_id,
+        payload,
+        fanout_item,
+        results,
+    )
+}
+
+fn flatten_object_paths(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                let next = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}.{}", prefix, k)
+                };
+                flatten_object_paths(&next, v, out);
+            }
+        }
+        _ => {
+            out.insert(prefix.to_string(), value.clone());
+        }
+    }
+}
+
+fn compute_delta(prev: &Value, next: &Value) -> WorkflowVarDelta {
+    if !prev.is_object() || !next.is_object() {
+        let mut set = BTreeMap::new();
+        set.insert(String::new(), next.clone());
+        return WorkflowVarDelta {
+            set,
+            unset: Vec::new(),
+        };
+    }
+
+    let mut prev_flat = BTreeMap::new();
+    let mut next_flat = BTreeMap::new();
+    flatten_object_paths("", prev, &mut prev_flat);
+    flatten_object_paths("", next, &mut next_flat);
+
+    let mut set = BTreeMap::new();
+    let mut unset = Vec::new();
+
+    for (k, v) in &next_flat {
+        if prev_flat.get(k) != Some(v) {
+            set.insert(k.clone(), v.clone());
+        }
+    }
+    for k in prev_flat.keys() {
+        if !next_flat.contains_key(k) {
+            unset.push(k.clone());
+        }
+    }
+
+    WorkflowVarDelta { set, unset }
+}
+
+fn apply_path_set(root: &mut Value, path: &str, value: Value) {
+    if path.is_empty() {
+        *root = value;
+        return;
+    }
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cur = root;
+    for (i, part) in parts.iter().enumerate() {
+        let is_last = i + 1 == parts.len();
+        if is_last {
+            if !cur.is_object() {
+                *cur = Value::Object(Map::new());
+            }
+            if let Some(obj) = cur.as_object_mut() {
+                obj.insert((*part).to_string(), value.clone());
+            }
+            return;
+        }
+
+        if !cur.is_object() {
+            *cur = Value::Object(Map::new());
+        }
+        let obj = cur.as_object_mut().expect("object after normalization");
+        cur = obj
+            .entry((*part).to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+}
+
+fn apply_path_unset(root: &mut Value, path: &str) {
+    if path.is_empty() {
+        *root = Value::Null;
+        return;
+    }
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cur = root;
+    for (i, part) in parts.iter().enumerate() {
+        let is_last = i + 1 == parts.len();
+        if let Some(obj) = cur.as_object_mut() {
+            if is_last {
+                obj.remove(*part);
+                return;
+            }
+            if let Some(next) = obj.get_mut(*part) {
+                cur = next;
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+}
+
+fn apply_delta(base: &Value, delta: &WorkflowVarDelta) -> Value {
+    let mut out = base.clone();
+    for path in &delta.unset {
+        apply_path_unset(&mut out, path);
+    }
+    for (path, value) in &delta.set {
+        apply_path_set(&mut out, path, value.clone());
+    }
+    out
+}
+
+fn truncate_for_trace(v: &Value) -> Value {
+    match v {
+        Value::String(s) if s.len() > 200 => Value::String(format!("{}...", &s[..200])),
+        Value::Object(_) | Value::Array(_) => {
+            let blob = serde_json::to_string(v).unwrap_or_default();
+            if blob.len() > 500 {
+                Value::String(format!("{}...[truncated]", &blob[..500]))
+            } else {
+                v.clone()
+            }
+        }
+        _ => v.clone(),
+    }
+}
+
+fn should_store_var_checkpoint(cfg: &crate::config::WorkerConfig, version: u64) -> bool {
+    if cfg.var_checkpoint_every_versions == 0 {
+        return false;
+    }
+    if version < cfg.var_checkpoint_start_version {
+        return false;
+    }
+    version % cfg.var_checkpoint_every_versions == 0
+}
+
+async fn execute_internal_var_set(
+    deps: &Deps,
+    record: &mut WorkflowRunRecord,
+    node_uid: &str,
+    input_val: &Value,
+) -> Result<(), WorkflowError> {
+    let key = input_val
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            WorkflowError::State("workflow::internal-var-set requires input.key".to_string())
+        })?
+        .to_string();
+    let next_value = input_val.get("value").cloned().unwrap_or(Value::Null);
+
+    let now = deps.now_ms();
+    let mut vars = state::get_run_vars(&deps.iii, &record.run_id).await?;
+
+    let prior = vars.get(&key).cloned();
+    let prev_value = prior
+        .as_ref()
+        .map(|v| v.value.clone())
+        .unwrap_or(Value::Null);
+    let prior_version = prior.as_ref().map(|v| v.version).unwrap_or(0);
+    let next_version = prior_version.saturating_add(1);
+
+    let delta = compute_delta(&prev_value, &next_value);
+    let rebuilt = apply_delta(&prev_value, &delta);
+    let cfg = deps.cfg().await;
+    let checkpoint_value = if should_store_var_checkpoint(&cfg, next_version) {
+        Some(next_value.clone())
+    } else {
+        None
+    };
+
+    let mut versions = prior.map(|v| v.versions).unwrap_or_default();
+    versions.push(WorkflowVarVersionRecord {
+        version: next_version,
+        ts_unix_ms: now,
+        delta: delta.clone(),
+        checkpoint_value,
+    });
+
+    vars.insert(
+        key.clone(),
+        WorkflowVarRecord {
+            key: key.clone(),
+            version: next_version,
+            updated_at: now,
+            value: rebuilt.clone(),
+            versions,
+        },
+    );
+    state::put_run_vars(&deps.iii, &record.run_id, &vars).await?;
+
+    state::put_node_result(&deps.iii, &record.run_id, node_uid, &rebuilt).await?;
+
+    record.nodes.insert(
+        node_uid.to_string(),
+        NodeCheckpoint {
+            state: NodeState::Done,
+            session_id: None,
+            turn_id: None,
+            result_ref: Some(crate::ids::node_result_key(&record.run_id, node_uid)),
+            result_error: None,
+            pending_at: Some(now),
+            pending_timeout_ms: None,
+            retries: 0,
+            completed_at: Some(now),
+            worker_name: Some(format!("workflow-internal-var:{}", key)),
+        },
+    );
+
+    crate::observability::adapter()
+        .write_trace(
+            &deps.iii,
+            &state::WorkflowRunTraceRecord {
+                id: format!("tr_{}_{}", now, crate::ids::new_trace_id()),
+                run_id: record.run_id.clone(),
+                node_uid: Some(node_uid.to_string()),
+                function_id: Some("workflow::internal-var-set".to_string()),
+                runtime: Some("rust".to_string()),
+                event_name: "workflow.var.updated".to_string(),
+                ts_unix_ms: now,
+                attributes: Some(json!({
+                    "workflow.var.key": key,
+                    "workflow.var.version": next_version,
+                    "workflow.var.preview": truncate_for_trace(&rebuilt),
+                })),
+                trace_id: None,
+                span_id: None,
+            },
+        )
+        .await?;
+
+    Ok(())
 }
 
 fn effective_pending_timeout_ms(
@@ -132,9 +536,9 @@ pub(crate) async fn fire_node(
     node_uid: &str,
     results: &BTreeMap<String, Value>,
 ) -> Result<(), WorkflowError> {
-        let run_input = state::get_run_input(&deps.iii, &record.run_id)
-            .await?
-            .ok_or_else(|| WorkflowError::State(format!("run input missing for {}", record.run_id)))?;
+    let run_input = state::get_run_input(&deps.iii, &record.run_id)
+        .await?
+        .ok_or_else(|| WorkflowError::State(format!("run input missing for {}", record.run_id)))?;
 
     // Abort guard: covers both the tick Fire branch and the sweep refire path.
     // `decide` already returns Finalize(Cancelled) first when abort=true (so the
@@ -163,15 +567,24 @@ pub(crate) async fn fire_node(
     // BEFORE the .await so we don't hold a borrow across the await point.
     let input_val = resolve_node_input(def, record, &run_input, node_uid, base_id, node, results);
 
+    if node.function.id == "workflow::internal-var-set" {
+        execute_internal_var_set(deps, record, node_uid, &input_val).await?;
+        record.updated_at = deps.now_ms();
+        state::put_run(&deps.iii, record).await?;
+
+        // Internal var updates complete synchronously and do not emit a
+        // node-completed queue event. Re-drive tick immediately so dependent
+        // nodes do not wait for the sweep timeout.
+        super::start::enqueue_tick(&deps.iii, &record.run_id, record.step + 1).await?;
+        return Ok(());
+    }
+
     let dispatch_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
 
     // Fire the function asynchronously via queue (non-blocking)
     let function = &node.function;
-    let node_pending_timeout_ms = effective_pending_timeout_ms(
-        prior_timeout,
-        function.timeout_ms,
-        dispatch_timeout_ms,
-    );
+    let node_pending_timeout_ms =
+        effective_pending_timeout_ms(prior_timeout, function.timeout_ms, dispatch_timeout_ms);
     let max_retries = node
         .function
         .engine_retry
@@ -199,7 +612,10 @@ pub(crate) async fn fire_node(
                     session_id: None,
                     turn_id: None,
                     result_ref: None,
-                    result_error: Some(format!("Function not found after retries: {}", function.id)),
+                    result_error: Some(format!(
+                        "Function not found after retries: {}",
+                        function.id
+                    )),
                     pending_at: Some(deps.now_ms()),
                     pending_timeout_ms: None,
                     retries: attempt,
@@ -265,7 +681,9 @@ pub(crate) async fn fire_node(
         .trigger(iii_sdk::protocol::TriggerRequest {
             function_id: function.id.clone(),
             payload: wrapped_input,
-            action: Some(TriggerAction::Enqueue { queue: queue.clone() }),
+            action: Some(TriggerAction::Enqueue {
+                queue: queue.clone(),
+            }),
             timeout_ms: function.timeout_ms.or(Some(dispatch_timeout_ms)),
         })
         .await;
@@ -277,7 +695,10 @@ pub(crate) async fn fire_node(
             let logic_error = v.get("error").or_else(|| v.get("result_error"));
 
             if let Some(err_val) = logic_error {
-                let err_msg = err_val.as_str().unwrap_or("Unknown trigger error").to_string();
+                let err_msg = err_val
+                    .as_str()
+                    .unwrap_or("Unknown trigger error")
+                    .to_string();
                 tracing::warn!(
                     run_id = %record.run_id,
                     node_uid = %node_uid,
@@ -581,7 +1002,7 @@ pub async fn handle(
         decision = ?decision,
         "tick decision made"
     );
-    
+
     match decision {
         TickDecision::Finalize(status) => {
             tracing::info!(
@@ -655,6 +1076,7 @@ mod tests {
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec![],
                 fanout: None,
@@ -675,6 +1097,7 @@ mod tests {
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
@@ -698,6 +1121,7 @@ mod tests {
                 input: InputSpec {
                     from: "node:read".into(),
                     template: None,
+                    value: None,
                 },
                 depends_on: vec!["read".to_string()],
                 fanout: None,
@@ -727,6 +1151,7 @@ mod tests {
             abort: false,
             def_ref: "run_test".to_string(),
             input_ref: "run_test".to_string(),
+            vars_ref: Some("run_test".to_string()),
             state_keys_map: BTreeMap::new(),
             stream_ids: Vec::new(),
             queue_receipts: Vec::new(),
@@ -997,6 +1422,7 @@ mod tests {
             read.input = InputSpec {
                 from: "fanout_item".into(),
                 template: None,
+                value: None,
             };
         }
         if let Some(synth) = def.nodes.get_mut("synthesize") {
@@ -1007,6 +1433,7 @@ mod tests {
             synth.input = InputSpec {
                 from: "node:read".into(),
                 template: None,
+                value: None,
             };
         }
 
@@ -1019,7 +1446,10 @@ mod tests {
         results.insert("read#0".to_string(), json!({ "summary": "A" }));
         results.insert("read#1".to_string(), json!({ "summary": "B" }));
 
-        let node = def.nodes.get("synthesize").expect("synthesize node present");
+        let node = def
+            .nodes
+            .get("synthesize")
+            .expect("synthesize node present");
         let val = resolve_node_input(
             &def,
             &record,
@@ -1037,7 +1467,9 @@ mod tests {
     fn resolve_node_input_falls_back_when_dep_is_not_fanout() {
         let def = three_node_def();
         let mut record = fresh_record();
-        record.fanout_src.insert("read".to_string(), vec![json!("x")]);
+        record
+            .fanout_src
+            .insert("read".to_string(), vec![json!("x")]);
 
         let mut results: BTreeMap<String, Value> = BTreeMap::new();
         results.insert("plan".to_string(), json!({ "docs": ["x"] }));
@@ -1045,7 +1477,10 @@ mod tests {
 
         // synthesize#0 reads node:read, but dep fanout behavior for this non-fanout node
         // should fall back to gather_input and return array of read child results.
-        let node = def.nodes.get("synthesize").expect("synthesize node present");
+        let node = def
+            .nodes
+            .get("synthesize")
+            .expect("synthesize node present");
         let val = resolve_node_input(
             &def,
             &record,
@@ -1057,5 +1492,72 @@ mod tests {
         );
 
         assert_eq!(val, json!([{ "summary": "X" }]));
+    }
+
+    #[test]
+    fn compute_delta_tracks_set_and_unset_paths() {
+        let prev = json!({
+            "active": true,
+            "nested": {
+                "a": 1,
+                "b": 2
+            },
+            "removed": "bye"
+        });
+        let next = json!({
+            "active": false,
+            "nested": {
+                "a": 42,
+                "c": 3
+            }
+        });
+
+        let delta = compute_delta(&prev, &next);
+
+        assert_eq!(delta.set.get("active"), Some(&json!(false)));
+        assert_eq!(delta.set.get("nested.a"), Some(&json!(42)));
+        assert_eq!(delta.set.get("nested.c"), Some(&json!(3)));
+        assert!(delta.unset.contains(&"nested.b".to_string()));
+        assert!(delta.unset.contains(&"removed".to_string()));
+    }
+
+    #[test]
+    fn apply_delta_rebuilds_target_state() {
+        let prev = json!({
+            "a": 1,
+            "nested": {
+                "x": 1,
+                "y": 2
+            }
+        });
+        let target = json!({
+            "a": 2,
+            "nested": {
+                "x": 1,
+                "z": 3
+            }
+        });
+
+        let delta = compute_delta(&prev, &target);
+        let rebuilt = apply_delta(&prev, &delta);
+
+        assert_eq!(rebuilt, target);
+    }
+
+    #[test]
+    fn var_checkpoint_policy_skips_early_versions_by_default() {
+        let cfg = crate::config::WorkerConfig::default();
+        assert!(!should_store_var_checkpoint(&cfg, 1));
+        assert!(!should_store_var_checkpoint(&cfg, 24));
+        assert!(should_store_var_checkpoint(&cfg, 25));
+        assert!(should_store_var_checkpoint(&cfg, 50));
+    }
+
+    #[test]
+    fn var_checkpoint_policy_can_be_disabled() {
+        let mut cfg = crate::config::WorkerConfig::default();
+        cfg.var_checkpoint_every_versions = 0;
+        assert!(!should_store_var_checkpoint(&cfg, 25));
+        assert!(!should_store_var_checkpoint(&cfg, 250));
     }
 }

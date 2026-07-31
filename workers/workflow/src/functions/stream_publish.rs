@@ -1,11 +1,11 @@
+use iii_sdk::protocol::TriggerRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use iii_sdk::protocol::TriggerRequest;
 
 use crate::error::WorkflowError;
-use crate::state;
 use crate::observability::{self, ObservabilityAdapter};
+use crate::state;
 
 use super::Deps;
 
@@ -37,7 +37,11 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
     {
         let _g = deps.locks.guard(&run_id).await;
         if let Some(mut record) = state::get_run(&deps.iii, &run_id).await? {
-            if !record.stream_ids.iter().any(|existing| existing == &stream_name) {
+            if !record
+                .stream_ids
+                .iter()
+                .any(|existing| existing == &stream_name)
+            {
                 record.stream_ids.push(stream_name.clone());
                 state::put_run(&deps.iii, &record).await?;
             }
@@ -45,37 +49,45 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
     }
 
     // 3. Persist into iii-stream
-    deps.iii.trigger(TriggerRequest {
-        function_id: "stream::set".into(),
-        payload: json!({
-            "stream_name": stream,
-            "group_id": run_id,
-            "item_id": item_id,
-            "data": data,
-        }),
-        action: None,
-        timeout_ms: Some(30_000),
-    }).await.map_err(|e| WorkflowError::State(format!("stream::set {channel}: {e}")))?;
+    deps.iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": stream,
+                "group_id": run_id,
+                "item_id": item_id,
+                "data": data,
+            }),
+            action: None,
+            timeout_ms: Some(30_000),
+        })
+        .await
+        .map_err(|e| WorkflowError::State(format!("stream::set {channel}: {e}")))?;
 
     // 4. Automatic Audit
-    observability::adapter().write_trace(&deps.iii, &state::WorkflowRunTraceRecord {
-        id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
-        run_id: run_id_ref,
-        node_uid,
-        function_id: Some("workflow::stream-publish".to_string()),
-        runtime: None,
-        event_name: "workflow.stream.publish".to_string(),
-        ts_unix_ms: deps.now_ms(),
-        attributes: Some(json!({
-            "workflow.stream.name": stream_name,
-            "workflow.stream.group_id": run_id,
-            "workflow.stream.item_id": item_id,
-            "workflow.stream.preview": data_preview,
-            "workflow.stream.payload": data,
-        })),
-        trace_id: None,
-        span_id: None,
-    }).await?;
+    observability::adapter()
+        .write_trace(
+            &deps.iii,
+            &state::WorkflowRunTraceRecord {
+                id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
+                run_id: run_id_ref,
+                node_uid,
+                function_id: Some("workflow::stream-publish".to_string()),
+                runtime: None,
+                event_name: "workflow.stream.publish".to_string(),
+                ts_unix_ms: deps.now_ms(),
+                attributes: Some(json!({
+                    "workflow.stream.name": stream_name,
+                    "workflow.stream.group_id": run_id,
+                    "workflow.stream.item_id": item_id,
+                    "workflow.stream.preview": data_preview,
+                    "workflow.stream.payload": data,
+                })),
+                trace_id: None,
+                span_id: None,
+            },
+        )
+        .await?;
 
     Ok(())
 }

@@ -19,7 +19,12 @@ pub enum InternalStateBackend {
 }
 
 pub fn backend_from_config(cfg: &WorkerConfig) -> Result<InternalStateBackend, WorkflowError> {
-    match cfg.internal_state_backend.trim().to_ascii_lowercase().as_str() {
+    match cfg
+        .internal_state_backend
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "redis" => Ok(InternalStateBackend::Redis),
         "file" => Ok(InternalStateBackend::File),
         other => Err(WorkflowError::State(format!(
@@ -28,9 +33,13 @@ pub fn backend_from_config(cfg: &WorkerConfig) -> Result<InternalStateBackend, W
     }
 }
 
-pub fn build_store(cfg: &WorkerConfig) -> Result<Arc<dyn WorkflowInternalStateStore>, WorkflowError> {
+pub fn build_store(
+    cfg: &WorkerConfig,
+) -> Result<Arc<dyn WorkflowInternalStateStore>, WorkflowError> {
     match backend_from_config(cfg)? {
-        InternalStateBackend::Redis => Ok(Arc::new(redis::RedisWorkflowInternalStateStore::new(cfg))),
+        InternalStateBackend::Redis => {
+            Ok(Arc::new(redis::RedisWorkflowInternalStateStore::new(cfg)))
+        }
         InternalStateBackend::File => Ok(Arc::new(file::FileWorkflowInternalStateStore::new(cfg))),
     }
 }
@@ -104,20 +113,38 @@ pub trait WorkflowInternalStateStore: Send + Sync {
     async fn put_run_input(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError>;
     async fn delete_run_input(&self, run_id: &str) -> Result<(), WorkflowError>;
 
+    async fn get_run_vars(&self, run_id: &str) -> Result<Option<Value>, WorkflowError>;
+    async fn put_run_vars(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError>;
+    async fn delete_run_vars(&self, run_id: &str) -> Result<(), WorkflowError>;
+
     async fn get_run_result(&self, run_id: &str) -> Result<Option<Value>, WorkflowError>;
     async fn put_run_result(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError>;
     async fn delete_run_result(&self, run_id: &str) -> Result<(), WorkflowError>;
 
-    async fn get_node_result(&self, run_id: &str, node_uid: &str) -> Result<Option<Value>, WorkflowError>;
-    async fn put_node_result(&self, run_id: &str, node_uid: &str, value: &Value) -> Result<(), WorkflowError>;
+    async fn get_node_result(
+        &self,
+        run_id: &str,
+        node_uid: &str,
+    ) -> Result<Option<Value>, WorkflowError>;
+    async fn put_node_result(
+        &self,
+        run_id: &str,
+        node_uid: &str,
+        value: &Value,
+    ) -> Result<(), WorkflowError>;
     async fn delete_node_result(&self, run_id: &str, node_uid: &str) -> Result<(), WorkflowError>;
 
     // ---------------------------------------------------------------------
     // Logs / traces
     // ---------------------------------------------------------------------
 
-    async fn put_run_log(&self, run_id: &str, entry: &WorkflowRunLogRecord) -> Result<(), WorkflowError>;
-    async fn list_run_logs(&self, run_id: &str) -> Result<Vec<WorkflowRunLogRecord>, WorkflowError>;
+    async fn put_run_log(
+        &self,
+        run_id: &str,
+        entry: &WorkflowRunLogRecord,
+    ) -> Result<(), WorkflowError>;
+    async fn list_run_logs(&self, run_id: &str)
+        -> Result<Vec<WorkflowRunLogRecord>, WorkflowError>;
     async fn list_run_logs_paged(
         &self,
         run_id: &str,
@@ -135,10 +162,21 @@ pub trait WorkflowInternalStateStore: Send + Sync {
         Ok((page, has_more))
     }
     async fn delete_run_log_key(&self, run_id: &str, id: &str) -> Result<(), WorkflowError>;
-    async fn prune_run_logs_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError>;
+    async fn prune_run_logs_before(
+        &self,
+        run_id: &str,
+        cutoff_unix_ms: i64,
+    ) -> Result<u64, WorkflowError>;
 
-    async fn put_run_trace(&self, run_id: &str, entry: &WorkflowRunTraceRecord) -> Result<(), WorkflowError>;
-    async fn list_run_traces(&self, run_id: &str) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError>;
+    async fn put_run_trace(
+        &self,
+        run_id: &str,
+        entry: &WorkflowRunTraceRecord,
+    ) -> Result<(), WorkflowError>;
+    async fn list_run_traces(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<WorkflowRunTraceRecord>, WorkflowError>;
     async fn list_run_traces_paged(
         &self,
         run_id: &str,
@@ -156,7 +194,11 @@ pub trait WorkflowInternalStateStore: Send + Sync {
         Ok((page, has_more))
     }
     async fn delete_run_trace_key(&self, run_id: &str, id: &str) -> Result<(), WorkflowError>;
-    async fn prune_run_traces_before(&self, run_id: &str, cutoff_unix_ms: i64) -> Result<u64, WorkflowError>;
+    async fn prune_run_traces_before(
+        &self,
+        run_id: &str,
+        cutoff_unix_ms: i64,
+    ) -> Result<u64, WorkflowError>;
 
     // ---------------------------------------------------------------------
     // Integrated helper stores
@@ -175,6 +217,9 @@ pub trait WorkflowInternalStateStore: Send + Sync {
     async fn run_id_for_idempotency_key(&self, key: &str) -> Result<Option<String>, WorkflowError>;
 
     async fn put_queue_receipt(&self, receipt: &QueueReceiptRecord) -> Result<(), WorkflowError>;
-    async fn list_queue_receipts(&self, run_id: &str) -> Result<Vec<QueueReceiptRecord>, WorkflowError>;
+    async fn list_queue_receipts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<QueueReceiptRecord>, WorkflowError>;
     async fn delete_run_queue_receipts(&self, run_id: &str) -> Result<(), WorkflowError>;
 }

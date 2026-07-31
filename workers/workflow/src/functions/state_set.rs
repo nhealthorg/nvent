@@ -3,8 +3,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::WorkflowError;
-use crate::state::{self, SCOPE_RUN_STATE};
 use crate::observability::{self, ObservabilityAdapter};
+use crate::state::{self, SCOPE_RUN_STATE};
 
 use super::Deps;
 
@@ -32,21 +32,26 @@ pub async fn handle(deps: &Deps, req: StateSetRequest) -> Result<(), WorkflowErr
     }
 
     // 4. Automatic Audit
-    observability::adapter().write_trace(&deps.iii, &state::WorkflowRunTraceRecord {
-        id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
-        run_id: req.run_id,
-        node_uid: req.node_uid,
-        function_id: Some("workflow::state-set".to_string()),
-        runtime: None,
-        event_name: "workflow.state.set".to_string(),
-        ts_unix_ms: deps.now_ms(),
-        attributes: Some(json!({
-            "workflow.state.key": req.key,
-            "workflow.state.value": truncate_value(&req.value),
-        })),
-        trace_id: None,
-        span_id: None,
-    }).await?;
+    observability::adapter()
+        .write_trace(
+            &deps.iii,
+            &state::WorkflowRunTraceRecord {
+                id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
+                run_id: req.run_id,
+                node_uid: req.node_uid,
+                function_id: Some("workflow::state-set".to_string()),
+                runtime: None,
+                event_name: "workflow.state.set".to_string(),
+                ts_unix_ms: deps.now_ms(),
+                attributes: Some(json!({
+                    "workflow.state.key": req.key,
+                    "workflow.state.value": truncate_value(&req.value),
+                })),
+                trace_id: None,
+                span_id: None,
+            },
+        )
+        .await?;
 
     Ok(())
 }
