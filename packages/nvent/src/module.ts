@@ -518,6 +518,8 @@ export default defineNuxtModule<NventIiiOptions>({
     addImports([
       { from: resolve('./runtime/app/composables/useIiiStream'), name: 'useIiiStream' },
       { from: resolve('./runtime/app/composables/useIii'), name: 'useIii' },
+      { from: resolve('./runtime/app/composables/useWorkflowStream'), name: 'useWorkflowStream' },
+      { from: resolve('./runtime/app/composables/useWorkflow'), name: 'useWorkflow' },
     ])
 
     // Client-side plugin (connects iii-browser-sdk)

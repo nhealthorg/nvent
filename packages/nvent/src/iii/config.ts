@@ -340,6 +340,25 @@ function defaultStreamAdapter(): StreamAdapter {
 export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
   const workers: object[] = []
 
+  // iii-worker-manager listeners
+  // Important: as soon as a worker-manager is declared, it replaces the implicit
+  // default trusted listener. Therefore we always declare the trusted listener
+  // explicitly and append the optional RBAC listener.
+  workers.push({
+    name: 'iii-worker-manager',
+    config: {
+      port: cfg.wsPort,
+    },
+  })
+
+  if (cfg.workerManagerRbac) {
+    const rbacWorkerConfig: Record<string, unknown> = {
+      port: cfg.workerManagerRbac.port,
+      rbac: cfg.workerManagerRbac.rbac,
+    }
+    workers.push({ name: 'iii-worker-manager', config: rbacWorkerConfig })
+  }
+
   // configuration — required by the new iii project model for managed worker settings
   workers.push({
     name: 'configuration',
@@ -503,6 +522,9 @@ export function buildEngineConfig(
       }
     : (queueConfigs ?? {})
   const hasQueueConfigs = Object.keys(normalizedQueueConfigs).length > 0
+  // Browser SDK in nvent relies on a RBAC worker-manager endpoint.
+  // Keep it enabled by default so users do not need extra config for basic browser usage.
+  const rbacCfg = iiiOpts.workerManager?.rbac ?? {}
 
   return {
     ...defaultIiiEngineConfig(),
@@ -555,17 +577,17 @@ export function buildEngineConfig(
         require_https: iiiOpts.httpFunctions.security.requireHttps,
       } : undefined,
     } : undefined,
-    workerManagerRbac: iiiOpts.workerManager?.rbac ? {
-      port: iiiOpts.workerManager.rbac.port ?? 49135,
+    workerManagerRbac: {
+      port: rbacCfg.port ?? 49135,
       rbac: {
-        auth_function_id: iiiOpts.workerManager.rbac.authFunctionId ?? 'nvent::browser::auth',
-        expose_functions: iiiOpts.workerManager.rbac.exposeFunctions,
-        middleware_function_id: iiiOpts.workerManager.rbac.middlewareFunctionId,
-        allow_function_registration: iiiOpts.workerManager.rbac.allowFunctionRegistration,
-        allow_trigger_type_registration: iiiOpts.workerManager.rbac.allowTriggerTypeRegistration,
-        function_registration_prefix: iiiOpts.workerManager.rbac.functionRegistrationPrefix,
+        auth_function_id: rbacCfg.authFunctionId ?? 'nvent::browser::auth',
+        expose_functions: rbacCfg.exposeFunctions,
+        middleware_function_id: rbacCfg.middlewareFunctionId,
+        allow_function_registration: rbacCfg.allowFunctionRegistration,
+        allow_trigger_type_registration: rbacCfg.allowTriggerTypeRegistration,
+        function_registration_prefix: rbacCfg.functionRegistrationPrefix,
       },
-    } : undefined,
+    },
     bridge: iiiOpts.bridge?.map(b => ({
       url: b.url,
       service_id: b.serviceId,

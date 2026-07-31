@@ -23,10 +23,14 @@ import { useNuxtApp } from '#imports'
 import type { registerWorker } from 'iii-browser-sdk'
 
 type IiiInstance = ReturnType<typeof registerWorker>
+type IiiManager = {
+  getIii?: () => IiiInstance
+}
 
 export function useIii(): IiiInstance {
   const nuxtApp = useNuxtApp()
-  const iii = nuxtApp.$iii as IiiInstance | undefined
+  const manager = (nuxtApp as unknown as { $iiiManager?: IiiManager }).$iiiManager
+  const iii = manager?.getIii?.() ?? (nuxtApp.$iii as IiiInstance | undefined)
 
   if (!iii) {
     throw new Error('[nvent] iii browser SDK not initialized. Is the app running in the browser?')

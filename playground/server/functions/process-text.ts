@@ -15,19 +15,39 @@ export default defineFunction({
 
     ctx.logger?.debug('Processing text', { text, bla: 'bla' })
 
-    ctx.workflow?.state.set('lastProcessed', new Date().toISOString())
-    let count = await ctx.workflow?.state.get('count') as number || 0
-    ctx.workflow?.state.set('count', count+1)
+    await ctx.workflow?.state.set('lastProcessed', new Date().toISOString())
 
-    ctx.workflow?.stream.send('progress', { message: 'Processing started', text })
+    const initialCount = Number((await ctx.workflow?.state.get('count')) ?? 0)
+    const startedCount = initialCount + 1
+    await ctx.workflow?.state.set('count', startedCount)
+
+    await ctx.workflow?.stream.send('phase', {
+      step: 'process-text',
+      status: 'started',
+      count: startedCount,
+    })
+    await ctx.workflow?.stream.send('progress', {
+      message: 'Processing started',
+      text,
+      count: startedCount,
+    })
 
     // wait for 5 seconds to simulate a long-running process
     await new Promise(resolve => setTimeout(resolve, 5000))
 
-    count = await ctx.workflow?.state.get('count') as number || 0
-    ctx.workflow?.state.set('count', count+1)
+    const beforeFinishCount = Number((await ctx.workflow?.state.get('count')) ?? startedCount)
+    const finishedCount = beforeFinishCount + 1
+    await ctx.workflow?.state.set('count', finishedCount)
 
-    ctx.workflow?.stream.send('count', { message: 'Processing count', count })
+    await ctx.workflow?.stream.send('count', {
+      message: 'Processing count updated',
+      count: finishedCount,
+    })
+    await ctx.workflow?.stream.send('phase', {
+      step: 'process-text',
+      status: 'completed',
+      count: finishedCount,
+    })
 
     
     return {

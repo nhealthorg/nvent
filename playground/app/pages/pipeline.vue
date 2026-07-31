@@ -3,10 +3,10 @@
     <div class="max-w-2xl mx-auto space-y-6">
       <div>
         <h1 class="text-2xl font-semibold mb-1">
-          Pipeline Demo
+          Workflow Stream Demo
         </h1>
         <p class="text-gray-400 text-sm">
-          Submit text, get a stream group ID, then subscribe via WebSocket to watch real-time progress.
+          Start a workflow run and subscribe to developer-defined stream events sent from workflow nodes.
         </p>
       </div>
 
@@ -20,17 +20,17 @@
           class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-sm font-mono resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
         />
         <button
-          :disabled="callPending || !text.trim()"
+          :disabled="runPending || !text.trim()"
           class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
-          @click="analyze"
+          @click="startRun"
         >
-          {{ callPending ? 'Starting…' : 'Analyze' }}
+          {{ runPending ? 'Starting…' : 'Start Workflow' }}
         </button>
       </div>
 
       <!-- Stream info badge -->
-      <div v-if="groupId" class="text-xs text-gray-500 font-mono">
-        stream: pipeline / {{ groupId }}
+      <div v-if="runId" class="text-xs text-gray-500 font-mono">
+        run: {{ runId }}
         <span
           :class="{
             'text-yellow-400': streamStatus === 'connecting',
@@ -44,118 +44,177 @@
         </span>
       </div>
 
-      <!-- Live steps -->
-      <div v-if="steps.length" class="space-y-2">
+      <!-- Live phase events -->
+      <div v-if="phaseEvents.length" class="space-y-2">
         <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-          Progress
+          Phase Events
         </h2>
         <ul class="space-y-1">
           <li
-            v-for="step in steps"
-            :key="step.step"
+            v-for="(item, idx) in phaseEvents"
+            :key="`phase-${idx}`"
             class="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2 text-sm"
           >
-            <span class="text-indigo-400 font-mono text-xs w-12 shrink-0">
-              {{ step.step }}/{{ step.total }}
+            <span class="text-cyan-400 font-mono text-xs shrink-0">
+              {{ item.step }}
             </span>
-            <span class="text-gray-200">{{ step.label }}</span>
+            <span class="text-gray-200">{{ item.status }}</span>
+            <span v-if="item.count != null" class="ml-auto text-gray-100 font-mono text-xs">{{ item.count }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Live progress events -->
+      <div v-if="progressEvents.length" class="space-y-2">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+          Progress Events
+        </h2>
+        <ul class="space-y-1">
+          <li
+            v-for="(item, idx) in progressEvents"
+            :key="`progress-${idx}`"
+            class="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2 text-sm"
+          >
+            <span class="text-indigo-400 font-mono text-xs shrink-0">
+              progress
+            </span>
+            <span class="text-gray-200">{{ item.message }}</span>
             <span class="ml-auto text-green-400 text-xs">✓</span>
           </li>
         </ul>
       </div>
 
-      <!-- Results panel -->
-      <div v-if="result" class="bg-gray-900 border border-gray-700 rounded-lg p-5 space-y-3">
+      <!-- Count events -->
+      <div v-if="countEvents.length" class="space-y-2">
         <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-          Results
+          Count Events
         </h2>
-        <dl class="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
-          <template
-            v-for="(val, key) in result"
-            :key="key"
+        <ul class="space-y-1">
+          <li
+            v-for="(item, idx) in countEvents"
+            :key="`count-${idx}`"
+            class="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2 text-sm"
           >
-            <dt class="text-gray-400">
-              {{ humanKey(String(key)) }}
-            </dt>
-            <dd class="text-gray-100 font-mono">
-              {{ val }}
-            </dd>
-          </template>
-        </dl>
+            <span class="text-indigo-400 font-mono text-xs shrink-0">
+              count
+            </span>
+            <span class="text-gray-200">{{ item.message }}</span>
+            <span class="ml-auto text-gray-100 font-mono text-xs">{{ item.count }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Summary events -->
+      <div v-if="summaryEvents.length" class="space-y-2">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+          Summary Events
+        </h2>
+        <ul class="space-y-1">
+          <li
+            v-for="(item, idx) in summaryEvents"
+            :key="`summary-${idx}`"
+            class="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2 text-sm"
+          >
+            <span class="text-amber-400 font-mono text-xs shrink-0">
+              summary
+            </span>
+            <span class="text-gray-200">finalCount={{ item.finalCount }}</span>
+            <span class="ml-auto text-gray-400 text-xs">hasResult={{ item.hasResult ? 'yes' : 'no' }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Event timeline -->
+      <div v-if="timeline.length" class="space-y-2">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+          Timeline
+        </h2>
+        <ul class="space-y-1">
+          <li
+            v-for="(item, idx) in timeline"
+            :key="`timeline-${idx}`"
+            class="bg-gray-900 rounded-lg px-4 py-2 text-sm"
+          >
+            <span class="text-indigo-300 font-mono text-xs">{{ item.type }}</span>
+            <span class="text-gray-300"> · {{ timelineLabel(item.data) }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="bg-gray-900 border border-gray-700 rounded-lg p-4 text-xs text-gray-300">
+        This demo starts workflow <span class="font-mono">test-wf</span>. The workflow itself remains poll-based for status/results; this page only subscribes to explicit events sent via <span class="font-mono">ctx.workflow.stream.send(type, data)</span>.
       </div>
 
       <!-- Error -->
-      <div v-if="callError" class="bg-red-950 border border-red-700 rounded-lg px-4 py-3 text-sm text-red-300">
-        {{ callError.message }}
+      <div v-if="runError" class="bg-red-950 border border-red-700 rounded-lg px-4 py-3 text-sm text-red-300">
+        {{ runError.message }}
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-// useIiiStream is auto-imported by the nvent module. Run `nuxt prepare` to refresh types.
-interface StepMessage {
-  step: number
-  total: number
-  label: string
-  data: unknown
+import { useWorkflow } from '#imports'
+import { useWorkflowStream } from '#imports'
+
+interface ProgressEvent {
+  message: string
 }
 
-interface ResultMessage extends Record<string, unknown> {
-  done: true
+interface CountEvent {
+  message: string
+  count: number
 }
 
-type StreamMessage = StepMessage | ResultMessage
+interface PhaseEvent {
+  step: string
+  status: string
+  count?: number
+}
+
+interface SummaryEvent {
+  finalCount: number
+  hasResult: boolean
+}
 
 const text = ref('')
-const groupId = ref<string | null>(null)
-const steps = ref<StepMessage[]>([])
-const result = ref<Record<string, unknown> | null>(null)
-const callPending = ref(false)
-const callError = ref<Error | null>(null)
+const runId = ref<string | null>(null)
+const runPending = ref(false)
+const runError = ref<Error | null>(null)
 
-const { messages, status: streamStatus, subscribe } = useIiiStream<StreamMessage>()
+const workflow = useWorkflow()
+const stream = useWorkflowStream()
 
-// Process incoming WebSocket messages as new items appear in the stream group.
-watch(messages, (all) => {
-  steps.value = []
-  result.value = null
-  for (const msg of all) {
-    if ('done' in msg && msg.done) {
-      const { done: _done, ...stats } = msg as ResultMessage
-      result.value = stats
-    }
-    else if ('step' in msg) {
-      steps.value.push(msg as StepMessage)
-    }
-  }
-})
+const streamStatus = stream.status
+const phaseEvents = stream.listen<PhaseEvent>('phase')
+const progressEvents = stream.listen<ProgressEvent>('progress')
+const countEvents = stream.listen<CountEvent>('count')
+const summaryEvents = stream.listen<SummaryEvent>('summary')
+const timeline = computed(() => stream.events.value)
 
-async function analyze() {
-  steps.value = []
-  result.value = null
-  groupId.value = null
-  callPending.value = true
-  callError.value = null
+async function startRun() {
+  runPending.value = true
+  runError.value = null
   try {
-    const iii = useIii()
-    const res = await iii.trigger<{ text: string }, { status: number; body: { streamName: string; groupId: string } }>({
-      function_id: 'pipeline::pipeline',
-      payload: { text: text.value },
-    })
-    groupId.value = res.body.groupId
-    subscribe(res.body.streamName, res.body.groupId)
+    const started = await workflow.run('test-wf', { text: text.value })
+    runId.value = started.run_id
+    stream.subscribe(started.stream)
   }
   catch (e) {
-    callError.value = e as Error
+    runError.value = e as Error
   }
   finally {
-    callPending.value = false
+    runPending.value = false
   }
 }
 
-function humanKey(key: string) {
-  return key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase())
+function timelineLabel(data: unknown): string {
+  if (!data || typeof data !== 'object') return String(data ?? '')
+  const d = data as Record<string, unknown>
+  if (typeof d.message === 'string') return d.message
+  if (typeof d.step === 'string' && typeof d.status === 'string') return `${d.step}:${d.status}`
+  if (typeof d.finalCount === 'number') return `finalCount=${d.finalCount}`
+  return JSON.stringify(d)
 }
 </script>
 

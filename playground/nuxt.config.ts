@@ -47,7 +47,7 @@ export default defineNuxtConfig({
         rbac: {
           port: 49135,
           exposeFunctions: [
-            'match("pipeline::*")',
+            'match("test-wf*")',
           ],
         },
       },

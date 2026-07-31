@@ -187,6 +187,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     async (input: any) => {
       const queryParams = (input?.query_params ?? {}) as Record<string, string[]>
       const tokenRaw = queryParams._nvent_token?.[0]
+
       if (!tokenRaw) {
         throw new Error('Unauthorized: missing browser auth token')
       }
