@@ -527,16 +527,6 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
 
         if (hasWorkflowMeta) {
           try {
-            // Write error result to workflow internal state
-            await iii.trigger({
-              function_id: 'workflow::node-result-write',
-              payload: {
-                run_id: workflow.run_id,
-                node_uid: workflow.node_uid,
-                result: { __workflow_error__: errorMessage },
-              },
-            })
-
             // Emit completion event to wake the orchestrator
             await iii.trigger({
               function_id: 'workflow::node-completed',
@@ -546,6 +536,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
                 trace_id: trace.getActiveSpan()?.spanContext().traceId,
                 function_id: fn.id,
                 runtime: 'nodejs',
+                result_error: errorMessage,
               },
             })
           } catch (reportErr) {
@@ -559,16 +550,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
       if (hasWorkflowMeta) {
         try {
           await emitWorkflowTraceEvent(iii, fn.id, workflow, 'workflow.node.completed')
-          // Write result to workflow internal state
-          await iii.trigger({
-            function_id: 'workflow::node-result-write',
-            payload: {
-              run_id: workflow.run_id,
-              node_uid: workflow.node_uid,
-              result,
-            },
-          })
-          
+
           // Emit completion event (fast-path tick wake)
           await iii.trigger({
             function_id: 'workflow::node-completed',
@@ -578,6 +560,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
               trace_id: trace.getActiveSpan()?.spanContext().traceId,
               function_id: fn.id,
               runtime: 'nodejs',
+              result,
             },
           })
           

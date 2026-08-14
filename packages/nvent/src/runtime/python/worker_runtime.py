@@ -1180,16 +1180,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         if workflow_logger:
                             await workflow_logger.flush()
                         try:
-                            # Write error sentinel to state store so orchestrator can detect it
-                            await _client.trigger_async({
-                                'function_id': 'workflow::node-result-write',
-                                'payload': {
-                                    'run_id': wf['run_id'],
-                                    'node_uid': wf['node_uid'],
-                                    'result': {"__workflow_error__": str(e)},
-                                },
-                            })
-                            # Wake orchestrator
+                            # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
                                 'function_id': 'workflow::node-completed',
                                 'payload': {
@@ -1198,6 +1189,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
+                                    'result_error': str(e),
                                 },
                             })
                         except Exception as e2:
@@ -1208,20 +1200,8 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 if has_workflow_meta:
                     await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
-                        print(f"[nvent/workflow] node {wf['node_uid']} completed, writing result", flush=True)
-                        
-                        # Write result to state
-                        await _client.trigger_async({
-                            'function_id': 'workflow::node-result-write',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'result': result,
-                            },
-                        })
-                        
-                        print(f"[nvent/workflow] result written, emitting completion event for {wf['node_uid']}", flush=True)
-                        
+                        print(f"[nvent/workflow] node {wf['node_uid']} completed, emitting completion event", flush=True)
+
                         # Emit completion event
                         await _client.trigger_async({
                             'function_id': 'workflow::node-completed',
@@ -1231,6 +1211,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
+                                'result': result,
                             },
                         })
                         
@@ -1316,16 +1297,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         if workflow_logger:
                             await workflow_logger.flush()
                         try:
-                            # Write error sentinel to state store
-                            await _client.trigger_async({
-                                'function_id': 'workflow::node-result-write',
-                                'payload': {
-                                    'run_id': wf['run_id'],
-                                    'node_uid': wf['node_uid'],
-                                    'result': {"__workflow_error__": str(e)},
-                                },
-                            })
-                            # Wake orchestrator
+                            # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
                                 'function_id': 'workflow::node-completed',
                                 'payload': {
@@ -1334,6 +1306,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
+                                    'result_error': str(e),
                                 },
                             })
                         except Exception as e2:
@@ -1344,16 +1317,6 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 if has_workflow_meta:
                     await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
-                        # Write result to state
-                        await _client.trigger_async({
-                            'function_id': 'workflow::node-result-write',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'result': result,
-                            },
-                        })
-                        
                         # Emit completion event
                         await _client.trigger_async({
                             'function_id': 'workflow::node-completed',
@@ -1363,6 +1326,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
+                                'result': result,
                             },
                         })
                     except Exception as e:
@@ -1482,16 +1446,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     # Signal failure to workflow orchestrator if meta is present
                     if has_workflow_meta:
                         try:
-                            # Write error sentinel to state store
-                            await _client.trigger_async({
-                                'function_id': 'workflow::node-result-write',
-                                'payload': {
-                                    'run_id': wf['run_id'],
-                                    'node_uid': wf['node_uid'],
-                                    'result': {"__workflow_error__": str(e)},
-                                },
-                            })
-                            # Wake orchestrator
+                            # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
                                 'function_id': 'workflow::node-completed',
                                 'payload': {
@@ -1500,6 +1455,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
+                                    'result_error': str(e),
                                 },
                             })
                         except Exception as e2:
@@ -1510,16 +1466,6 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 if has_workflow_meta:
                     await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
-                        # Write result to state
-                        await _client.trigger_async({
-                            'function_id': 'workflow::node-result-write',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'result': result,
-                            },
-                        })
-                        
                         # Emit completion event
                         await _client.trigger_async({
                             'function_id': 'workflow::node-completed',
@@ -1529,6 +1475,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
+                                'result': result,
                             },
                         })
                     except Exception as e:
@@ -1626,16 +1573,6 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 if has_workflow_meta:
                     await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
-                        # Write result to state
-                        await _client.trigger_async({
-                            'function_id': 'workflow::node-result-write',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'result': result,
-                            },
-                        })
-                        
                         # Emit completion event
                         await _client.trigger_async({
                             'function_id': 'workflow::node-completed',
@@ -1645,6 +1582,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
+                                'result': result,
                             },
                         })
                     except Exception as e:

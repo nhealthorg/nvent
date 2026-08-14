@@ -44,6 +44,55 @@ pub enum FunctionRuntime {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeResultReturnType {
+    #[default]
+    Memory,
+    Store,
+    Stream,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeMemoryFailPolicy {
+    Store,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeInputReturnType {
+    #[default]
+    Memory,
+    Store,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NodeInputSpec {
+    /// Input transport/storage policy for this node.
+    #[serde(default)]
+    pub return_type: NodeInputReturnType,
+    /// Behavior when memory handoff fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_memory_fail: Option<NodeMemoryFailPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NodeResultSpec {
+    /// Result transport/storage policy for this node.
+    #[serde(default)]
+    pub return_type: NodeResultReturnType,
+    /// Optional chunk size hint for stream mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_chunk_size: Option<u32>,
+    /// Behavior when memory handoff fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_memory_fail: Option<NodeMemoryFailPolicy>,
+}
+
 // ---------------------------------------------------------------------------
 // Workflow definition types
 // ---------------------------------------------------------------------------
@@ -152,6 +201,12 @@ pub struct NodeDef {
     /// referenced array. Omit for a normal single-run node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fanout: Option<FanoutSpec>,
+    /// Optional per-node result policy. Defaults to `memory` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<NodeResultSpec>,
+    /// Optional per-node input policy. Defaults to `memory` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "inputPolicy")]
+    pub input_policy: Option<NodeInputSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -255,6 +310,11 @@ pub struct FanoutSpec {
     /// - `sequential`: process one item at a time in index order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<FanoutMode>,
+    /// Fanout item transport/storage policy.
+    /// - `memory` (default): keep fanout items in process memory only.
+    /// - `store`: persist fanout items in internal state store.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "itemReturnType")]
+    pub item_return_type: Option<NodeInputReturnType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -341,7 +401,7 @@ pub struct WorkflowRunRecord {
     /// Observed by tick → finalize Cancelled
     #[serde(default)]
     pub abort: bool,
-    /// Logical reference to the frozen workflow definition (run_id by default).
+    /// Logical reference to the frozen workflow definition.
     pub def_ref: String,
     /// Logical reference to the run input blob stored in internal workflow state.
     pub input_ref: String,
@@ -361,9 +421,9 @@ pub struct WorkflowRunRecord {
     /// Keyed by node_uid
     #[serde(default)]
     pub nodes: BTreeMap<String, NodeCheckpoint>,
-    /// node_id → FROZEN `over` snapshot; N = len
+    /// node_id -> frozen fanout item count (payload lives in internal state store)
     #[serde(default)]
-    pub fanout_src: BTreeMap<String, Vec<Value>>,
+    pub fanout_src: BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

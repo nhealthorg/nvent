@@ -18,7 +18,9 @@ pub fn timeout_action(
         return TimeoutAction::StillWaiting;
     }
     let timeout = cp.pending_timeout_ms.unwrap_or(default_timeout_ms);
-    let pending_at = cp.pending_at.unwrap_or(now);
+    // A Running checkpoint without pending_at is corrupted/incomplete state.
+    // Treat it as expired so the sweep can refire/fail it instead of hanging forever.
+    let pending_at = cp.pending_at.unwrap_or(0);
     // Clamp to 0 before the unsigned cast: a backward wall-clock/NTP step can make
     // `now < pending_at`, and a negative i64 cast straight to u64 wraps to ~1.8e19,
     // which reads as instantly expired. Matches the `.max(0)` clamp in reconcile/sweep.
@@ -97,6 +99,17 @@ mod tests {
         assert!(matches!(
             timeout_action(&cp, 30_000, 1, 5_000), // now=5_000 < pending_at=10_000
             TimeoutAction::StillWaiting
+        ));
+    }
+
+    #[test]
+    fn missing_pending_at_does_not_hang_forever() {
+        let mut cp = running_at(0, Some(1_000), 0);
+        cp.pending_at = None;
+
+        assert!(matches!(
+            timeout_action(&cp, 30_000, 2, 5_000),
+            TimeoutAction::Refire { attempt: 1 }
         ));
     }
 }

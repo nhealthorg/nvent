@@ -4,8 +4,8 @@ async fn completed_payload(
     deps: &crate::functions::Deps,
     record: &crate::types::WorkflowRunRecord,
 ) -> serde_json::Value {
-    let result = if record.result_ref.is_some() {
-        match crate::state::get_run_result(&deps.iii, &record.run_id).await {
+    let result = if let Some(result_ref) = record.result_ref.as_deref() {
+        match crate::state::get_run_result(&deps.iii, result_ref).await {
             Ok(v) => v,
             Err(err) => {
                 tracing::warn!(

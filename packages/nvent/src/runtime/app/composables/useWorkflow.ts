@@ -1,11 +1,16 @@
 import { useIii } from './useIii'
 import { useNuxtApp } from '#imports'
 import type { WorkflowStreamSubscription } from './useWorkflowStream'
+import type { WorkflowRunResultResponse, WorkflowStatusResponse } from '../../nitro/utils/workflow-types'
 
 export interface WorkflowRunHandle {
   run_id: string
   stream: WorkflowStreamSubscription
   raw: unknown
+}
+
+export interface WorkflowStatusOptions {
+  include_result?: boolean
 }
 
 function waitForIiiConnected(
@@ -125,7 +130,47 @@ export function useWorkflow() {
     }
   }
 
+  async function status(runId: string, options: WorkflowStatusOptions = {}): Promise<WorkflowStatusResponse | null> {
+    const iii = await resolveConnectedIii(2)
+    const res = await iii.trigger({
+      function_id: 'workflow::status',
+      payload: {
+        run_id: runId,
+        include_result: options.include_result ?? true,
+      },
+      timeoutMs: 15_000,
+    })
+
+    const body = res && typeof res === 'object' && 'body' in (res as Record<string, unknown>)
+      ? (res as Record<string, unknown>).body
+      : res
+
+    if (body == null) return null
+    return body as WorkflowStatusResponse
+  }
+
+  async function runResult(runId: string): Promise<WorkflowRunResultResponse> {
+    const iii = await resolveConnectedIii(2)
+    const res = await iii.trigger({
+      function_id: 'workflow::run-result',
+      payload: { run_id: runId },
+      timeoutMs: 15_000,
+    })
+
+    const body = res && typeof res === 'object' && 'body' in (res as Record<string, unknown>)
+      ? (res as Record<string, unknown>).body
+      : res
+
+    if (body && typeof body === 'object' && 'result' in (body as Record<string, unknown>)) {
+      return body as WorkflowRunResultResponse
+    }
+
+    return { result: null }
+  }
+
   return {
-    run
+    run,
+    status,
+    runResult,
   }
 }

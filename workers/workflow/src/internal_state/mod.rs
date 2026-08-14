@@ -112,6 +112,18 @@ pub trait WorkflowInternalStateStore: Send + Sync {
     async fn get_run_input(&self, run_id: &str) -> Result<Option<Value>, WorkflowError>;
     async fn put_run_input(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError>;
     async fn delete_run_input(&self, run_id: &str) -> Result<(), WorkflowError>;
+    async fn get_fanout_items(
+        &self,
+        run_id: &str,
+        node_id: &str,
+    ) -> Result<Option<Vec<Value>>, WorkflowError>;
+    async fn put_fanout_items(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        items: &[Value],
+    ) -> Result<(), WorkflowError>;
+    async fn delete_fanout_items(&self, run_id: &str, node_id: &str) -> Result<(), WorkflowError>;
 
     async fn get_run_vars(&self, run_id: &str) -> Result<Option<Value>, WorkflowError>;
     async fn put_run_vars(&self, run_id: &str, value: &Value) -> Result<(), WorkflowError>;

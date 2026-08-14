@@ -95,11 +95,10 @@ pub async fn delete_run_by_id(
         }
     }
 
-    if let Some(def) = crate::state::get_def(&deps.iii, &record.run_id).await? {
-        let result = if record.result_ref.is_some() {
-            crate::state::get_run_result(&deps.iii, &record.run_id).await?
-        } else {
-            None
+    if let Some(def) = crate::state::get_def(&deps.iii, &record.def_ref).await? {
+        let result = match record.result_ref.as_deref() {
+            Some(result_ref) => crate::state::get_run_result(&deps.iii, result_ref).await?,
+            None => None,
         };
         super::lifecycle_hooks::emit_delete(deps, &def, &record, result).await;
     }

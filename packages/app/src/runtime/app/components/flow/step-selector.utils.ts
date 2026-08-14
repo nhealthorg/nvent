@@ -116,6 +116,36 @@ export function getLoopModeColor(mode?: string): string {
   return mode === 'sequential' ? 'warning' : 'success'
 }
 
+export function getResultModeLabel(mode?: string): string {
+  switch (mode) {
+    case 'store': return 'Result: store'
+    case 'stream': return 'Result: stream'
+    case 'memory': return 'Result: memory'
+    default: return 'Result: memory'
+  }
+}
+
+export function getResultModeColor(mode?: string): 'success' | 'info' | 'warning' | 'neutral' {
+  switch (mode) {
+    case 'store': return 'success'
+    case 'stream': return 'info'
+    case 'memory': return 'warning'
+    default: return 'neutral'
+  }
+}
+
+export function getResultStateLabel(step: any): string {
+  if (step?.resultState === 'ready') return 'ready'
+  if (step?.resultState === 'pruned') return 'pruned'
+  return 'pending'
+}
+
+export function getResultStateColor(step: any): 'success' | 'warning' | 'neutral' {
+  if (step?.resultState === 'ready') return 'success'
+  if (step?.resultState === 'pruned') return 'warning'
+  return 'neutral'
+}
+
 export function getAwaitTypeIcon(type?: string): string {
   switch (type) {
     case 'webhook': return 'i-lucide-webhook'

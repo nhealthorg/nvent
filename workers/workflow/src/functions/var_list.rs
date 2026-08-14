@@ -28,11 +28,15 @@ pub struct VarListResponse {
 }
 
 pub async fn handle(deps: &Deps, req: VarListRequest) -> Result<VarListResponse, WorkflowError> {
-    if state::get_run(&deps.iii, &req.run_id).await?.is_none() {
+    let Some(record) = state::get_run(&deps.iii, &req.run_id).await? else {
         return Ok(VarListResponse { items: Vec::new() });
-    }
+    };
 
-    let vars = state::get_run_vars(&deps.iii, &req.run_id).await?;
+    let Some(vars_ref) = record.vars_ref.as_deref() else {
+        return Ok(VarListResponse { items: Vec::new() });
+    };
+
+    let vars = state::get_run_vars(&deps.iii, vars_ref).await?;
 
     let mut items: Vec<VarItem> = vars
         .into_values()

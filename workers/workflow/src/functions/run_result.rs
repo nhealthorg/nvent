@@ -22,7 +22,13 @@ pub async fn handle(
     deps: &Deps,
     req: RunResultRequest,
 ) -> Result<RunResultResponse, WorkflowError> {
-    let result = state::get_run_result(&deps.iii, &req.run_id).await?;
+    let result = match state::get_run(&deps.iii, &req.run_id).await? {
+        Some(record) => match record.result_ref.as_deref() {
+            Some(result_ref) => state::get_run_result(&deps.iii, result_ref).await?,
+            None => None,
+        },
+        None => None,
+    };
     Ok(RunResultResponse { result })
 }
 

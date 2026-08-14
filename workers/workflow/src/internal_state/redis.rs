@@ -104,6 +104,14 @@ impl RedisWorkflowInternalStateStore {
         format!("nvent:wf:input:{}", sanitize_segment(run_id))
     }
 
+    fn fanout_key(&self, run_id: &str, node_id: &str) -> String {
+        format!(
+            "nvent:wf:fanout:{}:{}",
+            sanitize_segment(run_id),
+            sanitize_segment(node_id)
+        )
+    }
+
     fn run_vars_key(&self, run_id: &str) -> String {
         format!("nvent:wf:vars:{}", sanitize_segment(run_id))
     }
@@ -809,6 +817,69 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             .await
             .map_err(|err| {
                 WorkflowError::State(format!("redis delete input failed for {run_id}: {err}"))
+            })
+    }
+
+    async fn get_fanout_items(
+        &self,
+        run_id: &str,
+        node_id: &str,
+    ) -> Result<Option<Vec<Value>>, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.get_fanout_items(run_id, node_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let raw: Option<String> = conn
+            .get(self.fanout_key(run_id, node_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis get fanout items failed for {run_id}/{node_id}: {err}"
+                ))
+            })?;
+
+        match raw {
+            Some(json) => Ok(Some(
+                serde_json::from_str::<Vec<Value>>(&json).map_err(WorkflowError::Serde)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn put_fanout_items(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        items: &[Value],
+    ) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.put_fanout_items(run_id, node_id, items).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let payload = serde_json::to_string(items).map_err(WorkflowError::Serde)?;
+        conn.set(self.fanout_key(run_id, node_id), payload)
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis put fanout items failed for {run_id}/{node_id}: {err}"
+                ))
+            })
+    }
+
+    async fn delete_fanout_items(&self, run_id: &str, node_id: &str) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.delete_fanout_items(run_id, node_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        conn.del::<_, ()>(self.fanout_key(run_id, node_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis delete fanout items failed for {run_id}/{node_id}: {err}"
+                ))
             })
     }
 

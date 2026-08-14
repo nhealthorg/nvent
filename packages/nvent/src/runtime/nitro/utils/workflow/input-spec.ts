@@ -133,7 +133,10 @@ export function normalizeWorkflowInput(
   }
 
   if (typeof input === 'object' && !Array.isArray(input)) {
-    return { from: 'run_input' }
+    return {
+      from: inferDynamicFrom(input),
+      value: encodeDynamicValue(input),
+    }
   }
 
   return { from: 'run_input' }

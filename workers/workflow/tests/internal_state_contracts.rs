@@ -38,14 +38,26 @@ fn workflow_function_state_handlers_do_not_mutate_workflow_run_via_state_update(
 }
 
 #[test]
-fn workflow_wrappers_write_node_results_via_internal_worker_function() {
+fn workflow_wrappers_report_node_results_via_node_completed_event() {
     let node_wrapper = read_repo_file("packages/nvent/src/runtime/nitro/utils/workers/node.ts");
     let py_wrapper = read_repo_file("packages/nvent/src/runtime/python/worker_runtime.py");
 
     for (name, content) in [("node.ts", node_wrapper), ("worker_runtime.py", py_wrapper)] {
         assert!(
-            content.contains("workflow::node-result-write"),
-            "{name} must call workflow::node-result-write for workflow node results"
+            content.contains("workflow::node-completed"),
+            "{name} must report workflow node completion via workflow::node-completed"
+        );
+        assert!(
+            content.contains("result_error"),
+            "{name} must include result_error payload for failed workflow node completion"
+        );
+        assert!(
+            content.contains("result") || content.contains("'result':"),
+            "{name} must include result payload for successful workflow node completion"
+        );
+        assert!(
+            !content.contains("workflow::node-result-write"),
+            "{name} must not use workflow::node-result-write in the new single-event completion flow"
         );
         assert!(
             !content.contains("workflow_node_result"),
@@ -96,8 +108,16 @@ fn start_and_cleanup_use_dedicated_run_input_store() {
         "start must store input_ref in WorkflowRunRecord"
     );
     assert!(
-        state_rs.contains("delete_run_input(iii, &record.run_id).await?"),
+        state_rs.contains("delete_run_input(iii, &record.input_ref).await?"),
         "delete_run must cleanup dedicated run input blob"
+    );
+    assert!(
+        state_rs.contains("delete_run_vars(iii, vars_ref).await?"),
+        "delete_run must cleanup dedicated run vars blob via vars_ref"
+    );
+    assert!(
+        state_rs.contains("delete_def(iii, &record.def_ref).await?"),
+        "delete_run must cleanup definition via def_ref"
     );
 }
 
@@ -135,12 +155,93 @@ fn tick_status_and_cleanup_use_dedicated_run_result_store() {
         "status request should support lightweight polling via include_result"
     );
     assert!(
-        state_rs.contains("delete_run_result(iii, &record.run_id).await?"),
+        state_rs.contains("delete_run_result(iii, result_ref).await?"),
         "delete_run must cleanup dedicated run result blob"
     );
     assert!(
         mod_rs.contains("workflow::run-result"),
         "workflow::run-result must be registered as dedicated run-output fetch API"
+    );
+}
+
+#[test]
+fn start_generates_unique_artifact_refs_and_scope_ids() {
+    let start_rs = read_repo_file("workers/workflow/src/functions/start.rs");
+
+    assert!(
+        start_rs.contains("new_run_reference_set()"),
+        "start must generate a dedicated reference set per run"
+    );
+    assert!(
+        start_rs.contains("def_ref: refs.def_ref"),
+        "run record def_ref must come from generated ref set"
+    );
+    assert!(
+        start_rs.contains("input_ref: refs.input_ref"),
+        "run record input_ref must come from generated ref set"
+    );
+    assert!(
+        start_rs.contains("vars_ref: Some(refs.vars_ref)"),
+        "run record vars_ref must come from generated ref set"
+    );
+    assert!(
+        start_rs.contains("result_ref: Some(refs.result_ref)"),
+        "run record result_ref must come from generated ref set"
+    );
+    assert!(
+        start_rs.contains("state_scope_id: Some(refs.state_scope_id)"),
+        "run record state_scope_id must come from generated scope set"
+    );
+    assert!(
+        start_rs.contains("stream_scope_id: Some(refs.stream_scope_id)"),
+        "run record stream_scope_id must come from generated scope set"
+    );
+}
+
+#[test]
+fn node_result_refs_are_not_run_id_derived_keys() {
+    let reconcile_rs = read_repo_file("workers/workflow/src/reconcile.rs");
+    let tick_rs = read_repo_file("workers/workflow/src/functions/tick.rs");
+
+    assert!(
+        reconcile_rs.contains("new_ref_id(\"node_result\")"),
+        "reconcile must assign opaque node result refs"
+    );
+    assert!(
+        tick_rs.contains("new_ref_id(\"node_result\")"),
+        "internal var-set path must assign opaque node result refs"
+    );
+    assert!(
+        !reconcile_rs.contains("node_result_key("),
+        "reconcile must not derive node result refs from run_id/node_uid"
+    );
+}
+
+#[test]
+fn memory_cleanup_honors_on_memory_fail_store_fallback() {
+    let tick_rs = read_repo_file("workers/workflow/src/functions/tick.rs");
+
+    assert!(
+        tick_rs.contains("NodeMemoryFailPolicy::Store"),
+        "tick memory cleanup must recognize onMemoryFail=store fallback"
+    );
+    assert!(
+        tick_rs.contains("node_on_memory_fail"),
+        "tick memory cleanup must inspect per-node onMemoryFail policy"
+    );
+}
+
+#[test]
+fn tick_marks_stuck_parked_runs_as_failed() {
+    let tick_rs = read_repo_file("workers/workflow/src/functions/tick.rs");
+
+    assert!(
+        tick_rs.contains("parked_run_is_stuck"),
+        "tick must detect parked runs that have no running nodes"
+    );
+    assert!(
+        tick_rs.contains("deadlock/stuck run"),
+        "tick must set an explicit deadlock/stuck failure reason"
     );
 }
 

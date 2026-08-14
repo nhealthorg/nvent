@@ -59,14 +59,6 @@
             {{ option.label }}
           </option>
         </select>
-        <button
-          v-if="hasMoreTimeline"
-          class="ml-2 text-xs rounded border border-gray-200 dark:border-gray-700 px-2 py-1 hover:border-blue-400 dark:hover:border-blue-600 disabled:opacity-50"
-          :disabled="Boolean(timelineLoadingMore) || Boolean(timelinePending)"
-          @click="loadMore"
-        >
-          {{ timelineLoadingMore ? 'Loading...' : 'Load more' }}
-        </button>
       </div>
     </div>
 

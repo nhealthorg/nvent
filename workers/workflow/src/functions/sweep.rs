@@ -134,10 +134,20 @@ async fn sweep_one_run(
         return Ok(false);
     }
 
-    // Fetch the workflow definition — skip if missing (orphaned record).
-    let def = match state::get_def(&deps.iii, &record.run_id).await? {
+    // Fetch the workflow definition.
+    // If missing, fail the run so it becomes terminal and is eligible for retention GC.
+    let def = match state::get_def(&deps.iii, &record.def_ref).await? {
         Some(d) => crate::functions::start::prepare_definition_for_execution(&d),
-        None => return Ok(false),
+        None => {
+            record.status = crate::types::RunStatus::Failed;
+            record.result_error = Some(
+                "workflow definition missing: run cannot continue; marked failed by sweep"
+                    .to_string(),
+            );
+            record.updated_at = now;
+            state::put_run(&deps.iii, &record).await?;
+            return Ok(true);
+        }
     };
 
     // Poll running nodes for completion.
@@ -191,7 +201,24 @@ async fn sweep_one_run(
         }
     }
 
+    // Apply full liveness-based memory cleanup in sweep as well, so stalled runs
+    // still release transient payloads even when no regular tick progress occurs.
+    let detached_result_uids =
+        crate::functions::tick::release_consumed_memory_artifacts(deps, &def, &mut record)
+            .await?;
+
     state::put_run(&deps.iii, &record).await?;
+
+    for uid in &detached_result_uids {
+        if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
+            tracing::warn!(
+                run_id = %record.run_id,
+                node_uid = %uid,
+                error = %e,
+                "sweep: failed to delete detached node result payload"
+            );
+        }
+    }
 
     // Re-drive: enqueue the next tick so the run can advance past the
     // newly-resolved nodes.

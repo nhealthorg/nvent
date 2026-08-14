@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -18,6 +18,9 @@ use crate::{
 };
 
 static INTERNAL_STATE_STORE: OnceLock<Arc<dyn WorkflowInternalStateStore>> = OnceLock::new();
+static RUN_INPUT_MEMORY: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+static FANOUT_ITEMS_MEMORY: OnceLock<Mutex<HashMap<String, Vec<Value>>>> = OnceLock::new();
+static NODE_RESULTS_MEMORY: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 
 pub fn set_internal_state_store(store: Arc<dyn WorkflowInternalStateStore>) {
     if INTERNAL_STATE_STORE.set(store).is_err() {
@@ -37,6 +40,125 @@ fn require_internal_state_store(
                 .to_string(),
         )
     })
+}
+
+fn run_input_memory() -> &'static Mutex<HashMap<String, Value>> {
+    RUN_INPUT_MEMORY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn fanout_items_memory() -> &'static Mutex<HashMap<String, Vec<Value>>> {
+    FANOUT_ITEMS_MEMORY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn node_results_memory() -> &'static Mutex<HashMap<String, Value>> {
+    NODE_RESULTS_MEMORY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn fanout_items_memory_key(run_id: &str, node_id: &str) -> String {
+    format!("{run_id}:{node_id}")
+}
+
+fn node_result_memory_key(run_id: &str, node_uid: &str) -> String {
+    format!("{run_id}:{node_uid}")
+}
+
+pub fn put_run_input_memory(run_id: &str, input: &Value) -> Result<(), WorkflowError> {
+    let mut guard = run_input_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("run input memory lock poisoned".to_string()))?;
+    guard.insert(run_id.to_string(), input.clone());
+    Ok(())
+}
+
+pub fn get_run_input_memory(run_id: &str) -> Result<Option<Value>, WorkflowError> {
+    let guard = run_input_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("run input memory lock poisoned".to_string()))?;
+    Ok(guard.get(run_id).cloned())
+}
+
+pub fn delete_run_input_memory(run_id: &str) -> Result<(), WorkflowError> {
+    let mut guard = run_input_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("run input memory lock poisoned".to_string()))?;
+    guard.remove(run_id);
+    Ok(())
+}
+
+pub fn put_fanout_items_memory(
+    run_id: &str,
+    node_id: &str,
+    items: &[Value],
+) -> Result<(), WorkflowError> {
+    let mut guard = fanout_items_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("fanout items memory lock poisoned".to_string()))?;
+    guard.insert(fanout_items_memory_key(run_id, node_id), items.to_vec());
+    Ok(())
+}
+
+pub fn get_fanout_items_memory(run_id: &str, node_id: &str) -> Result<Option<Vec<Value>>, WorkflowError> {
+    let guard = fanout_items_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("fanout items memory lock poisoned".to_string()))?;
+    Ok(guard
+        .get(&fanout_items_memory_key(run_id, node_id))
+        .cloned())
+}
+
+pub fn delete_fanout_items_memory(run_id: &str, node_id: &str) -> Result<(), WorkflowError> {
+    let mut guard = fanout_items_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("fanout items memory lock poisoned".to_string()))?;
+    guard.remove(&fanout_items_memory_key(run_id, node_id));
+    Ok(())
+}
+
+pub fn delete_all_fanout_items_memory(run_id: &str) -> Result<(), WorkflowError> {
+    let mut guard = fanout_items_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("fanout items memory lock poisoned".to_string()))?;
+    let prefix = format!("{run_id}:");
+    guard.retain(|key, _| !key.starts_with(&prefix));
+    Ok(())
+}
+
+pub fn put_node_result_memory(
+    run_id: &str,
+    node_uid: &str,
+    result: &Value,
+) -> Result<(), WorkflowError> {
+    let mut guard = node_results_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("node result memory lock poisoned".to_string()))?;
+    guard.insert(node_result_memory_key(run_id, node_uid), result.clone());
+    Ok(())
+}
+
+pub fn get_node_result_memory(run_id: &str, node_uid: &str) -> Result<Option<Value>, WorkflowError> {
+    let guard = node_results_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("node result memory lock poisoned".to_string()))?;
+    Ok(guard
+        .get(&node_result_memory_key(run_id, node_uid))
+        .cloned())
+}
+
+pub fn delete_node_result_memory(run_id: &str, node_uid: &str) -> Result<(), WorkflowError> {
+    let mut guard = node_results_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("node result memory lock poisoned".to_string()))?;
+    guard.remove(&node_result_memory_key(run_id, node_uid));
+    Ok(())
+}
+
+pub fn delete_all_node_results_memory(run_id: &str) -> Result<(), WorkflowError> {
+    let mut guard = node_results_memory()
+        .lock()
+        .map_err(|_| WorkflowError::State("node result memory lock poisoned".to_string()))?;
+    let prefix = format!("{run_id}:");
+    guard.retain(|key, _| !key.starts_with(&prefix));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -508,11 +630,20 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
         delete_run_stream_entries(iii, stream_name, stream_group_id).await?;
     }
 
-    // No backward-compat cleanup paths: this worker runs only the v1 data model.
-    delete_run_input(iii, &record.run_id).await?;
-    delete_run_vars(iii, &record.run_id).await?;
-    delete_run_result(iii, &record.run_id).await?;
-    delete_def(iii, &record.run_id).await?;
+    let _ = delete_run_input_memory(&record.run_id);
+    let _ = delete_all_fanout_items_memory(&record.run_id);
+    let _ = delete_all_node_results_memory(&record.run_id);
+    for node_id in record.fanout_src.keys() {
+        delete_fanout_items(iii, &record.run_id, node_id).await?;
+    }
+    delete_run_input(iii, &record.input_ref).await?;
+    if let Some(vars_ref) = record.vars_ref.as_deref() {
+        delete_run_vars(iii, vars_ref).await?;
+    }
+    if let Some(result_ref) = record.result_ref.as_deref() {
+        delete_run_result(iii, result_ref).await?;
+    }
+    delete_def(iii, &record.def_ref).await?;
     delete_run_logs(iii, &record.run_id).await?;
     delete_run_traces(iii, &record.run_id).await?;
     delete_run_queue_receipts(iii, &record.run_id).await?;
@@ -582,18 +713,18 @@ pub async fn delete_run_queue_receipts(iii: &IIIClient, run_id: &str) -> Result<
 
 pub async fn put_def(
     _iii: &IIIClient,
-    run_id: &str,
+    def_ref: &str,
     def: &WorkflowDef,
 ) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.put_def(run_id, def).await
+    require_internal_state_store()?.put_def(def_ref, def).await
 }
 
-pub async fn get_def(_iii: &IIIClient, run_id: &str) -> Result<Option<WorkflowDef>, WorkflowError> {
-    require_internal_state_store()?.get_def(run_id).await
+pub async fn get_def(_iii: &IIIClient, def_ref: &str) -> Result<Option<WorkflowDef>, WorkflowError> {
+    require_internal_state_store()?.get_def(def_ref).await
 }
 
-pub async fn delete_def(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.delete_def(run_id).await
+pub async fn delete_def(_iii: &IIIClient, def_ref: &str) -> Result<(), WorkflowError> {
+    require_internal_state_store()?.delete_def(def_ref).await
 }
 
 // ---------------------------------------------------------------------------
@@ -602,68 +733,121 @@ pub async fn delete_def(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowEr
 
 pub async fn put_run_input(
     _iii: &IIIClient,
-    run_id: &str,
+    input_ref: &str,
     input: &Value,
 ) -> Result<(), WorkflowError> {
     require_internal_state_store()?
-        .put_run_input(run_id, input)
+        .put_run_input(input_ref, input)
         .await
 }
 
 pub async fn get_run_input(_iii: &IIIClient, run_id: &str) -> Result<Option<Value>, WorkflowError> {
-    require_internal_state_store()?.get_run_input(run_id).await
+    get_run_input_memory(run_id)
 }
 
-pub async fn delete_run_input(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
+pub async fn get_run_input_store(
+    _iii: &IIIClient,
+    input_ref: &str,
+) -> Result<Option<Value>, WorkflowError> {
+    require_internal_state_store()?.get_run_input(input_ref).await
+}
+
+pub async fn delete_run_input(_iii: &IIIClient, input_ref: &str) -> Result<(), WorkflowError> {
     require_internal_state_store()?
-        .delete_run_input(run_id)
+        .delete_run_input(input_ref)
+        .await
+}
+
+pub async fn put_fanout_items(
+    _iii: &IIIClient,
+    run_id: &str,
+    node_id: &str,
+    items: &[Value],
+) -> Result<(), WorkflowError> {
+    require_internal_state_store()?
+        .put_fanout_items(run_id, node_id, items)
+        .await
+}
+
+pub async fn get_fanout_items(
+    _iii: &IIIClient,
+    run_id: &str,
+    node_id: &str,
+) -> Result<Option<Vec<Value>>, WorkflowError> {
+    if let Some(items) = get_fanout_items_memory(run_id, node_id)? {
+        return Ok(Some(items));
+    }
+    require_internal_state_store()?
+        .get_fanout_items(run_id, node_id)
+        .await
+}
+
+pub async fn get_fanout_item(
+    iii: &IIIClient,
+    run_id: &str,
+    node_id: &str,
+    index: usize,
+) -> Result<Option<Value>, WorkflowError> {
+    let Some(items) = get_fanout_items(iii, run_id, node_id).await? else {
+        return Ok(None);
+    };
+    Ok(items.get(index).cloned())
+}
+
+pub async fn delete_fanout_items(
+    _iii: &IIIClient,
+    run_id: &str,
+    node_id: &str,
+) -> Result<(), WorkflowError> {
+    require_internal_state_store()?
+        .delete_fanout_items(run_id, node_id)
         .await
 }
 
 pub async fn put_run_vars(
     _iii: &IIIClient,
-    run_id: &str,
+    vars_ref: &str,
     vars: &BTreeMap<String, WorkflowVarRecord>,
 ) -> Result<(), WorkflowError> {
     let encoded = serde_json::to_value(vars).map_err(WorkflowError::Serde)?;
-    require_internal_state_store()?.put_run_vars(run_id, &encoded).await
+    require_internal_state_store()?.put_run_vars(vars_ref, &encoded).await
 }
 
 pub async fn get_run_vars(
     _iii: &IIIClient,
-    run_id: &str,
+    vars_ref: &str,
 ) -> Result<BTreeMap<String, WorkflowVarRecord>, WorkflowError> {
-    let Some(raw) = require_internal_state_store()?.get_run_vars(run_id).await? else {
+    let Some(raw) = require_internal_state_store()?.get_run_vars(vars_ref).await? else {
         return Ok(BTreeMap::new());
     };
 
     serde_json::from_value::<BTreeMap<String, WorkflowVarRecord>>(raw).map_err(WorkflowError::Serde)
 }
 
-pub async fn delete_run_vars(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.delete_run_vars(run_id).await
+pub async fn delete_run_vars(_iii: &IIIClient, vars_ref: &str) -> Result<(), WorkflowError> {
+    require_internal_state_store()?.delete_run_vars(vars_ref).await
 }
 
 pub async fn put_run_result(
     _iii: &IIIClient,
-    run_id: &str,
+    result_ref: &str,
     result: &Value,
 ) -> Result<(), WorkflowError> {
     require_internal_state_store()?
-        .put_run_result(run_id, result)
+        .put_run_result(result_ref, result)
         .await
 }
 
 pub async fn get_run_result(
     _iii: &IIIClient,
-    run_id: &str,
+    result_ref: &str,
 ) -> Result<Option<Value>, WorkflowError> {
-    require_internal_state_store()?.get_run_result(run_id).await
+    require_internal_state_store()?.get_run_result(result_ref).await
 }
 
-pub async fn delete_run_result(_iii: &IIIClient, run_id: &str) -> Result<(), WorkflowError> {
+pub async fn delete_run_result(_iii: &IIIClient, result_ref: &str) -> Result<(), WorkflowError> {
     require_internal_state_store()?
-        .delete_run_result(run_id)
+        .delete_run_result(result_ref)
         .await
 }
 
@@ -687,12 +871,24 @@ pub async fn get_node_result(
     run_id: &str,
     node_uid: &str,
 ) -> Result<Option<Value>, WorkflowError> {
+    if let Some(v) = get_node_result_memory(run_id, node_uid)? {
+        return Ok(Some(v));
+    }
     require_internal_state_store()?
         .get_node_result(run_id, node_uid)
         .await
 }
 
 pub async fn delete_node_result(
+    _iii: &IIIClient,
+    run_id: &str,
+    node_uid: &str,
+) -> Result<(), WorkflowError> {
+    let _ = delete_node_result_memory(run_id, node_uid);
+    delete_node_result_store(_iii, run_id, node_uid).await
+}
+
+pub async fn delete_node_result_store(
     _iii: &IIIClient,
     run_id: &str,
     node_uid: &str,
@@ -720,15 +916,21 @@ pub async fn load_done_results(
             }
         }
     }
+    mark_missing_done_results_failed(record, corrupt);
+    Ok(out)
+}
+
+fn mark_missing_done_results_failed(record: &mut WorkflowRunRecord, missing: Vec<String>) {
     // A Done node always has its result persisted before it is marked Done
     // (reconcile). A missing one is state corruption. Do NOT hard-error: that
     // fails EVERY tick for this run forever — the run wedges in AwaitingNodes and
     // the sweep re-enqueues a dying tick each cycle. Instead mark the node Failed
     // so `quiescence` fails the run cleanly with a diagnosable message, rather
     // than feeding Null downstream (which would derail gather_input / fanout).
-    for node_uid in corrupt {
+    for node_uid in missing {
         if let Some(cp) = record.nodes.get_mut(&node_uid) {
             cp.state = NodeState::Failed;
+            cp.result_ref = None;
             cp.result_error = Some(
                 "Done checkpoint has a result_ref but the stored result is missing \
                  (state corruption)"
@@ -736,7 +938,6 @@ pub async fn load_done_results(
             );
         }
     }
-    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -968,17 +1169,14 @@ mod tests {
             "1": "timeline"
         });
         rec["fanout_src"] = json!({
-            "classify": {
-                "0": { "id": "a" },
-                "1": { "id": "b" }
-            }
+            "classify": 2
         });
 
         let list = parse_record_list(&json!([rec]));
         assert_eq!(list.len(), 1, "numeric-keyed sequence object should parse");
         assert_eq!(list[0].stream_ids, vec!["workflow", "timeline"]);
         assert_eq!(
-            list[0].fanout_src.get("classify").map(|items| items.len()),
+            list[0].fanout_src.get("classify").copied(),
             Some(2)
         );
     }
@@ -1033,5 +1231,126 @@ mod tests {
         let encoded_key = state_registry_encoded_key("counter");
         assert_eq!(record.state_keys_map.get(&encoded_key), Some(&false));
         assert_eq!(record.updated_at, 11);
+    }
+
+    #[test]
+    fn fanout_items_memory_store_roundtrip_and_delete() {
+        let run_id = "run_mem";
+        let node_id = "loop";
+        let items = vec![json!({"id": 1}), json!({"id": 2})];
+
+        put_fanout_items_memory(run_id, node_id, &items).expect("put fanout memory");
+        let got = get_fanout_items_memory(run_id, node_id)
+            .expect("get fanout memory")
+            .expect("fanout items present");
+        assert_eq!(got, items);
+
+        delete_fanout_items_memory(run_id, node_id).expect("delete fanout memory");
+        let missing = get_fanout_items_memory(run_id, node_id).expect("get after delete");
+        assert!(missing.is_none(), "fanout memory must be removed");
+    }
+
+    #[test]
+    fn fanout_items_memory_delete_all_is_run_scoped() {
+        put_fanout_items_memory("run_a", "loop_1", &[json!(1)]).expect("seed run_a/loop_1");
+        put_fanout_items_memory("run_a", "loop_2", &[json!(2)]).expect("seed run_a/loop_2");
+        put_fanout_items_memory("run_b", "loop_1", &[json!(3)]).expect("seed run_b/loop_1");
+
+        delete_all_fanout_items_memory("run_a").expect("delete run_a fanout memory");
+
+        assert!(
+            get_fanout_items_memory("run_a", "loop_1")
+                .expect("get run_a/loop_1")
+                .is_none()
+        );
+        assert!(
+            get_fanout_items_memory("run_a", "loop_2")
+                .expect("get run_a/loop_2")
+                .is_none()
+        );
+        assert_eq!(
+            get_fanout_items_memory("run_b", "loop_1")
+                .expect("get run_b/loop_1")
+                .expect("run_b entry remains"),
+            vec![json!(3)]
+        );
+
+        delete_all_fanout_items_memory("run_b").expect("cleanup run_b");
+    }
+
+    #[test]
+    fn node_result_memory_store_roundtrip_and_delete() {
+        let run_id = "run_result_mem";
+        let node_uid = "plan";
+        let value = json!({"ok": true});
+
+        put_node_result_memory(run_id, node_uid, &value).expect("put node result memory");
+        let got = get_node_result_memory(run_id, node_uid)
+            .expect("get node result memory")
+            .expect("node result present");
+        assert_eq!(got, value);
+
+        delete_node_result_memory(run_id, node_uid).expect("delete node result memory");
+        assert!(
+            get_node_result_memory(run_id, node_uid)
+                .expect("get after delete")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn node_result_memory_delete_all_is_run_scoped() {
+        put_node_result_memory("run_a", "a#0", &json!(1)).expect("seed run_a");
+        put_node_result_memory("run_b", "a#0", &json!(2)).expect("seed run_b");
+
+        delete_all_node_results_memory("run_a").expect("cleanup run_a");
+
+        assert!(
+            get_node_result_memory("run_a", "a#0")
+                .expect("get run_a")
+                .is_none()
+        );
+        assert_eq!(
+            get_node_result_memory("run_b", "a#0")
+                .expect("get run_b")
+                .expect("run_b remains"),
+            json!(2)
+        );
+
+        delete_all_node_results_memory("run_b").expect("cleanup run_b");
+    }
+
+    #[test]
+    fn mark_missing_done_results_failed_marks_failed_and_clears_ref() {
+        let mut record: WorkflowRunRecord = serde_json::from_value(json!({
+            "run_id": "run_corrupt",
+            "step": 0,
+            "status": "awaiting_nodes",
+            "def_ref": "run_corrupt",
+            "input_ref": "run_corrupt",
+            "created_at": 1,
+            "updated_at": 1,
+            "nodes": {
+                "plan": {
+                    "state": "done",
+                    "result_ref": "run_corrupt/plan",
+                    "retries": 0
+                }
+            }
+        }))
+        .expect("decode workflow run record");
+
+        mark_missing_done_results_failed(&mut record, vec!["plan".to_string()]);
+
+        let cp = record.nodes.get("plan").expect("plan checkpoint must exist");
+        assert_eq!(cp.state, NodeState::Failed);
+        assert!(cp.result_ref.is_none(), "stale result_ref must be cleared");
+        assert!(
+            cp.result_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("state corruption"),
+            "checkpoint should contain diagnosable state-corruption message"
+        );
     }
 }

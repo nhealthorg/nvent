@@ -176,28 +176,39 @@ export interface NventIiiOptions {
      * These values override the worker's fetched config on boot.
      */
     workflow?: {
-      /** Default timeout for pending workflow nodes (ms). */
-      defaultPendingTimeoutMs?: number
-      /** Cron expression for workflow sweep scheduling. */
-      sweepExpression?: string
-      /** RPC dispatch timeout for workflow worker state/trigger calls (ms). */
-      dispatchTimeoutMs?: number
-      /** Maximum retry attempts per workflow node before fail-out. */
-      maxNodeRetries?: number
-      /** Retention window for terminal workflow runs (ms). */
-      runRetentionMs?: number
-      /** Retention window for workflow logs/traces (ms). */
-      observabilityRetentionMs?: number
-      /** Backend for internal workflow orchestrator state. */
-      internalStateBackend?: 'redis' | 'file'
-      /** Redis URL used when internalStateBackend is 'redis'. */
-      internalStateRedisUrl?: string
-      /** Base directory used when internalStateBackend is 'file'. */
-      internalStateFileDir?: string
-      /** Keep global Redis sorted indexes for logs/traces in addition to per-run storage. */
-      redisGlobalLogTraceIndex?: boolean
-      /** Default TTL for idempotency keys (ms). */
-      idempotencyTtlMs?: number
+      /** Internal workflow orchestrator state adapter. */
+      adapter?: {
+        /**
+         * Adapter backend:
+         * - redis: Redis-backed shared state
+         * - file: local file-backed state
+         * - memory: alias for local ephemeral backend (mapped to local file backend)
+         */
+        type: 'redis' | 'file' | 'memory'
+        /** Redis URL used when adapter.type is 'redis'. */
+        redisUrl?: string
+        /** Base directory used when adapter.type is 'file'. */
+        fileDir?: string
+      }
+      /** Worker runtime tuning options passed to the Rust workflow worker. */
+      config?: {
+        /** Default timeout for pending workflow nodes (ms). */
+        defaultPendingTimeoutMs?: number
+        /** Cron expression for workflow sweep scheduling. */
+        sweepExpression?: string
+        /** RPC dispatch timeout for workflow worker state/trigger calls (ms). */
+        dispatchTimeoutMs?: number
+        /** Maximum retry attempts per workflow node before fail-out. */
+        maxNodeRetries?: number
+        /** Retention window for terminal workflow runs (ms). */
+        runRetentionMs?: number
+        /** Retention window for workflow logs/traces (ms). */
+        observabilityRetentionMs?: number
+        /** Keep global Redis sorted indexes for logs/traces in addition to per-run storage. */
+        redisGlobalLogTraceIndex?: boolean
+        /** Default TTL for idempotency keys (ms). */
+        idempotencyTtlMs?: number
+      }
     }
     /**
      * Enable the iii-console web UI (separate binary, http://localhost:3113).

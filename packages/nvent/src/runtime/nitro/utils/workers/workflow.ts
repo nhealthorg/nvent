@@ -39,17 +39,21 @@ export function resolveWorkflowBinaryFromPackageRoot(packageRootDir: string): st
 }
 
 export interface WorkflowWorkerBootConfig {
-  defaultPendingTimeoutMs?: number
-  sweepExpression?: string
-  dispatchTimeoutMs?: number
-  maxNodeRetries?: number
-  runRetentionMs?: number
-  observabilityRetentionMs?: number
-  internalStateBackend?: 'redis' | 'file'
-  internalStateRedisUrl?: string
-  internalStateFileDir?: string
-  redisGlobalLogTraceIndex?: boolean
-  idempotencyTtlMs?: number
+  adapter?: {
+    type: 'redis' | 'file' | 'memory'
+    redisUrl?: string
+    fileDir?: string
+  }
+  config?: {
+    defaultPendingTimeoutMs?: number
+    sweepExpression?: string
+    dispatchTimeoutMs?: number
+    maxNodeRetries?: number
+    runRetentionMs?: number
+    observabilityRetentionMs?: number
+    redisGlobalLogTraceIndex?: boolean
+    idempotencyTtlMs?: number
+  }
 }
 
 export class WorkflowWorkerManager {
@@ -104,42 +108,59 @@ export class WorkflowWorkerManager {
     }
   }
 
+  private normalizeAdapter(): {
+    type: 'redis' | 'file' | 'memory'
+    redisUrl?: string
+    fileDir?: string
+  } | null {
+    const adapter = this.workflowConfig?.adapter
+    if (adapter?.type) {
+      return adapter
+    }
+    return null
+  }
+
   private buildWorkerConfigArg(): string | null {
     if (!this.workflowConfig) return null
 
+    const runtimeConfig = this.workflowConfig.config
     const configPayload: Record<string, unknown> = {}
-    if (this.workflowConfig.defaultPendingTimeoutMs != null) {
-      configPayload.default_pending_timeout_ms = this.workflowConfig.defaultPendingTimeoutMs
+    if (runtimeConfig?.defaultPendingTimeoutMs != null) {
+      configPayload.default_pending_timeout_ms = runtimeConfig.defaultPendingTimeoutMs
     }
-    if (this.workflowConfig.sweepExpression != null) {
-      configPayload.sweep_expression = this.workflowConfig.sweepExpression
+    if (runtimeConfig?.sweepExpression != null) {
+      configPayload.sweep_expression = runtimeConfig.sweepExpression
     }
-    if (this.workflowConfig.dispatchTimeoutMs != null) {
-      configPayload.dispatch_timeout_ms = this.workflowConfig.dispatchTimeoutMs
+    if (runtimeConfig?.dispatchTimeoutMs != null) {
+      configPayload.dispatch_timeout_ms = runtimeConfig.dispatchTimeoutMs
     }
-    if (this.workflowConfig.maxNodeRetries != null) {
-      configPayload.max_node_retries = this.workflowConfig.maxNodeRetries
+    if (runtimeConfig?.maxNodeRetries != null) {
+      configPayload.max_node_retries = runtimeConfig.maxNodeRetries
     }
-    if (this.workflowConfig.runRetentionMs != null) {
-      configPayload.run_retention_ms = this.workflowConfig.runRetentionMs
+    if (runtimeConfig?.runRetentionMs != null) {
+      configPayload.run_retention_ms = runtimeConfig.runRetentionMs
     }
-    if (this.workflowConfig.observabilityRetentionMs != null) {
-      configPayload.observability_retention_ms = this.workflowConfig.observabilityRetentionMs
+    if (runtimeConfig?.observabilityRetentionMs != null) {
+      configPayload.observability_retention_ms = runtimeConfig.observabilityRetentionMs
     }
-    if (this.workflowConfig.internalStateBackend != null) {
-      configPayload.internal_state_backend = this.workflowConfig.internalStateBackend
+    const adapter = this.normalizeAdapter()
+    if (adapter?.type != null) {
+      // Worker currently supports redis/file backends. Treat memory as local file backend.
+      configPayload.internal_state_backend = adapter.type === 'memory'
+        ? 'file'
+        : adapter.type
     }
-    if (this.workflowConfig.internalStateRedisUrl != null) {
-      configPayload.internal_state_redis_url = this.workflowConfig.internalStateRedisUrl
+    if (adapter?.redisUrl != null) {
+      configPayload.internal_state_redis_url = adapter.redisUrl
     }
-    if (this.workflowConfig.internalStateFileDir != null) {
-      configPayload.internal_state_file_dir = this.workflowConfig.internalStateFileDir
+    if (adapter?.fileDir != null) {
+      configPayload.internal_state_file_dir = adapter.fileDir
     }
-    if (this.workflowConfig.redisGlobalLogTraceIndex != null) {
-      configPayload.redis_global_log_trace_index = this.workflowConfig.redisGlobalLogTraceIndex
+    if (runtimeConfig?.redisGlobalLogTraceIndex != null) {
+      configPayload.redis_global_log_trace_index = runtimeConfig.redisGlobalLogTraceIndex
     }
-    if (this.workflowConfig.idempotencyTtlMs != null) {
-      configPayload.idempotency_ttl_ms = this.workflowConfig.idempotencyTtlMs
+    if (runtimeConfig?.idempotencyTtlMs != null) {
+      configPayload.idempotency_ttl_ms = runtimeConfig.idempotencyTtlMs
     }
 
     if (Object.keys(configPayload).length === 0) {

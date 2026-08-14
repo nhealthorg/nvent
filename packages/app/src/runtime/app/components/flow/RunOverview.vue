@@ -50,12 +50,13 @@
       </div>
     </div>
 
-    <div class="px-2 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-zinc-900 shrink-0">
+    <div class="px-2 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-zinc-900 shrink-0">
       <div class="flex items-center gap-2 overflow-x-auto overflow-y-hidden pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
           v-for="item in overviewFacts"
           :key="item.label"
-          class="inline-flex flex-shrink-0 items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-50/90 dark:bg-zinc-950 px-2.5 py-1 text-xs shadow-sm"
+          :title="item.title || item.value"
+          class="inline-flex min-h-8 flex-shrink-0 items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-50/90 dark:bg-zinc-950 px-2.5 py-1.5 text-xs shadow-sm"
         >
           <UIcon
             :name="item.icon"
@@ -111,6 +112,15 @@ const props = defineProps<{
     totalItems: number
     completedItems: number
   }
+  resultOverview?: {
+    readyMemory: number
+    readyStore: number
+    readyStream: number
+    prunedMemory: number
+    pending: number
+  }
+  runResultMode?: 'memory' | 'store' | 'stream' | 'none'
+  storeKey?: string
 }>()
 
 const emit = defineEmits<{
@@ -122,47 +132,93 @@ const emit = defineEmits<{
 
 const executableStepCount = computed(() => props.steps.filter(step => !step?.isLoopGroup).length)
 
+type OverviewFact = {
+  label: string
+  value: string
+  icon: string
+  iconClass: string
+  title?: string
+}
+
+const compactResultModeLabel = (mode: NonNullable<typeof props.runResultMode>) => {
+  if (mode === 'store') return 'store'
+  if (mode === 'stream') return 'stream'
+  return 'memory'
+}
+
 const overviewFacts = computed(() => {
-  const facts = [
+  const facts: OverviewFact[] = [
     {
       label: 'steps',
-      value: `${executableStepCount.value}`,
+      value: `${executableStepCount.value} steps`,
       icon: 'i-lucide-layers',
       iconClass: 'text-gray-400',
+      title: 'Executable workflow steps',
     },
     {
-      label: 'started',
-      value: props.startedAt ? formatTime(props.startedAt) : 'Not started',
-      icon: 'i-lucide-clock',
-      iconClass: 'text-gray-400',
-    },
-    {
-      label: 'duration',
-      value: getDuration(props.startedAt, props.completedAt),
+      label: 'timing',
+      value: props.startedAt
+        ? `${formatTime(props.startedAt)} · ${getDuration(props.startedAt, props.completedAt)}`
+        : 'not started',
       icon: 'i-lucide-timer',
       iconClass: 'text-gray-400',
+      title: 'Start time and total duration',
     },
   ]
 
   if ((props.loopOverview?.loops || 0) > 0) {
     facts.push({
       label: 'loops',
-      value: `${props.loopOverview?.expandedLoops || 0}/${props.loopOverview?.loops || 0} • ${props.loopOverview?.completedItems || 0}/${props.loopOverview?.totalItems || 0} items`,
+      value: `loops ${props.loopOverview?.expandedLoops || 0}/${props.loopOverview?.loops || 0} · items ${props.loopOverview?.completedItems || 0}/${props.loopOverview?.totalItems || 0}`,
       icon: 'i-heroicons-arrow-path-rounded-square-20-solid',
       iconClass: 'text-cyan-500',
+      title: 'Expanded loops and processed loop items',
     })
   }
 
   if ((props.runStatus === 'running' || props.runStatus === 'awaiting') && props.stallTimeout) {
     facts.push({
       label: 'stall',
-      value: formatStallTimeout(props.startedAt, props.stallTimeout),
+      value: `stall in ${formatStallTimeout(props.startedAt, props.stallTimeout)}`,
       icon: 'i-lucide-alert-triangle',
       iconClass: 'text-amber-500',
+      title: 'Estimated time to stall timeout',
     })
   }
 
-  return facts
+  if (props.runResultMode && props.runResultMode !== 'none') {
+    facts.push({
+      label: 'run-result-mode',
+      value: `run result ${compactResultModeLabel(props.runResultMode)}`,
+      icon: props.runResultMode === 'store' ? 'i-lucide-database' : props.runResultMode === 'stream' ? 'i-lucide-waves' : 'i-lucide-memory-stick',
+      iconClass: props.runResultMode === 'store' ? 'text-emerald-600' : props.runResultMode === 'stream' ? 'text-sky-500' : 'text-amber-500',
+      title: 'Workflow output storage mode',
+    })
+  }
+
+  if (props.resultOverview) {
+    facts.push({
+      label: 'node-results',
+      value: `node results s:${props.resultOverview.readyStore} m:${props.resultOverview.readyMemory} p:${props.resultOverview.prunedMemory}`,
+      icon: 'i-lucide-file-json',
+      iconClass: 'text-indigo-500',
+      title: 'Ready store/memory node results and pruned memory results',
+    })
+  }
+
+  // Keep the chip row compact for readability; collapse overflow into one chip.
+  if (facts.length <= 5) return facts
+
+  const visible = facts.slice(0, 5)
+  visible.push({
+    label: 'more',
+    value: `+${facts.length - 5} more`,
+    icon: 'i-lucide-ellipsis',
+    iconClass: 'text-gray-500',
+    title: 'Additional run facts are hidden to keep this row compact',
+  })
+
+  return visible
 })
 
 // Handle cancel flow action

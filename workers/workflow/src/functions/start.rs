@@ -6,9 +6,12 @@ use serde_json::{json, Value};
 
 use crate::{
     error::WorkflowError,
-    ids::{new_run_id, new_trace_id},
+    ids::{new_ref_id, new_run_id, new_scope_id, new_trace_id},
     state,
-    types::{RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{
+        NodeInputReturnType, NodeInputSpec, NodeMemoryFailPolicy, RunStatus, WorkflowDef,
+        WorkflowRunRecord,
+    },
 };
 
 use super::Deps;
@@ -37,6 +40,11 @@ pub struct StartRequest {
     /// `"run_input"` / `"workflow.input"`. Any JSON value.
     #[serde(default)]
     pub input: Value,
+    /// Input transport/storage policy for the workflow invocation input
+    /// (`input` above). This applies only to the run input blob, not to any
+    /// per-node inputPolicy.
+    #[serde(default, rename = "inputPolicy")]
+    pub input_policy: Option<NodeInputSpec>,
     /// Optional dedupe key: a repeated key returns the original `run_id` instead
     /// of launching a duplicate run.
     #[serde(default)]
@@ -59,6 +67,8 @@ struct StartRequestRaw {
     definition: WorkflowDef,
     #[serde(default)]
     input: Value,
+    #[serde(default, rename = "inputPolicy")]
+    input_policy: Option<NodeInputSpec>,
     #[serde(default)]
     idempotency_key: Option<String>,
     #[serde(default)]
@@ -70,7 +80,8 @@ struct StartRequestRaw {
 /// Compact copy-pasteable skeleton appended to every shape error.
 const SHAPE_HINT: &str = "Expected shape: \
     {\"definition\":{\"nodes\":{\"<id>\":{\"function\":{\"id\":\"<function-id>\"},\
-    \"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}}}. `version` defaults to 1. \
+    \"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}},\
+    \"inputPolicy\":{\"returnType\":\"memory|store\",\"onMemoryFail\":\"store|error\"}}. `version` defaults to 1. \
     Each node is {label?, function, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
     run_input). Full field docs are inline in this function's request schema.";
 
@@ -81,8 +92,19 @@ const ALLOWED_DEF_KEYS: &[&str] = &[
     "default_functions",
     "metadata",
 ];
-const ALLOWED_NODE_KEYS: &[&str] = &["label", "function", "input", "depends_on", "fanout"];
+const ALLOWED_NODE_KEYS: &[&str] = &[
+    "label",
+    "function",
+    "input",
+    "depends_on",
+    "fanout",
+    "result",
+    "inputPolicy",
+];
 const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "queue", "engine_retry", "runtime"];
+const ALLOWED_RESULT_KEYS: &[&str] = &["returnType", "streamChunkSize", "onMemoryFail"];
+const ALLOWED_INPUT_POLICY_KEYS: &[&str] = &["returnType", "onMemoryFail"];
+const ALLOWED_FANOUT_KEYS: &[&str] = &["over", "mode", "itemReturnType"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
 // structural problem (plus the canonical shape), instead of serde's fail-fast
@@ -97,7 +119,8 @@ impl<'de> Deserialize<'de> for StartRequest {
         use serde::de::Error as _;
         let mut v = Value::deserialize(deserializer)?;
         normalize_request(&mut v);
-        let problems = collect_def_problems(&v);
+        let mut problems = collect_request_problems(&v);
+        problems.extend(collect_def_problems(&v));
         if !problems.is_empty() {
             return Err(D::Error::custom(format_problems(&problems)));
         }
@@ -105,6 +128,7 @@ impl<'de> Deserialize<'de> for StartRequest {
             .map(|r| StartRequest {
                 definition: r.definition,
                 input: r.input,
+                input_policy: r.input_policy,
                 idempotency_key: r.idempotency_key,
                 notify: r.notify,
                 caller_session_id: r.caller_session_id,
@@ -160,6 +184,53 @@ fn json_type(v: &Value) -> &'static str {
         Value::Array(_) => "an array",
         Value::Object(_) => "an object",
     }
+}
+
+fn collect_request_problems(v: &Value) -> Vec<String> {
+    let mut p = Vec::new();
+    let Some(req) = v.as_object() else {
+        return p;
+    };
+
+    if let Some(input_policy) = req.get("inputPolicy") {
+        match input_policy {
+            Value::Object(input_policy_obj) => {
+                for k in input_policy_obj.keys() {
+                    if !ALLOWED_INPUT_POLICY_KEYS.contains(&k.as_str()) {
+                        p.push(format!("inputPolicy: unknown field `{k}`"));
+                    }
+                }
+
+                if let Some(return_type) = input_policy_obj.get("returnType") {
+                    let valid = return_type
+                        .as_str()
+                        .map(|v| matches!(v, "memory" | "store"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push("inputPolicy.returnType must be one of: memory, store".to_string());
+                    }
+                }
+
+                if let Some(on_memory_fail) = input_policy_obj.get("onMemoryFail") {
+                    let valid = on_memory_fail
+                        .as_str()
+                        .map(|v| matches!(v, "store" | "error"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(
+                            "inputPolicy.onMemoryFail must be one of: store, error".to_string(),
+                        );
+                    }
+                }
+            }
+            other => p.push(format!(
+                "inputPolicy must be an object, not {}",
+                json_type(other)
+            )),
+        }
+    }
+
+    p
 }
 
 /// Collect EVERY structural problem in one pass so a caller fixes them all at
@@ -286,6 +357,134 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             p.push(format!("node `{id}`: missing `input`"));
         }
     }
+
+    if let Some(result) = n.get("result") {
+        match result {
+            Value::Object(result_obj) => {
+                for k in result_obj.keys() {
+                    if !ALLOWED_RESULT_KEYS.contains(&k.as_str()) {
+                        p.push(format!("node `{id}`.result: unknown field `{k}`"));
+                    }
+                }
+
+                if let Some(return_type) = result_obj.get("returnType") {
+                    let valid = return_type
+                        .as_str()
+                        .map(|v| matches!(v, "memory" | "store" | "stream"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.result.returnType must be one of: memory, store, stream"
+                        ));
+                    }
+                }
+
+                if let Some(stream_chunk_size) = result_obj.get("streamChunkSize") {
+                    if stream_chunk_size.as_u64().is_none() {
+                        p.push(format!(
+                            "node `{id}`.result.streamChunkSize must be a positive integer"
+                        ));
+                    }
+                }
+
+                if let Some(on_memory_fail) = result_obj.get("onMemoryFail") {
+                    let valid = on_memory_fail
+                        .as_str()
+                        .map(|v| matches!(v, "store" | "error"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.result.onMemoryFail must be one of: store, error"
+                        ));
+                    }
+                }
+            }
+            other => p.push(format!(
+                "node `{id}`.result must be an object, not {}",
+                json_type(other)
+            )),
+        }
+    }
+
+    if let Some(input_policy) = n.get("inputPolicy") {
+        match input_policy {
+            Value::Object(input_policy_obj) => {
+                for k in input_policy_obj.keys() {
+                    if !ALLOWED_INPUT_POLICY_KEYS.contains(&k.as_str()) {
+                        p.push(format!("node `{id}`.inputPolicy: unknown field `{k}`"));
+                    }
+                }
+
+                if let Some(return_type) = input_policy_obj.get("returnType") {
+                    let valid = return_type
+                        .as_str()
+                        .map(|v| matches!(v, "memory" | "store"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.inputPolicy.returnType must be one of: memory, store"
+                        ));
+                    }
+                }
+
+                if let Some(on_memory_fail) = input_policy_obj.get("onMemoryFail") {
+                    let valid = on_memory_fail
+                        .as_str()
+                        .map(|v| matches!(v, "store" | "error"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.inputPolicy.onMemoryFail must be one of: store, error"
+                        ));
+                    }
+                }
+            }
+            other => p.push(format!(
+                "node `{id}`.inputPolicy must be an object, not {}",
+                json_type(other)
+            )),
+        }
+    }
+
+    if let Some(fanout) = n.get("fanout") {
+        match fanout {
+            Value::Object(fanout_obj) => {
+                for k in fanout_obj.keys() {
+                    if !ALLOWED_FANOUT_KEYS.contains(&k.as_str()) {
+                        p.push(format!("node `{id}`.fanout: unknown field `{k}`"));
+                    }
+                }
+
+                if let Some(mode) = fanout_obj.get("mode") {
+                    let valid = mode
+                        .as_str()
+                        .map(|v| matches!(v, "parallel" | "sequential"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.fanout.mode must be one of: parallel, sequential"
+                        ));
+                    }
+                }
+
+                if let Some(item_return_type) = fanout_obj.get("itemReturnType") {
+                    let valid = item_return_type
+                        .as_str()
+                        .map(|v| matches!(v, "memory" | "store"))
+                        .unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.fanout.itemReturnType must be one of: memory, store"
+                        ));
+                    }
+                }
+            }
+            other => p.push(format!(
+                "node `{id}`.fanout must be an object, not {}",
+                json_type(other)
+            )),
+        }
+    }
 }
 
 fn format_problems(problems: &[String]) -> String {
@@ -306,6 +505,26 @@ fn format_problems(problems: &[String]) -> String {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct StartResponse {
     pub run_id: String,
+}
+
+struct RunReferenceSet {
+    def_ref: String,
+    input_ref: String,
+    vars_ref: String,
+    result_ref: String,
+    state_scope_id: String,
+    stream_scope_id: String,
+}
+
+fn new_run_reference_set() -> RunReferenceSet {
+    RunReferenceSet {
+        def_ref: new_ref_id("def"),
+        input_ref: new_ref_id("input"),
+        vars_ref: new_ref_id("vars"),
+        result_ref: new_ref_id("result"),
+        state_scope_id: new_scope_id("state"),
+        stream_scope_id: new_scope_id("stream"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +563,15 @@ pub(crate) fn prepare_definition_for_execution(def: &WorkflowDef) -> WorkflowDef
     let mut prepared = def.clone();
     add_read_dependencies(&mut prepared);
     prepared
+}
+
+fn workflow_input_uses_persistent_store(input_policy: Option<&NodeInputSpec>) -> bool {
+    let Some(policy) = input_policy else {
+        return false;
+    };
+
+    policy.return_type == NodeInputReturnType::Store
+        || matches!(policy.on_memory_fail, Some(NodeMemoryFailPolicy::Store))
 }
 
 /// Validate a `WorkflowDef` for structural correctness.
@@ -644,10 +872,14 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
     }
 
     let run_id = new_run_id();
+    let refs = new_run_reference_set();
     let _guard = deps.locks.guard(&run_id).await;
 
-    state::put_def(&deps.iii, &run_id, &req.definition).await?;
-    state::put_run_input(&deps.iii, &run_id, &req.input).await?;
+    state::put_def(&deps.iii, &refs.def_ref, &req.definition).await?;
+    state::put_run_input_memory(&run_id, &req.input)?;
+    if workflow_input_uses_persistent_store(req.input_policy.as_ref()) {
+        state::put_run_input(&deps.iii, &refs.input_ref, &req.input).await?;
+    }
 
     // Extract workflow name from metadata if present
     let workflow_name = req
@@ -691,20 +923,20 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         run_id: run_id.clone(),
         workflow_name,
         workflow_trace_id: Some(new_trace_id()),
-        state_scope_id: Some(run_id.clone()),
-        stream_scope_id: Some(run_id.clone()),
+        state_scope_id: Some(refs.state_scope_id),
+        stream_scope_id: Some(refs.stream_scope_id),
         step: 0,
         status: RunStatus::Running,
         abort: false,
-        def_ref: run_id.clone(),
-        input_ref: crate::ids::input_key(&run_id),
-        vars_ref: Some(crate::ids::vars_key(&run_id)),
+        def_ref: refs.def_ref,
+        input_ref: refs.input_ref,
+        vars_ref: Some(refs.vars_ref),
         state_keys_map: BTreeMap::new(),
         stream_ids: Vec::new(),
         queue_receipts: Vec::new(),
         nodes,
         fanout_src: BTreeMap::new(),
-        result_ref: None,
+        result_ref: Some(refs.result_ref),
         result_error: None,
         notify: req.notify,
         caller_session_id,
@@ -773,7 +1005,10 @@ mod tests {
             fanout: fanout_over.map(|over| FanoutSpec {
                 over: over.to_string(),
                 mode: None,
+                item_return_type: None,
             }),
+            result: None,
+            input_policy: None,
         }
     }
 
@@ -818,6 +1053,106 @@ mod tests {
         add_read_dependencies(&mut def);
         assert_eq!(def.nodes["read"].depends_on, vec!["plan".to_string()]);
         assert!(validate_def(&def).is_ok());
+    }
+
+    #[test]
+    fn workflow_input_uses_persistent_store_only_when_requested() {
+        assert!(!workflow_input_uses_persistent_store(None));
+
+        assert!(workflow_input_uses_persistent_store(Some(&NodeInputSpec {
+            return_type: NodeInputReturnType::Store,
+            on_memory_fail: None,
+        })));
+
+        assert!(workflow_input_uses_persistent_store(Some(&NodeInputSpec {
+            return_type: NodeInputReturnType::Memory,
+            on_memory_fail: Some(NodeMemoryFailPolicy::Store),
+        })));
+
+        assert!(!workflow_input_uses_persistent_store(Some(&NodeInputSpec {
+            return_type: NodeInputReturnType::Memory,
+            on_memory_fail: Some(NodeMemoryFailPolicy::Error),
+        })));
+    }
+
+    #[test]
+    fn start_request_parses_top_level_input_policy() {
+        let req: StartRequest = serde_json::from_value(json!({
+            "definition": well_formed_def(),
+            "inputPolicy": {
+                "returnType": "store",
+                "onMemoryFail": "store"
+            }
+        }))
+        .expect("StartRequest with top-level inputPolicy");
+
+        let policy = req.input_policy.expect("inputPolicy present");
+        assert_eq!(policy.return_type, NodeInputReturnType::Store);
+        assert_eq!(policy.on_memory_fail, Some(NodeMemoryFailPolicy::Store));
+    }
+
+    #[test]
+    fn collect_def_problems_accepts_fanout_item_return_type_store() {
+        let payload = json!({
+            "definition": {
+                "version": 1,
+                "nodes": {
+                    "plan": {
+                        "function": { "id": "plan-fn" },
+                        "input": { "from": "run_input" }
+                    },
+                    "read": {
+                        "function": { "id": "read-fn" },
+                        "input": { "from": "fanout_item" },
+                        "fanout": {
+                            "over": "node:plan.result.docs",
+                            "itemReturnType": "store"
+                        }
+                    }
+                },
+                "output": { "from": "node:read" }
+            }
+        });
+
+        let problems = collect_def_problems(&payload);
+        assert!(
+            problems
+                .iter()
+                .all(|p| !p.contains("fanout.itemReturnType")),
+            "fanout.itemReturnType=store should be accepted by shape validation"
+        );
+    }
+
+    #[test]
+    fn collect_def_problems_rejects_invalid_fanout_item_return_type() {
+        let payload = json!({
+            "definition": {
+                "version": 1,
+                "nodes": {
+                    "plan": {
+                        "function": { "id": "plan-fn" },
+                        "input": { "from": "run_input" }
+                    },
+                    "read": {
+                        "function": { "id": "read-fn" },
+                        "input": { "from": "fanout_item" },
+                        "fanout": {
+                            "over": "node:plan.result.docs",
+                            "itemReturnType": "disk"
+                        }
+                    }
+                },
+                "output": { "from": "node:read" }
+            }
+        });
+
+        let problems = collect_def_problems(&payload);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("fanout.itemReturnType must be one of: memory, store")),
+            "invalid fanout.itemReturnType must be rejected"
+        );
     }
 
     #[test]
@@ -1141,6 +1476,32 @@ mod tests {
             validate_def(&def).is_ok(),
             "function-based definitions should validate without any agent metadata"
         );
+    }
+
+    #[test]
+    fn run_reference_set_uses_distinct_non_run_id_values() {
+        let run_id = "r_fixed";
+        let refs = new_run_reference_set();
+
+        for value in [
+            refs.def_ref.as_str(),
+            refs.input_ref.as_str(),
+            refs.vars_ref.as_str(),
+            refs.result_ref.as_str(),
+            refs.state_scope_id.as_str(),
+            refs.stream_scope_id.as_str(),
+        ] {
+            assert_ne!(value, run_id);
+        }
+
+        let mut all = std::collections::BTreeSet::new();
+        all.insert(refs.def_ref);
+        all.insert(refs.input_ref);
+        all.insert(refs.vars_ref);
+        all.insert(refs.result_ref);
+        all.insert(refs.state_scope_id);
+        all.insert(refs.stream_scope_id);
+        assert_eq!(all.len(), 6, "all refs/scopes must be distinct");
     }
 
     #[test]

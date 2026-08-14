@@ -189,6 +189,82 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
             value: mode,
           })
         }
+
+        const itemReturnType = (fanout as any).itemReturnType
+        if (itemReturnType != null && itemReturnType !== 'memory' && itemReturnType !== 'store') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.fanout.itemReturnType`,
+            message: 'fanout.itemReturnType must be memory or store when provided',
+            value: itemReturnType,
+          })
+        }
+      }
+    }
+
+    const result = (node as any).result
+    if (result != null) {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.result`,
+          message: 'result must be an object when provided',
+          value: result,
+        })
+      } else {
+        const returnType = (result as any).returnType
+        if (returnType != null && returnType !== 'memory' && returnType !== 'store' && returnType !== 'stream') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.result.returnType`,
+            message: 'result.returnType must be memory, store, or stream when provided',
+            value: returnType,
+          })
+        }
+
+        const streamChunkSize = (result as any).streamChunkSize
+        if (streamChunkSize != null && (typeof streamChunkSize !== 'number' || Number.isNaN(streamChunkSize) || streamChunkSize <= 0)) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.result.streamChunkSize`,
+            message: 'result.streamChunkSize must be a positive number when provided',
+            value: streamChunkSize,
+          })
+        }
+
+        const onMemoryFail = (result as any).onMemoryFail
+        if (onMemoryFail != null && onMemoryFail !== 'store' && onMemoryFail !== 'error') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.result.onMemoryFail`,
+            message: 'result.onMemoryFail must be store or error when provided',
+            value: onMemoryFail,
+          })
+        }
+      }
+    }
+
+    const inputPolicy = (node as any).inputPolicy
+    if (inputPolicy != null) {
+      if (!inputPolicy || typeof inputPolicy !== 'object' || Array.isArray(inputPolicy)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.inputPolicy`,
+          message: 'inputPolicy must be an object when provided',
+          value: inputPolicy,
+        })
+      } else {
+        const returnType = (inputPolicy as any).returnType
+        if (returnType != null && returnType !== 'memory' && returnType !== 'store') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.inputPolicy.returnType`,
+            message: 'inputPolicy.returnType must be memory or store when provided',
+            value: returnType,
+          })
+        }
+
+        const onMemoryFail = (inputPolicy as any).onMemoryFail
+        if (onMemoryFail != null && onMemoryFail !== 'store' && onMemoryFail !== 'error') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.inputPolicy.onMemoryFail`,
+            message: 'inputPolicy.onMemoryFail must be store or error when provided',
+            value: onMemoryFail,
+          })
+        }
       }
     }
   }

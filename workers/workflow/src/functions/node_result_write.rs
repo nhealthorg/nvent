@@ -2,7 +2,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{error::WorkflowError, state};
+use crate::{
+    error::WorkflowError,
+    state,
+    types::{NodeMemoryFailPolicy, NodeResultReturnType},
+};
 
 use super::Deps;
 
@@ -15,15 +19,44 @@ pub struct NodeResultWriteRequest {
     pub result: Value,
 }
 
+fn should_persist_result(
+    return_type: NodeResultReturnType,
+    on_memory_fail: Option<NodeMemoryFailPolicy>,
+) -> bool {
+    matches!(return_type, NodeResultReturnType::Store | NodeResultReturnType::Stream)
+        || matches!(
+            (return_type, on_memory_fail),
+            (NodeResultReturnType::Memory, Some(NodeMemoryFailPolicy::Store))
+        )
+}
+
 pub async fn handle(deps: &Deps, req: NodeResultWriteRequest) -> Result<(), WorkflowError> {
     let _g = deps.locks.guard(&req.run_id).await;
 
     // Ignore stale late-writes for runs that were already swept/cancelled.
-    if state::get_run(&deps.iii, &req.run_id).await?.is_none() {
+    let Some(record) = state::get_run(&deps.iii, &req.run_id).await? else {
         return Ok(());
-    }
+    };
 
-    state::put_node_result(&deps.iii, &req.run_id, &req.node_uid, &req.result).await
+    let base_node_id = req.node_uid.split('#').next().unwrap_or(req.node_uid.as_str());
+    let result_policy = state::get_def(&deps.iii, &record.def_ref)
+        .await?
+        .and_then(|def| def.nodes.get(base_node_id).cloned())
+        .and_then(|node| node.result);
+
+    let return_type = result_policy
+        .as_ref()
+        .map(|result| result.return_type)
+        .unwrap_or(NodeResultReturnType::Memory);
+    let on_memory_fail = result_policy.as_ref().and_then(|result| result.on_memory_fail);
+
+    if should_persist_result(return_type, on_memory_fail) {
+        let _ = state::delete_node_result_memory(&req.run_id, &req.node_uid);
+        state::put_node_result(&deps.iii, &req.run_id, &req.node_uid, &req.result).await
+    } else {
+        state::put_node_result_memory(&req.run_id, &req.node_uid, &req.result)?;
+        state::delete_node_result_store(&deps.iii, &req.run_id, &req.node_uid).await
+    }
 }
 
 #[cfg(test)]
@@ -51,5 +84,16 @@ mod tests {
         }))
         .expect("decode with canonical node_uid");
         assert_eq!(req.node_uid, "step#2");
+    }
+
+    #[test]
+    fn should_persist_result_for_store_stream_and_memory_store_fallback() {
+        assert!(should_persist_result(NodeResultReturnType::Store, None));
+        assert!(should_persist_result(NodeResultReturnType::Stream, None));
+        assert!(should_persist_result(
+            NodeResultReturnType::Memory,
+            Some(NodeMemoryFailPolicy::Store)
+        ));
+        assert!(!should_persist_result(NodeResultReturnType::Memory, None));
     }
 }

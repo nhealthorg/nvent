@@ -92,6 +92,22 @@
           >
             {{ getLoopModeLabel(item.step.loopMode) }}
           </UBadge>
+          <UBadge
+            v-if="!item.step.showAllIndicator && !item.step.isLoopGroup"
+            size="xs"
+            :color="getResultModeColor(item.step.resultModeEffective)"
+            variant="outline"
+          >
+            {{ getResultModeLabel(item.step.resultModeEffective) }}
+          </UBadge>
+          <UBadge
+            v-if="!item.step.showAllIndicator && !item.step.isLoopGroup"
+            size="xs"
+            :color="getResultStateColor(item.step)"
+            variant="soft"
+          >
+            {{ getResultStateLabel(item.step) }}
+          </UBadge>
           <!-- Await Badge with Type Icon -->
           <UBadge
             v-if="isAwaitStepKey(item.step.key)"
@@ -126,6 +142,25 @@
               {{ item.step.loopPipeline }}
             </div>
 
+            <div class="mt-2 flex flex-wrap items-center gap-1.5">
+              <UBadge
+                size="xs"
+                color="info"
+                variant="outline"
+                :title="'Controls fanout item INPUT transport for this loop group.'"
+              >
+                item input {{ item.step.loopItemInputMode || 'memory' }}
+              </UBadge>
+              <UBadge
+                size="xs"
+                :color="item.step.loopItemResultMode === 'store' ? 'success' : item.step.loopItemResultMode === 'mixed' ? 'warning' : 'neutral'"
+                variant="outline"
+                :title="'Controls per-item RESULT storage for loop calls. itemReturnType affects result policy, not fanout input policy.'"
+              >
+                item result {{ item.step.loopItemResultMode || 'memory' }}
+              </UBadge>
+            </div>
+
             <div
               v-if="Number.isFinite(Number(item.step.loopItemsTotal)) && Number(item.step.loopItemsTotal) > 0"
               class="mt-2 grid grid-cols-2 gap-1.5 text-[10px]"
@@ -150,6 +185,12 @@
               class="mt-1 text-[10px] text-cyan-800/85 dark:text-cyan-200/85"
             >
               running {{ item.step.loopItemsRunning || 0 }} • pending {{ item.step.loopItemsPending || 0 }} • failed {{ item.step.loopItemsFailed || 0 }}
+            </div>
+            <div
+              v-if="Number(item.step.loopResultStoreCount || 0) > 0 || Number(item.step.loopResultMemoryCount || 0) > 0 || Number(item.step.loopResultPrunedCount || 0) > 0"
+              class="mt-1 text-[10px] text-cyan-900/90 dark:text-cyan-100/90"
+            >
+              results store {{ item.step.loopResultStoreCount || 0 }} • memory {{ item.step.loopResultMemoryCount || 0 }} • pruned {{ item.step.loopResultPrunedCount || 0 }}
             </div>
 
             <div
@@ -530,6 +571,12 @@
               @click.stop="emit('inspect-step-result', item.value)"
             />
           </div>
+          <div
+            v-else-if="item.step.resultState === 'pruned'"
+            class="mt-2 text-[11px] text-amber-700 dark:text-amber-300"
+          >
+            Memory result was pruned after downstream consumption.
+          </div>
         </div>
       </div>
     </component>
@@ -555,6 +602,10 @@ import {
   getLoopModeColor,
   getLoopModeLabel,
   getMethodBadgeColor,
+  getResultModeColor,
+  getResultModeLabel,
+  getResultStateColor,
+  getResultStateLabel,
   getStepDisplayName,
   getStepStatusBg,
   getStepStatusIcon,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use iii_sdk::TriggerAction;
 use serde_json::{json, Map, Value};
@@ -10,8 +10,10 @@ use crate::{
     observability::ObservabilityAdapter,
     state,
     types::{
-        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeState, QueueReceiptRecord, RunStatus,
-        WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
+        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
+        NodeInputReturnType, NodeResultReturnType, NodeState, QueueReceiptRecord, RunStatus,
+        WorkflowDef,
+        WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
         WorkflowVarVersionRecord,
     },
 };
@@ -27,6 +29,17 @@ pub enum TickDecision {
     Finalize(RunStatus),
     Fire(Vec<String>),
     Park,
+}
+
+fn has_running_nodes(record: &WorkflowRunRecord) -> bool {
+    record
+        .nodes
+        .values()
+        .any(|cp| matches!(cp.state, NodeState::Running))
+}
+
+fn parked_run_is_stuck(record: &WorkflowRunRecord) -> bool {
+    !has_running_nodes(record)
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +76,284 @@ fn dispatch_queue_for(function: &FunctionSpec) -> String {
         .to_string()
 }
 
+fn is_terminal_node_state(state: NodeState) -> bool {
+    matches!(state, NodeState::Done | NodeState::Failed | NodeState::Cancelled)
+}
+
+fn node_group_terminal(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -> bool {
+    let is_fanout = def
+        .nodes
+        .get(node_id)
+        .and_then(|n| n.fanout.as_ref())
+        .is_some();
+
+    if !is_fanout {
+        return record
+            .nodes
+            .get(node_id)
+            .map(|cp| is_terminal_node_state(cp.state))
+            .unwrap_or(false);
+    }
+
+    if matches!(
+        record.nodes.get(node_id).map(|c| c.state),
+        Some(NodeState::Failed) | Some(NodeState::Cancelled)
+    ) {
+        return true;
+    }
+
+    let Some(items) = record.fanout_src.get(node_id) else {
+        return false;
+    };
+
+    for i in 0..*items {
+        let uid = ids::node_uid(node_id, Some(i as u32));
+        match record.nodes.get(uid.as_str()).map(|cp| cp.state) {
+            Some(state) if is_terminal_node_state(state) => {}
+            _ => return false,
+        }
+    }
+
+    true
+}
+
+fn node_result_mode(def: &WorkflowDef, node_uid: &str) -> NodeResultReturnType {
+    let base_id = node_uid.split('#').next().unwrap_or(node_uid);
+    def.nodes
+        .get(base_id)
+        .and_then(|node| node.result.as_ref())
+        .map(|result| result.return_type)
+        .unwrap_or(NodeResultReturnType::Memory)
+}
+
+fn node_on_memory_fail(def: &WorkflowDef, node_uid: &str) -> Option<NodeMemoryFailPolicy> {
+    let base_id = node_uid.split('#').next().unwrap_or(node_uid);
+    def.nodes
+        .get(base_id)
+        .and_then(|node| node.result.as_ref())
+        .and_then(|result| result.on_memory_fail)
+}
+
+fn node_input_mode(def: &WorkflowDef, node_uid: &str) -> NodeInputReturnType {
+    let base_id = node_uid.split('#').next().unwrap_or(node_uid);
+    def.nodes
+        .get(base_id)
+        .and_then(|node| node.input_policy.as_ref())
+        .map(|input| input.return_type)
+        .unwrap_or(NodeInputReturnType::Memory)
+}
+
+fn node_input_on_memory_fail(def: &WorkflowDef, node_uid: &str) -> Option<NodeMemoryFailPolicy> {
+    let base_id = node_uid.split('#').next().unwrap_or(node_uid);
+    def.nodes
+        .get(base_id)
+        .and_then(|node| node.input_policy.as_ref())
+        .and_then(|input| input.on_memory_fail)
+}
+
+    fn fanout_item_mode(def: &WorkflowDef, node_id: &str) -> NodeInputReturnType {
+        def.nodes
+        .get(node_id)
+        .and_then(|node| node.fanout.as_ref())
+        .and_then(|fanout| fanout.item_return_type)
+        .unwrap_or(NodeInputReturnType::Memory)
+    }
+
+async fn load_run_input_for_node(
+    deps: &Deps,
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    node_uid: &str,
+) -> Result<Value, WorkflowError> {
+    let mode = node_input_mode(def, node_uid);
+    let on_memory_fail = node_input_on_memory_fail(def, node_uid);
+
+    match mode {
+        NodeInputReturnType::Store => state::get_run_input_store(&deps.iii, &record.input_ref)
+            .await?
+            .ok_or_else(|| {
+                WorkflowError::State(format!(
+                    "run input missing in store for {} (node {})",
+                    record.run_id, node_uid
+                ))
+            }),
+        NodeInputReturnType::Memory => {
+            if let Some(input) = state::get_run_input_memory(&record.run_id)? {
+                return Ok(input);
+            }
+
+            if matches!(on_memory_fail, Some(NodeMemoryFailPolicy::Store)) {
+                return state::get_run_input_store(&deps.iii, &record.input_ref)
+                    .await?
+                    .ok_or_else(|| {
+                        WorkflowError::State(format!(
+                            "run input missing (memory+store fallback) for {} (node {})",
+                            record.run_id, node_uid
+                        ))
+                    });
+            }
+
+            Err(WorkflowError::State(format!(
+                "run input missing in memory for {} (node {})",
+                record.run_id, node_uid
+            )))
+        }
+    }
+}
+
+fn collect_prunable_memory_result_uids(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+) -> Vec<String> {
+    let output_base_id = def
+        .output
+        .from
+        .strip_prefix("node:")
+        .unwrap_or(&def.output.from);
+
+    let mut required_by_active: HashSet<String> = HashSet::new();
+    for node_id in def.nodes.keys() {
+        if node_group_terminal(def, record, node_id) {
+            continue;
+        }
+        if let Some(node) = def.nodes.get(node_id) {
+            for dep in &node.depends_on {
+                required_by_active.insert(dep.clone());
+            }
+        }
+    }
+
+    let mut to_prune: Vec<String> = Vec::new();
+    for (uid, cp) in &record.nodes {
+        if cp.state != NodeState::Done || cp.result_ref.is_none() {
+            continue;
+        }
+
+        if node_result_mode(def, uid) == NodeResultReturnType::Store {
+            continue;
+        }
+
+        // `onMemoryFail: store` keeps the payload durable instead of pruning.
+        // This is the robust fallback mode for memory-heavy/stuck workflows.
+        if matches!(node_on_memory_fail(def, uid), Some(NodeMemoryFailPolicy::Store)) {
+            continue;
+        }
+
+        let base_id = uid.split('#').next().unwrap_or(uid);
+        if base_id == output_base_id {
+            continue;
+        }
+        if required_by_active.contains(base_id) {
+            continue;
+        }
+
+        to_prune.push(uid.clone());
+    }
+
+    to_prune
+}
+
+fn detach_prunable_memory_result_refs(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+) -> Vec<String> {
+    let to_prune = collect_prunable_memory_result_uids(def, record);
+
+    for uid in &to_prune {
+        if let Some(cp) = record.nodes.get_mut(uid.as_str()) {
+            cp.result_ref = None;
+        }
+    }
+
+    to_prune
+}
+
+fn input_source_requires_run_input(source: &str) -> bool {
+    if source.starts_with("node:") {
+        return false;
+    }
+
+    source != "fanout_item"
+}
+
+fn run_input_required_by_active_nodes(def: &WorkflowDef, record: &WorkflowRunRecord) -> bool {
+    for node_id in def.nodes.keys() {
+        if node_group_terminal(def, record, node_id) {
+            continue;
+        }
+
+        let Some(node) = def.nodes.get(node_id) else {
+            continue;
+        };
+
+        if node.input.value.is_some() {
+            continue;
+        }
+
+        if node
+            .input
+            .from
+            .sources()
+            .iter()
+            .any(|src| input_source_requires_run_input(src))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn node_requires_run_input(node: &NodeDef) -> bool {
+    // Structured payload templates (`input.value`) are fully resolved from
+    // embedded literals / node refs / fanout refs at dispatch time.
+    if node.input.value.is_some() {
+        return false;
+    }
+
+    node.input
+        .from
+        .sources()
+        .iter()
+        .any(|src| input_source_requires_run_input(src))
+}
+
+fn releasable_fanout_memory_nodes(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<String> {
+    let mut releasable = Vec::new();
+
+    for node_id in def.nodes.keys() {
+        if fanout_item_mode(def, node_id) != NodeInputReturnType::Memory {
+            continue;
+        }
+
+        if !node_group_terminal(def, record, node_id) {
+            continue;
+        }
+
+        releasable.push(node_id.clone());
+    }
+
+    releasable
+}
+
+pub(crate) async fn release_consumed_memory_artifacts(
+    _deps: &Deps,
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+) -> Result<Vec<String>, WorkflowError> {
+    let detached_result_uids = detach_prunable_memory_result_refs(def, record);
+
+    if !run_input_required_by_active_nodes(def, record) {
+        let _ = state::delete_run_input_memory(&record.run_id);
+    }
+
+    for node_id in releasable_fanout_memory_nodes(def, record) {
+        let _ = state::delete_fanout_items_memory(&record.run_id, &node_id);
+    }
+
+    Ok(detached_result_uids)
+}
+
 // ---------------------------------------------------------------------------
 // fire_node
 // ---------------------------------------------------------------------------
@@ -74,32 +365,16 @@ fn resolve_node_input(
     node_uid: &str,
     base_id: &str,
     node: &NodeDef,
+    fanout_item: Option<&Value>,
     results: &BTreeMap<String, Value>,
 ) -> Value {
-    let fanout_item = if node_uid.contains('#') {
-        let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
-        let i: usize = idx_str.parse().unwrap_or(0);
-        record
-            .fanout_src
-            .get(base_id)
-            .and_then(|items| items.get(i))
-            .cloned()
-    } else {
-        None
-    };
-
     if node_uid.contains('#') {
         // Per-item binding: parse the index i after '#'
         let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
         let i: usize = idx_str.parse().unwrap_or(0);
 
         if node.input.from.is_literal("fanout_item") {
-            return record
-                .fanout_src
-                .get(base_id)
-                .and_then(|items| items.get(i))
-                .cloned()
-                .unwrap_or(Value::Null);
+            return fanout_item.cloned().unwrap_or(Value::Null);
         }
 
         // Loop/fanout chaining: for fanout child node `curr#i` reading from
@@ -129,7 +404,7 @@ fn resolve_node_input(
             base_id,
             &node.input,
             &base,
-            fanout_item.as_ref(),
+            fanout_item,
             results,
         );
     }
@@ -142,7 +417,7 @@ fn resolve_node_input(
         base_id,
         &node.input,
         &base,
-        fanout_item.as_ref(),
+        fanout_item,
         results,
     )
 }
@@ -201,7 +476,7 @@ fn resolve_dynamic_payload_value(
                     let dep = ref_source.strip_prefix("node:").unwrap_or(ref_source);
                     let dep_value = if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some()
                     {
-                        let n = record.fanout_src.get(dep).map(|v| v.len()).unwrap_or(0);
+                        let n = record.fanout_src.get(dep).copied().unwrap_or(0);
                         let arr = (0..n)
                             .map(|i| {
                                 let uid = format!("{}#{}", dep, i);
@@ -437,7 +712,11 @@ async fn execute_internal_var_set(
     let next_value = input_val.get("value").cloned().unwrap_or(Value::Null);
 
     let now = deps.now_ms();
-    let mut vars = state::get_run_vars(&deps.iii, &record.run_id).await?;
+    let vars_ref = record
+        .vars_ref
+        .as_deref()
+        .ok_or_else(|| WorkflowError::State("vars_ref missing".to_string()))?;
+    let mut vars = state::get_run_vars(&deps.iii, vars_ref).await?;
 
     let prior = vars.get(&key).cloned();
     let prev_value = prior
@@ -474,7 +753,7 @@ async fn execute_internal_var_set(
             versions,
         },
     );
-    state::put_run_vars(&deps.iii, &record.run_id, &vars).await?;
+    state::put_run_vars(&deps.iii, vars_ref, &vars).await?;
 
     state::put_node_result(&deps.iii, &record.run_id, node_uid, &rebuilt).await?;
 
@@ -484,7 +763,7 @@ async fn execute_internal_var_set(
             state: NodeState::Done,
             session_id: None,
             turn_id: None,
-            result_ref: Some(crate::ids::node_result_key(&record.run_id, node_uid)),
+            result_ref: Some(crate::ids::new_ref_id("node_result")),
             result_error: None,
             pending_at: Some(now),
             pending_timeout_ms: None,
@@ -536,10 +815,6 @@ pub(crate) async fn fire_node(
     node_uid: &str,
     results: &BTreeMap<String, Value>,
 ) -> Result<(), WorkflowError> {
-    let run_input = state::get_run_input(&deps.iii, &record.run_id)
-        .await?
-        .ok_or_else(|| WorkflowError::State(format!("run input missing for {}", record.run_id)))?;
-
     // Abort guard: covers both the tick Fire branch and the sweep refire path.
     // `decide` already returns Finalize(Cancelled) first when abort=true (so the
     // Fire branch in tick::handle is never reached for an aborting run), but the
@@ -556,16 +831,90 @@ pub(crate) async fn fire_node(
         .get(base_id)
         .ok_or_else(|| WorkflowError::State(format!("node '{}' not in def", base_id)))?;
 
-    // Read attempt and prior_timeout BEFORE the input-resolution borrows.
     let attempt = record.nodes.get(node_uid).map(|c| c.retries).unwrap_or(0);
+
+    let run_input = match if node_requires_run_input(node) {
+        load_run_input_for_node(deps, def, record, node_uid).await
+    } else {
+        Ok(Value::Null)
+    } {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                run_id = %record.run_id,
+                node_uid = %node_uid,
+                error = %e,
+                "node input load failed, marking node as failed"
+            );
+
+            let now = deps.now_ms();
+            if let Some(cp) = record.nodes.get_mut(node_uid) {
+                cp.state = NodeState::Failed;
+                cp.result_ref = None;
+                cp.result_error = Some(format!("node input load failed: {e}"));
+                cp.completed_at = Some(now);
+                let dur = cp
+                    .pending_at
+                    .map(|p| (now - p).max(0) as f64)
+                    .unwrap_or(0.0);
+                crate::telemetry::record_node_terminal(false, dur);
+            } else {
+                record.nodes.insert(
+                    node_uid.to_string(),
+                    NodeCheckpoint {
+                        state: NodeState::Failed,
+                        session_id: None,
+                        turn_id: None,
+                        result_ref: None,
+                        result_error: Some(format!("node input load failed: {e}")),
+                        pending_at: Some(now),
+                        pending_timeout_ms: None,
+                        retries: attempt,
+                        completed_at: Some(now),
+                        worker_name: None,
+                    },
+                );
+                crate::telemetry::record_node_terminal(false, 0.0);
+            }
+
+            return Ok(());
+        }
+    };
+
+    // Read attempt and prior_timeout BEFORE the input-resolution borrows.
     let prior_timeout = record
         .nodes
         .get(node_uid)
         .and_then(|c| c.pending_timeout_ms);
 
+    let fanout_item = if node_uid.contains('#') {
+        let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
+        let idx: usize = idx_str.parse().unwrap_or(0);
+        match fanout_item_mode(def, base_id) {
+            NodeInputReturnType::Store => {
+                state::get_fanout_item(&deps.iii, &record.run_id, base_id, idx).await?
+            }
+            NodeInputReturnType::Memory => {
+                state::get_fanout_items_memory(&record.run_id, base_id)?
+                    .and_then(|items| items.get(idx).cloned())
+            }
+        }
+    } else {
+        None
+    };
+
     // Resolve the input value. Read everything from `node`/`record` into owned values
     // BEFORE the .await so we don't hold a borrow across the await point.
-    let input_val = resolve_node_input(def, record, &run_input, node_uid, base_id, node, results);
+    let input_val = resolve_node_input(
+        def,
+        record,
+        &run_input,
+        node_uid,
+        base_id,
+        node,
+        fanout_item.as_ref(),
+        results,
+    );
 
     if node.function.id == "workflow::internal-var-set" {
         execute_internal_var_set(deps, record, node_uid, &input_val).await?;
@@ -664,7 +1013,8 @@ pub(crate) async fn fire_node(
         "_workflow": {
             "run_id": record.run_id,
             "node_uid": node_uid,
-            "trace_id": record.workflow_trace_id
+            "trace_id": record.workflow_trace_id,
+            "result_policy": node.result
         },
         "input": input_val
     });
@@ -890,13 +1240,21 @@ async fn finalize(
             results.get(out_node).cloned().unwrap_or(Value::Null)
         };
 
-        state::put_run_result(&deps.iii, &record.run_id, &out_val).await?;
-        record.result_ref = Some(crate::ids::run_result_key(&record.run_id));
+        let result_ref = record
+            .result_ref
+            .as_deref()
+            .ok_or_else(|| WorkflowError::State("result_ref missing".to_string()))?;
+        state::put_run_result(&deps.iii, result_ref, &out_val).await?;
     } else if status == RunStatus::Failed {
         // Surface WHY the run failed. Without this, `notify` delivers
         // result_error: null and workflow::status shows a bare "failed" — the
         // caller can't tell a bad model id from a crashed node and gives up.
-        record.result_error = summarize_failure(&record.nodes);
+        let summarized = summarize_failure(&record.nodes);
+        if summarized.is_some() {
+            record.result_error = summarized;
+        } else if record.result_error.is_none() {
+            record.result_error = Some("workflow failed without explicit node error".to_string());
+        }
     }
 
     // Mark any sibling nodes still Running as Cancelled in the run record.
@@ -913,7 +1271,10 @@ async fn finalize(
     crate::events::emit_notify(deps, rec).await;
 
     let hook_result = if status == RunStatus::Completed {
-        state::get_run_result(&deps.iii, &record.run_id).await?
+        match record.result_ref.as_deref() {
+            Some(result_ref) => state::get_run_result(&deps.iii, result_ref).await?,
+            None => None,
+        }
     } else {
         None
     };
@@ -980,7 +1341,7 @@ pub async fn handle(
     record.step = req.step + 1;
 
     // 4. Load the workflow definition.
-    let def = state::get_def(&deps.iii, &req.run_id)
+    let def = state::get_def(&deps.iii, &record.def_ref)
         .await?
         .map(|d| super::start::prepare_definition_for_execution(&d))
         .ok_or_else(|| WorkflowError::State("def missing".into()))?;
@@ -993,7 +1354,43 @@ pub async fn handle(
     let results = state::load_done_results(&deps.iii, &mut record).await?;
 
     // 7. Expand any ready fanouts.
-    dag::expand_ready_fanouts(&def, &mut record, &results);
+    let expanded_fanouts = dag::expand_ready_fanouts(&def, &mut record, &results);
+    for node_id in expanded_fanouts {
+        let node_failed = matches!(
+            record.nodes.get(&node_id).map(|cp| cp.state),
+            Some(NodeState::Failed) | Some(NodeState::Cancelled)
+        );
+        if node_failed {
+            let _ = state::delete_fanout_items_memory(&record.run_id, &node_id);
+            state::delete_fanout_items(&deps.iii, &record.run_id, &node_id).await?;
+            continue;
+        }
+
+        let Some(node_def) = def.nodes.get(&node_id) else {
+            continue;
+        };
+        let Some(fanout) = node_def.fanout.as_ref() else {
+            continue;
+        };
+
+        if let Ok(items) = dag::resolve_over_path(&fanout.over, &results) {
+            match fanout.item_return_type.unwrap_or(NodeInputReturnType::Memory) {
+                NodeInputReturnType::Store => {
+                    let _ = state::delete_fanout_items_memory(&record.run_id, &node_id);
+                    state::put_fanout_items(&deps.iii, &record.run_id, &node_id, &items).await?;
+                }
+                NodeInputReturnType::Memory => {
+                    state::put_fanout_items_memory(&record.run_id, &node_id, &items)?;
+                    state::delete_fanout_items(&deps.iii, &record.run_id, &node_id).await?;
+                }
+            }
+        }
+    }
+
+    // 7b. Enforce liveness-based memory lifecycle cleanup.
+    // Important ordering: detach result refs now, but only delete payload rows
+    // after the updated run record is persisted to avoid ref/payload skew.
+    let detached_result_uids = release_consumed_memory_artifacts(deps, &def, &mut record).await?;
 
     // 8. Decide and act.
     let decision = decide(&def, &record);
@@ -1012,6 +1409,22 @@ pub async fn handle(
             );
             finalize(deps, &def, &mut record, status, &results).await?;
             state::put_run(&deps.iii, &record).await?;
+
+            for uid in &detached_result_uids {
+                if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        node_uid = %uid,
+                        error = %e,
+                        "failed to delete detached node result payload"
+                    );
+                }
+            }
+
+            // Terminal runs do not need in-process per-run payload caches.
+            let _ = state::delete_run_input_memory(&record.run_id);
+            let _ = state::delete_all_fanout_items_memory(&record.run_id);
+            let _ = state::delete_all_node_results_memory(&record.run_id);
             Ok(super::TickResponse { skipped: false })
         }
         TickDecision::Fire(uids) => {
@@ -1026,9 +1439,49 @@ pub async fn handle(
             record.status = RunStatus::AwaitingNodes;
             record.updated_at = deps.now_ms();
             state::put_run(&deps.iii, &record).await?;
+
+            for uid in &detached_result_uids {
+                if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        node_uid = %uid,
+                        error = %e,
+                        "failed to delete detached node result payload"
+                    );
+                }
+            }
             Ok(super::TickResponse { skipped: false })
         }
         TickDecision::Park => {
+            if parked_run_is_stuck(&record) {
+                tracing::warn!(
+                    run_id = %req.run_id,
+                    "run is parked without running nodes; marking as failed to avoid hang"
+                );
+                record.result_error = Some(
+                    "workflow stalled: no ready nodes and no running nodes (deadlock/stuck run)"
+                        .to_string(),
+                );
+                finalize(deps, &def, &mut record, RunStatus::Failed, &results).await?;
+                state::put_run(&deps.iii, &record).await?;
+
+                for uid in &detached_result_uids {
+                    if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
+                        tracing::warn!(
+                            run_id = %record.run_id,
+                            node_uid = %uid,
+                            error = %e,
+                            "failed to delete detached node result payload"
+                        );
+                    }
+                }
+
+                let _ = state::delete_run_input_memory(&record.run_id);
+                let _ = state::delete_all_fanout_items_memory(&record.run_id);
+                let _ = state::delete_all_node_results_memory(&record.run_id);
+                return Ok(super::TickResponse { skipped: false });
+            }
+
             tracing::debug!(
                 run_id = %req.run_id,
                 "parking - no ready nodes"
@@ -1036,6 +1489,17 @@ pub async fn handle(
             record.status = RunStatus::AwaitingNodes;
             record.updated_at = deps.now_ms();
             state::put_run(&deps.iii, &record).await?;
+
+            for uid in &detached_result_uids {
+                if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        node_uid = %uid,
+                        error = %e,
+                        "failed to delete detached node result payload"
+                    );
+                }
+            }
             Ok(super::TickResponse { skipped: false })
         }
     }
@@ -1049,8 +1513,9 @@ pub async fn handle(
 mod tests {
     use super::*;
     use crate::types::{
-        FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef,
-        WorkflowDef, WorkflowRunRecord,
+        FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
+        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, WorkflowDef,
+        WorkflowRunRecord,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -1080,6 +1545,8 @@ mod tests {
                 },
                 depends_on: vec![],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
 
@@ -1103,7 +1570,10 @@ mod tests {
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
                     mode: None,
+                    item_return_type: None,
                 }),
+                result: None,
+                input_policy: None,
             },
         );
 
@@ -1125,6 +1595,8 @@ mod tests {
                 },
                 depends_on: vec!["read".to_string()],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
 
@@ -1181,6 +1653,321 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prune_selection_keeps_default_memory_result_for_output_node_until_finalize() {
+        // Single-node workflow: output node result must stay available for finalize.
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "plan".to_string(),
+            NodeDef {
+                label: None,
+                function: FunctionSpec {
+                    id: "plan_function".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                },
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+                result: None, // default = memory
+                input_policy: None,
+            },
+        );
+
+        let def = WorkflowDef {
+            version: 1,
+            nodes,
+            output: OutputRef {
+                from: "node:plan".to_string(),
+            },
+            default_functions: None,
+            metadata: None,
+        };
+
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+
+        let to_prune = collect_prunable_memory_result_uids(&def, &record);
+        assert!(
+            to_prune.is_empty(),
+            "output node memory result must not be pruned before finalize"
+        );
+    }
+
+    #[test]
+    fn run_input_liveness_depends_on_active_source_kinds() {
+        let mut def = three_node_def();
+        let mut record = fresh_record();
+
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+
+        assert!(
+            !run_input_required_by_active_nodes(&def, &record),
+            "active nodes currently read fanout_item/node refs only, so run_input is releasable"
+        );
+
+        if let Some(read) = def.nodes.get_mut("read") {
+            read.input = InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            };
+        }
+
+        assert!(
+            run_input_required_by_active_nodes(&def, &record),
+            "an active node reading run_input must keep run_input in memory"
+        );
+
+        if let Some(read) = def.nodes.get_mut("read") {
+            read.input = InputSpec {
+                from: "node:plan".into(),
+                template: None,
+                value: None,
+            };
+        }
+
+        assert!(
+            !run_input_required_by_active_nodes(&def, &record),
+            "when all active nodes read only node:* refs, run input can be released"
+        );
+    }
+
+    #[test]
+    fn run_input_liveness_ignores_value_driven_nodes() {
+        let mut def = three_node_def();
+        let mut record = fresh_record();
+
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+
+        if let Some(read) = def.nodes.get_mut("read") {
+            read.input = InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: Some(json!({ "text": "literal" })),
+            };
+        }
+
+        assert!(
+            !run_input_required_by_active_nodes(&def, &record),
+            "value-driven nodes should not pin run_input memory"
+        );
+    }
+
+    #[test]
+    fn releasable_fanout_memory_nodes_only_after_group_terminal() {
+        let def = three_node_def();
+        let mut record = fresh_record();
+        record.fanout_src.insert("read".to_string(), 2);
+
+        record.nodes.insert(
+            "read#0".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/read#0".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+        record.nodes.insert(
+            "read#1".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Running,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                pending_at: Some(1),
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+
+        assert!(
+            releasable_fanout_memory_nodes(&def, &record).is_empty(),
+            "fanout items must not be released while any item in group is active"
+        );
+
+        if let Some(cp) = record.nodes.get_mut("read#1") {
+            cp.state = NodeState::Done;
+            cp.completed_at = Some(2);
+            cp.result_ref = Some("run_test/read#1".to_string());
+        }
+
+        assert_eq!(
+            releasable_fanout_memory_nodes(&def, &record),
+            vec!["read".to_string()],
+            "fanout items become releasable once the full group is terminal"
+        );
+    }
+
+    #[test]
+    fn prune_selection_keeps_store_mode_results() {
+        let mut def = three_node_def();
+        if let Some(plan) = def.nodes.get_mut("plan") {
+            plan.result = Some(NodeResultSpec {
+                return_type: NodeResultReturnType::Store,
+                stream_chunk_size: None,
+                on_memory_fail: None,
+            });
+        }
+
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+
+        let to_prune = collect_prunable_memory_result_uids(&def, &record);
+        assert!(to_prune.is_empty(), "store results must stay durable");
+    }
+
+    #[test]
+    fn prune_selection_keeps_memory_with_store_fallback() {
+        let mut def = three_node_def();
+        if let Some(plan) = def.nodes.get_mut("plan") {
+            plan.result = Some(NodeResultSpec {
+                return_type: NodeResultReturnType::Memory,
+                stream_chunk_size: None,
+                on_memory_fail: Some(NodeMemoryFailPolicy::Store),
+            });
+        }
+
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+
+        let to_prune = collect_prunable_memory_result_uids(&def, &record);
+        assert!(
+            to_prune.is_empty(),
+            "memory+onMemoryFail=store must be treated as durable"
+        );
+    }
+
+    #[test]
+    fn prune_selection_keeps_results_required_by_active_nodes() {
+        let def = three_node_def();
+
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/plan".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+        record.nodes.insert(
+            "read#0".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Running,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                pending_at: Some(1),
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+        record.fanout_src.insert("read".to_string(), 1);
+
+        let to_prune = collect_prunable_memory_result_uids(&def, &record);
+        assert!(
+            to_prune.is_empty(),
+            "must not prune when downstream nodes still depend on the result"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // RED → GREEN tests for `decide`
     // -----------------------------------------------------------------------
@@ -1224,7 +2011,7 @@ mod tests {
         let mut record = fresh_record();
         record.nodes.insert("plan".into(), done_cp());
         // Expand read fanout with 1 item.
-        record.fanout_src.insert("read".into(), vec![json!("doc1")]);
+        record.fanout_src.insert("read".into(), 1);
         record.nodes.insert("read#0".into(), done_cp());
         record.nodes.insert("synthesize".into(), done_cp());
 
@@ -1409,6 +2196,34 @@ mod tests {
     }
 
     #[test]
+    fn parked_run_is_stuck_without_running_nodes() {
+        let record = fresh_record();
+        assert!(parked_run_is_stuck(&record));
+    }
+
+    #[test]
+    fn parked_run_is_not_stuck_with_running_nodes() {
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "plan".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Running,
+                session_id: Some("wf_run_test_plan".to_string()),
+                turn_id: Some("turn_plan".to_string()),
+                result_ref: None,
+                result_error: None,
+                pending_at: Some(1),
+                pending_timeout_ms: Some(10_000),
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+
+        assert!(!parked_run_is_stuck(&record));
+    }
+
+    #[test]
     fn resolve_node_input_fanout_chain_uses_matching_dep_item() {
         let mut def = three_node_def();
 
@@ -1418,6 +2233,7 @@ mod tests {
             read.fanout = Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
                 mode: None,
+                item_return_type: None,
             });
             read.input = InputSpec {
                 from: "fanout_item".into(),
@@ -1429,6 +2245,7 @@ mod tests {
             synth.fanout = Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
                 mode: None,
+                item_return_type: None,
             });
             synth.input = InputSpec {
                 from: "node:read".into(),
@@ -1440,7 +2257,7 @@ mod tests {
         let mut record = fresh_record();
         record
             .fanout_src
-            .insert("synthesize".to_string(), vec![json!("a"), json!("b")]);
+            .insert("synthesize".to_string(), 2);
 
         let mut results: BTreeMap<String, Value> = BTreeMap::new();
         results.insert("read#0".to_string(), json!({ "summary": "A" }));
@@ -1457,6 +2274,7 @@ mod tests {
             "synthesize#1",
             "synthesize",
             node,
+            Some(&json!("b")),
             &results,
         );
 
@@ -1469,7 +2287,7 @@ mod tests {
         let mut record = fresh_record();
         record
             .fanout_src
-            .insert("read".to_string(), vec![json!("x")]);
+            .insert("read".to_string(), 1);
 
         let mut results: BTreeMap<String, Value> = BTreeMap::new();
         results.insert("plan".to_string(), json!({ "docs": ["x"] }));
@@ -1488,10 +2306,29 @@ mod tests {
             "synthesize#0",
             "synthesize",
             node,
+            Some(&json!("x")),
             &results,
         );
 
         assert_eq!(val, json!([{ "summary": "X" }]));
+    }
+
+    #[test]
+    fn fanout_item_mode_defaults_to_memory() {
+        let def = three_node_def();
+        assert_eq!(fanout_item_mode(&def, "read"), NodeInputReturnType::Memory);
+    }
+
+    #[test]
+    fn fanout_item_mode_honors_store_override() {
+        let mut def = three_node_def();
+        if let Some(read) = def.nodes.get_mut("read") {
+            if let Some(fanout) = read.fanout.as_mut() {
+                fanout.item_return_type = Some(NodeInputReturnType::Store);
+            }
+        }
+
+        assert_eq!(fanout_item_mode(&def, "read"), NodeInputReturnType::Store);
     }
 
     #[test]

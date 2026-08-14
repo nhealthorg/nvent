@@ -82,7 +82,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
         }); // already terminal: no-op
     }
 
-    let def = crate::state::get_def(&deps.iii, &req.run_id)
+    let def = crate::state::get_def(&deps.iii, &record.def_ref)
         .await?
         .map(|d| crate::functions::start::prepare_definition_for_execution(&d));
 
@@ -166,6 +166,12 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
     record.status = RunStatus::Cancelled;
     record.updated_at = deps.now_ms();
     crate::state::put_run(&deps.iii, &record).await?;
+
+    // Stop transitions the run directly to terminal state. Clear per-run
+    // in-process payload caches immediately instead of waiting for retention GC.
+    let _ = crate::state::delete_run_input_memory(&req.run_id);
+    let _ = crate::state::delete_all_fanout_items_memory(&req.run_id);
+    let _ = crate::state::delete_all_node_results_memory(&req.run_id);
 
     // Best effort callback push for callers using `notify`.
     crate::events::emit_notify(deps, &record).await;

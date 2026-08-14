@@ -48,7 +48,7 @@ fn pending_checkpoint() -> NodeCheckpoint {
 pub fn fanned_uids(record: &WorkflowRunRecord, node_id: &str) -> Vec<String> {
     match record.fanout_src.get(node_id) {
         None => vec![],
-        Some(items) => (0..items.len())
+        Some(total_items) => (0..*total_items)
             .map(|i| node_uid(node_id, Some(i as u32)))
             .collect(),
     }
@@ -137,7 +137,7 @@ pub fn resolve_over_path(
 }
 
 /// For each fanout node in `def` whose dependencies are Done and which has not yet been
-/// expanded (no entry in `record.fanout_src`), snapshot the `over` array into
+/// expanded (no entry in `record.fanout_src`), store the item COUNT in
 /// `record.fanout_src[node_id]` and insert a `Pending` `NodeCheckpoint` for each
 /// `node_uid(node_id, Some(i))`.
 ///
@@ -206,7 +206,7 @@ pub fn expand_ready_fanouts(
                         )
                     }
                 };
-                record.fanout_src.insert(node_id.to_string(), vec![]);
+                record.fanout_src.insert(node_id.to_string(), 0);
                 let mut cp = pending_checkpoint();
                 cp.state = NodeState::Failed;
                 cp.result_error = Some(reason);
@@ -222,7 +222,7 @@ pub fn expand_ready_fanouts(
         // materialized-node ceiling, so an LLM-controlled `over` can't blow up the
         // record / spawn a session storm.
         if record.nodes.len() + items.len() > MAX_TOTAL_NODES {
-            record.fanout_src.insert(node_id.to_string(), vec![]);
+            record.fanout_src.insert(node_id.to_string(), 0);
             let mut cp = pending_checkpoint();
             cp.state = NodeState::Failed;
             cp.result_error = Some(format!(
@@ -240,7 +240,7 @@ pub fn expand_ready_fanouts(
 
         // Atomically snapshot + insert Pending checkpoints.
         let n = items.len();
-        record.fanout_src.insert(node_id.to_string(), items);
+        record.fanout_src.insert(node_id.to_string(), n);
         for i in 0..n {
             let uid = node_uid(node_id, Some(i as u32));
             record.nodes.entry(uid).or_insert_with(pending_checkpoint);
@@ -260,11 +260,11 @@ fn fanout_dep_item_done(record: &WorkflowRunRecord, dep_id: &str, item_idx: usiz
         return false;
     }
 
-    let Some(items) = record.fanout_src.get(dep_id) else {
+    let Some(total_items) = record.fanout_src.get(dep_id) else {
         return false;
     };
 
-    if item_idx >= items.len() {
+    if item_idx >= *total_items {
         return false;
     }
 
@@ -378,7 +378,7 @@ fn sequential_group_active_index(
 
     let mut max_len = 0usize;
     for member in &members {
-        let len = record.fanout_src.get(member).map(|v| v.len()).unwrap_or(0);
+        let len = record.fanout_src.get(member).copied().unwrap_or(0);
         max_len = max_len.max(len);
     }
 
@@ -423,7 +423,7 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
             .is_some()
         {
             // A base-id Failed/Cancelled checkpoint means the fanout FAILED to expand
-            // (over path unresolvable / oversized / cap): `fanout_src` is an empty vec,
+            // (over path unresolvable / oversized / cap): `fanout_src` count is zero,
             // which the 0..0 loop below would otherwise read as vacuously Done. A failed
             // expansion must BLOCK its dependents (else an orphan-branch dependent fires
             // on Null input), not satisfy them. quiescence catches this for required
@@ -437,11 +437,11 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
             // Fanned dependency: expansion must exist AND every #i must be Done.
             match record.fanout_src.get(dep_id.as_str()) {
                 None => return false, // not yet expanded
-                Some(items) => {
+                Some(total_items) => {
                     // Expanded-empty fanout (zero items) is vacuously Done — the 0..0 loop
                     // below satisfies the dependency. Only an *un-expanded* fanout (the `None`
                     // arm above) or a failed expansion (guard above) still blocks.
-                    for i in 0..items.len() {
+                    for i in 0..*total_items {
                         let uid = node_uid(dep_id, Some(i as u32));
                         match record.nodes.get(&uid) {
                             Some(cp) if cp.state == NodeState::Done => {}
@@ -476,7 +476,7 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
     for (node_id, node_def) in &def.nodes {
         if node_def.fanout.is_some() {
             // Fanout node: only emit already-materialized Pending items.
-            if let Some(items) = record.fanout_src.get(node_id.as_str()) {
+            if let Some(total_items) = record.fanout_src.get(node_id.as_str()) {
                 let sequential = matches!(
                     node_def.fanout.as_ref().and_then(|f| f.mode),
                     Some(FanoutMode::Sequential)
@@ -490,7 +490,7 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
 
                 if sequential {
                     // Only one item at a time: first pending item whose predecessors are Done.
-                    for i in 0..items.len() {
+                    for i in 0..*total_items {
                         let uid = node_uid(node_id, Some(i as u32));
                         let state = record.nodes.get(&uid).map(|cp| cp.state);
 
@@ -514,7 +514,7 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                         }
                     }
                 } else {
-                    for i in 0..items.len() {
+                    for i in 0..*total_items {
                         let uid = node_uid(node_id, Some(i as u32));
                         if let Some(cp) = record.nodes.get(&uid) {
                             if cp.state == NodeState::Pending
@@ -768,6 +768,8 @@ mod tests {
                 },
                 depends_on: vec![],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
 
@@ -791,7 +793,10 @@ mod tests {
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
                     mode: None,
+                    item_return_type: None,
                 }),
+                result: None,
+                input_policy: None,
             },
         );
 
@@ -813,6 +818,8 @@ mod tests {
                 },
                 depends_on: vec!["read".to_string()],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
 
@@ -893,7 +900,7 @@ mod tests {
         results.insert("plan".to_string(), json!({"docs":["a","b"]}));
         let expanded = expand_ready_fanouts(&d, &mut r, &results);
         assert_eq!(expanded, vec!["read".to_string()]);
-        assert_eq!(r.fanout_src["read"], vec![json!("a"), json!("b")]);
+        assert_eq!(r.fanout_src["read"], 2);
         assert_eq!(
             fanned_uids(&r, "read"),
             vec!["read#0".to_string(), "read#1".to_string()]
@@ -1011,7 +1018,7 @@ mod tests {
         assert_eq!(first, vec!["read".to_string()]);
         assert!(second.is_empty(), "second call must be a no-op");
         // Snapshot must still have 3 items.
-        assert_eq!(r.fanout_src["read"].len(), 3);
+        assert_eq!(r.fanout_src["read"], 3);
     }
 
     #[test]
@@ -1043,7 +1050,7 @@ mod tests {
         let mut r = record();
         r.fanout_src.insert(
             "playground::process-text".to_string(),
-            vec![json!("a"), json!("b")],
+            2,
         );
 
         assert_eq!(
@@ -1196,6 +1203,8 @@ mod tests {
                 },
                 depends_on: vec![],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
         nodes.insert(
@@ -1210,6 +1219,8 @@ mod tests {
                 },
                 depends_on: vec![],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
         nodes.insert(
@@ -1224,6 +1235,8 @@ mod tests {
                 },
                 depends_on: vec!["b".to_string(), "c".to_string()],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
         let d = WorkflowDef {
@@ -1363,7 +1376,7 @@ mod tests {
         // a is Done.
         r.nodes.insert("a".into(), done_checkpoint());
         // b was expanded to zero items — no b#i checkpoints inserted.
-        r.fanout_src.insert("b".into(), vec![]);
+        r.fanout_src.insert("b".into(), 0);
         // c depends on b; b was expanded-empty → vacuously Done.
         assert!(
             deps_done(&d, &r, "c"),
@@ -1376,7 +1389,7 @@ mod tests {
         let d = empty_fanout_def();
         let mut r = record();
         r.nodes.insert("a".into(), done_checkpoint());
-        r.fanout_src.insert("b".into(), vec![]);
+        r.fanout_src.insert("b".into(), 0);
         r.nodes.insert("c".into(), done_checkpoint());
         assert_eq!(
             quiescence(&d, &r),

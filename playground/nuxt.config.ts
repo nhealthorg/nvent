@@ -32,7 +32,7 @@ export default defineNuxtConfig({
 
   nvent: {
     iii: {
-      version: 'iii/v0.22.0',
+      version: 'iii/v0.22.1',
       failOnInstallFailure: true,
       mode: 'local',
       console: true,
@@ -52,11 +52,15 @@ export default defineNuxtConfig({
         },
       },
       workflow: {
-        observabilityRetentionMs: 7 * 24 * 60 * 60 * 1000, // 7 days
-        internalStateBackend: 'redis',
-        internalStateRedisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
-        redisGlobalLogTraceIndex: true,
-        idempotencyTtlMs: 30 * 24 * 60 * 60 * 1000, // 30 days
+        adapter: {
+          type: 'redis',
+          redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
+        },
+        config: {
+          observabilityRetentionMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+          redisGlobalLogTraceIndex: true,
+          idempotencyTtlMs: 30 * 24 * 60 * 60 * 1000, // 30 days
+        },
       },
       queue: {
         queueConfigs: {

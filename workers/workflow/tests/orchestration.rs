@@ -35,6 +35,8 @@ fn function_node(
         input,
         depends_on,
         fanout,
+        result: None,
+        input_policy: None,
     }
 }
 
@@ -72,6 +74,7 @@ fn three_node_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
                 mode: None,
+                item_return_type: None,
             }),
         ),
     );
@@ -245,6 +248,35 @@ fn complete_with_error(record: &mut WorkflowRunRecord, node_uid_str: &str, error
     }
 }
 
+/// Mirrors the runtime invariant from state::load_done_results:
+/// a Done checkpoint with missing stored payload must fail deterministically.
+fn mark_missing_done_payloads_as_failed(
+    record: &mut WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+) {
+    let missing: Vec<String> = record
+        .nodes
+        .iter()
+        .filter(|(uid, cp)| {
+            cp.state == NodeState::Done
+                && cp.result_ref.is_some()
+                && !results.contains_key(uid.as_str())
+        })
+        .map(|(uid, _)| uid.clone())
+        .collect();
+
+    for uid in missing {
+        if let Some(cp) = record.nodes.get_mut(&uid) {
+            cp.state = NodeState::Failed;
+            cp.result_ref = None;
+            cp.result_error = Some(
+                "Done checkpoint has a result_ref but the stored result is missing (state corruption)"
+                    .to_string(),
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test 1: fanout_barrier_synthesize_completes_in_order
 // ---------------------------------------------------------------------------
@@ -403,7 +435,7 @@ fn redelivered_drive_is_stable() {
     // The fanout_src snapshot must be frozen (same items).
     assert_eq!(
         record.fanout_src["read"],
-        vec![json!("a"), json!("b")],
+        2,
         "fanout_src must be frozen after first expansion"
     );
 }
@@ -727,6 +759,7 @@ fn fanout_empty_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:a.result.items".to_string(),
                 mode: None,
+                item_return_type: None,
             }),
         ),
     );
@@ -1089,6 +1122,75 @@ fn output_node_done_still_runs_later_declared_steps() {
     );
 }
 
+#[test]
+fn missing_done_payload_is_treated_as_failure_not_null_flow() {
+    let def = two_node_linear_def();
+    let mut record = new_record(json!({"topic": "x"}));
+    let results: BTreeMap<String, Value> = BTreeMap::new();
+
+    // Simulate a corrupted checkpoint: node marked Done with a result_ref,
+    // but no payload is available in the loaded result map.
+    record.nodes.insert(
+        "first".to_string(),
+        NodeCheckpoint {
+            state: NodeState::Done,
+            session_id: Some("wf_run_test_first".to_string()),
+            turn_id: Some("turn_first".to_string()),
+            result_ref: Some("run_test/first".to_string()),
+            result_error: None,
+            pending_at: Some(1),
+            pending_timeout_ms: None,
+            retries: 0,
+            completed_at: Some(2),
+            worker_name: None,
+        },
+    );
+
+    mark_missing_done_payloads_as_failed(&mut record, &results);
+
+    let first = record.nodes.get("first").expect("first checkpoint");
+    assert_eq!(first.state, NodeState::Failed);
+    assert!(first.result_ref.is_none(), "stale result ref must be removed");
+
+    match decide(&def, &record) {
+        TickDecision::Finalize(RunStatus::Failed) => {}
+        other => panic!("expected Finalize(Failed), got {:?}", other),
+    }
+}
+
+#[test]
+fn output_node_result_is_retained_pre_finalize() {
+    let mut def = orphan_after_output_def();
+    if let Some(wait) = def.nodes.get_mut("wait-error") {
+        wait.input = InputSpec {
+            from: "node:process".into(),
+            template: None,
+            value: None,
+        };
+    }
+    let mut record = new_record(json!({"text": "Hello"}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    // process fires and completes first.
+    let step1 = drive_step(&def, &mut record, &results);
+    match &step1 {
+        TickDecision::Fire(uids) => assert_eq!(uids, &vec!["process".to_string()]),
+        other => panic!("expected Fire([process]), got {:?}", other),
+    }
+    complete(&mut record, &mut results, "process", json!({"ok": true}));
+
+    // Even though process is the run output node, later declared steps still run.
+    let step2 = drive_step(&def, &mut record, &results);
+    match &step2 {
+        TickDecision::Fire(uids) => assert_eq!(uids, &vec!["wait-error".to_string()]),
+        other => panic!("expected Fire([wait-error]), got {:?}", other),
+    }
+
+    // The completed output result must remain available while workflow is not finalized.
+    let gathered = dag::gather_input(&def, &record, &json!({"text": "Hello"}), "wait-error", &results);
+    assert_eq!(gathered, json!({"ok": true}));
+}
+
 fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
     let mut nodes = BTreeMap::new();
 
@@ -1119,6 +1221,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(mode),
+                item_return_type: None,
             }),
         ),
     );
@@ -1136,6 +1239,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(mode),
+                item_return_type: None,
             }),
         ),
     );
@@ -1302,6 +1406,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                item_return_type: None,
             }),
         ),
     );
@@ -1319,6 +1424,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                item_return_type: None,
             }),
         ),
     );
@@ -1336,6 +1442,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                item_return_type: None,
             }),
         ),
     );
@@ -1356,6 +1463,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                item_return_type: None,
             }),
         ),
     );
@@ -1491,6 +1599,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                item_return_type: None,
             }),
         ),
     );
@@ -1509,6 +1618,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
                 Some(FanoutSpec {
                     over: "node:plan.result.items".to_string(),
                     mode: Some(FanoutMode::Sequential),
+                    item_return_type: None,
                 }),
             ),
         );
@@ -1535,6 +1645,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                item_return_type: None,
             }),
         ),
     );

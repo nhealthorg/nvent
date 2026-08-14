@@ -1,6 +1,9 @@
 export default defineWorkflow({
   name: 'test-wf',
   description: 'A simple workflow that tests some parts of the workflow engine',
+  inputPolicy: {
+    returnType: 'store',
+  },
   request_format: {
     text: {
       type: 'string',
@@ -17,6 +20,8 @@ export default defineWorkflow({
         const loopResult = await b.loop(items, async loopCtx => {
           const first = await loopCtx.call('process-item', loopCtx.item)
           return loopCtx.call('enrich-item', first)
+        },{
+          itemReturnType: 'store'
         })
         return b.call('summarize-branch-a', loopResult)
       }),
@@ -31,6 +36,9 @@ export default defineWorkflow({
 
     const result = await ctx.call('analyze-text', {
       text: input.text
+    }, {
+      returnType: 'store',
+      inputReturnType: 'store',
     })
 
     await ctx.call('test::end-test', { result })

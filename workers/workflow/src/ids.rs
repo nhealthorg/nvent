@@ -22,6 +22,14 @@ pub fn new_trace_id() -> String {
     short_uuid()
 }
 
+pub fn new_ref_id(kind: &str) -> String {
+    format!("wf_{}_{}", kind, short_uuid())
+}
+
+pub fn new_scope_id(kind: &str) -> String {
+    format!("wfs_{}_{}", kind, short_uuid())
+}
+
 /// node_uid: node_id for a normal node, "{node_id}#{i}" for a fanned item.
 pub fn node_uid(node_id: &str, item: Option<u32>) -> String {
     match item {
@@ -33,11 +41,6 @@ pub fn node_uid(node_id: &str, item: Option<u32>) -> String {
 /// Deterministic child/session-style identifier helper.
 pub fn child_session_id(run_id: &str, node_uid: &str) -> String {
     format!("wf_{}_{}", run_id, node_uid)
-}
-
-/// Deterministic key for a node's stored result blob in workflow internal state.
-pub fn node_result_key(run_id: &str, node_uid: &str) -> String {
-    format!("{}/{}", run_id, node_uid)
 }
 
 /// Key within scope "workflow_def" for a run's frozen definition.
@@ -109,11 +112,6 @@ mod tests {
             r0a, r1,
             "a retry (attempt+1) must yield a fresh idempotency key"
         );
-    }
-
-    #[test]
-    fn test_node_result_key() {
-        assert_eq!(node_result_key("r_1", "read#0"), "r_1/read#0");
     }
 
     #[test]

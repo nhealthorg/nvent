@@ -50,6 +50,10 @@ impl FileWorkflowInternalStateStore {
         self.base_dir.join("inputs")
     }
 
+    fn fanout_dir(&self) -> PathBuf {
+        self.base_dir.join("fanout")
+    }
+
     fn run_results_dir(&self) -> PathBuf {
         self.base_dir.join("run-results")
     }
@@ -91,6 +95,12 @@ impl FileWorkflowInternalStateStore {
     fn input_path(&self, run_id: &str) -> PathBuf {
         self.inputs_dir()
             .join(format!("{}.json", sanitize_segment(run_id)))
+    }
+
+    fn fanout_path(&self, run_id: &str, node_id: &str) -> PathBuf {
+        self.fanout_dir()
+            .join(sanitize_segment(run_id))
+            .join(format!("{}.json", sanitize_segment(node_id)))
     }
 
     fn run_result_path(&self, run_id: &str) -> PathBuf {
@@ -230,6 +240,27 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
 
     async fn delete_run_input(&self, run_id: &str) -> Result<(), WorkflowError> {
         remove_if_exists(&self.input_path(run_id)).await
+    }
+
+    async fn get_fanout_items(
+        &self,
+        run_id: &str,
+        node_id: &str,
+    ) -> Result<Option<Vec<Value>>, WorkflowError> {
+        read_json_opt::<Vec<Value>>(&self.fanout_path(run_id, node_id)).await
+    }
+
+    async fn put_fanout_items(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        items: &[Value],
+    ) -> Result<(), WorkflowError> {
+        write_json_atomic(&self.fanout_path(run_id, node_id), items).await
+    }
+
+    async fn delete_fanout_items(&self, run_id: &str, node_id: &str) -> Result<(), WorkflowError> {
+        remove_if_exists(&self.fanout_path(run_id, node_id)).await
     }
 
     async fn get_run_vars(&self, run_id: &str) -> Result<Option<Value>, WorkflowError> {
@@ -466,7 +497,10 @@ async fn ensure_parent_dir(path: &Path) -> Result<(), WorkflowError> {
     })
 }
 
-async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), WorkflowError> {
+async fn write_json_atomic<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+) -> Result<(), WorkflowError> {
     ensure_parent_dir(path).await?;
     let tmp = path.with_extension("tmp");
     let bytes = serde_json::to_vec(value).map_err(WorkflowError::Serde)?;

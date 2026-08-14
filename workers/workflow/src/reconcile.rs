@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{
     error::WorkflowError,
-    ids::node_result_key,
+    ids::new_ref_id,
     state,
     types::{NodeState, WorkflowDef, WorkflowRunRecord},
 };
@@ -206,8 +206,6 @@ pub async fn reconcile_function_nodes(
     let mut results_cache: Option<BTreeMap<String, Value>> = None;
 
     for uid in running_functions {
-        let result_key = node_result_key(&record.run_id, &uid);
-
         // Try to read the result from state
         match state::get_node_result(&deps.iii, &record.run_id, &uid).await {
             Ok(Some(v)) => {
@@ -242,7 +240,7 @@ pub async fn reconcile_function_nodes(
 
                 // Result is present: node completed successfully
                 if let Some(cp) = record.nodes.get_mut(&uid) {
-                    cp.result_ref = Some(result_key);
+                    cp.result_ref = Some(new_ref_id("node_result"));
                     cp.state = NodeState::Done;
                     cp.completed_at = Some(now); // Track completion time
                     let dur = cp
@@ -372,7 +370,7 @@ pub async fn reconcile_run(
                 state::put_node_result(&deps.iii, &record.run_id, &uid, &res).await?;
                 // Update checkpoint
                 if let Some(cp) = record.nodes.get_mut(&uid) {
-                    cp.result_ref = Some(node_result_key(&record.run_id, &uid));
+                    cp.result_ref = Some(new_ref_id("node_result"));
                     cp.state = NodeState::Done;
                     cp.completed_at = Some(now); // Track completion time
                     let dur = cp
@@ -437,6 +435,8 @@ mod tests {
                 },
                 depends_on: vec![],
                 fanout: None,
+                result: None,
+                input_policy: None,
             },
         );
 

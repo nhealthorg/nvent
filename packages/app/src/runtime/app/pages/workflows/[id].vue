@@ -26,6 +26,13 @@ interface WorkflowRunStatusResponse {
   status: string
   definition: any
   nodes: Record<string, any>
+  node_results?: Record<string, string>
+  node_result_modes?: Record<string, {
+    declared_mode: 'memory' | 'store' | 'stream'
+    effective_mode: 'memory' | 'store' | 'stream'
+    on_memory_fail?: 'store' | 'error'
+  }>
+  node_result_states?: Record<string, 'ready' | 'pruned' | 'pending'>
   loop_stats?: Record<string, {
     mode: 'parallel' | 'sequential' | string
     over: string
@@ -40,6 +47,11 @@ interface WorkflowRunStatusResponse {
   }>
   created_at: number
   updated_at: number
+  result_ref?: string
+  store_key?: string
+  output_result_mode_declared?: 'memory' | 'store' | 'stream'
+  output_result_mode_effective?: 'memory' | 'store' | 'stream'
+  output_on_memory_fail?: 'store' | 'error'
   queue_receipts?: Array<{
     run_id: string
     node_uid: string
@@ -50,6 +62,8 @@ interface WorkflowRunStatusResponse {
   result?: any
   result_error?: string
 }
+
+type ResultMode = 'memory' | 'store' | 'stream'
 
 interface WorkflowStopResponse {
   stopping: boolean
@@ -148,6 +162,28 @@ const {
 
 const definition = computed(() => status.value?.definition)
 
+function resultStateForNodeCheckpoint(nodeUid: string, checkpoint: any): {
+  declaredMode: ResultMode
+  effectiveMode: ResultMode
+  onMemoryFail?: 'store' | 'error'
+  resultAvailable: boolean
+  resultState: 'ready' | 'pruned' | 'pending'
+} {
+  const backendMode = status.value?.node_result_modes?.[nodeUid]
+  const backendState = status.value?.node_result_states?.[nodeUid]
+  const resultAvailable = Boolean(checkpoint?.result_ref)
+  const hasRef = Boolean(checkpoint?.result_ref)
+  const resultState: 'ready' | 'pruned' | 'pending' = backendState || (hasRef ? 'ready' : 'pending')
+
+  return {
+    declaredMode: backendMode?.declared_mode || 'memory',
+    effectiveMode: backendMode?.effective_mode || 'memory',
+    onMemoryFail: backendMode?.on_memory_fail,
+    resultAvailable,
+    resultState,
+  }
+}
+
 let refreshInterval: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   refreshInterval = setInterval(() => {
@@ -173,6 +209,8 @@ type LoopGroupInfo = {
   id: string
   mode: 'parallel' | 'sequential'
   over: string
+  itemInputMode: 'memory' | 'store'
+  itemResultMode: 'memory' | 'store' | 'mixed'
   nodeIds: string[]
   label: string
 }
@@ -282,10 +320,22 @@ const loopGroups = computed<{
       const mode: 'parallel' | 'sequential' = fanout.mode === 'sequential' ? 'sequential' : 'parallel'
       const over = String(fanout.over || '')
       const orderedNodes = topoSortSubset(component, nodeDefs, fallbackOrder)
+      const itemInputMode: 'memory' | 'store' = fanout.itemReturnType === 'store' ? 'store' : 'memory'
+      const perNodeResultModes = orderedNodes.map((nodeId) => {
+        const returnType = String(nodeDefs[nodeId]?.result?.returnType || 'memory')
+        return returnType === 'store' ? 'store' : 'memory'
+      })
+      const hasStoreResults = perNodeResultModes.includes('store')
+      const hasMemoryResults = perNodeResultModes.includes('memory')
+      const itemResultMode: 'memory' | 'store' | 'mixed' = hasStoreResults && hasMemoryResults
+        ? 'mixed'
+        : (hasStoreResults ? 'store' : 'memory')
       return {
         id: `loop-${index + 1}`,
         mode,
         over,
+        itemInputMode,
+        itemResultMode,
         nodeIds: orderedNodes,
         label: orderedNodes.join(' -> '),
       }
@@ -374,10 +424,17 @@ const stepStates = computed(() => {
       else if (uiStatus === 'active' || uiStatus === 'queued' || uiStatus === 'running') uiStatus = 'running'
     }
 
+    const nodeResultState = resultStateForNodeCheckpoint(id, nodeStatus)
+
     out[id] = {
       status: uiStatus,
       error: nodeStatus.result_error,
       result: nodeStatus.result_ref,
+      result_mode_declared: nodeResultState.declaredMode,
+      result_mode_effective: nodeResultState.effectiveMode,
+      result_on_memory_fail: nodeResultState.onMemoryFail,
+      result_available: nodeResultState.resultAvailable,
+      result_state: nodeResultState.resultState,
       pending_at: nodeStatus.pending_at,
       completed_at: nodeStatus.completed_at,
       worker_name: nodeStatus.worker_name,
@@ -398,6 +455,7 @@ const stepStates = computed(() => {
       .map(([, cp]: any) => cp?.result_error)
       .filter((msg: any) => typeof msg === 'string' && msg.length > 0)
     const retries = children.reduce((sum, [, cp]: any) => sum + Number(cp?.retries || 0), 0)
+    const childResultStates = children.map(([uid, cp]: any) => resultStateForNodeCheckpoint(uid, cp))
 
     let aggregated: 'running' | 'completed' | 'failed' | 'canceled' | 'idle' = 'idle'
     if (childStates.some(s => s === 'failed' || s === 'error')) aggregated = 'failed'
@@ -417,6 +475,15 @@ const stepStates = computed(() => {
       status: aggregated,
       retries,
       error: childErrors[0],
+      result_mode_declared: childResultStates[0]?.declaredMode || out[baseId]?.result_mode_declared,
+      result_mode_effective: childResultStates[0]?.effectiveMode || out[baseId]?.result_mode_effective,
+      result_on_memory_fail: childResultStates[0]?.onMemoryFail || out[baseId]?.result_on_memory_fail,
+      result_available: childResultStates.some(item => item.resultAvailable),
+      result_state: childResultStates.some(item => item.resultAvailable)
+        ? 'ready'
+        : childResultStates.some(item => item.resultState === 'pruned')
+          ? 'pruned'
+          : 'pending',
       pending_at: childPending.length > 0 ? Math.min(...childPending) : out[baseId]?.pending_at,
       completed_at: childCompleted.length > 0 ? Math.max(...childCompleted) : out[baseId]?.completed_at,
     }
@@ -467,6 +534,20 @@ const stepList = computed(() => {
           return group.nodeIds.includes(base || '') && Boolean(cp?.result_ref)
         })
         .length
+      const loopResultStateCounts = Object.entries(nodeStates)
+        .filter(([uid]) => {
+          const base = uid.split('#')[0]
+          return group.nodeIds.includes(base || '')
+        })
+        .reduce((acc, [uid, cp]: [string, any]) => {
+          const resultState = resultStateForNodeCheckpoint(uid, cp)
+          if (resultState.effectiveMode === 'store') acc.store += Number(resultState.resultAvailable)
+          if (resultState.effectiveMode === 'memory') {
+            acc.memory += Number(resultState.resultAvailable)
+            acc.pruned += Number(resultState.resultState === 'pruned')
+          }
+          return acc
+        }, { store: 0, memory: 0, pruned: 0 })
 
       let groupStatus = 'idle'
       if (statuses.some(s => s === 'failed' || s === 'error')) groupStatus = 'failed'
@@ -483,6 +564,8 @@ const stepList = computed(() => {
         loopGroupId: group.id,
         loopOver: group.over,
         loopMode: group.mode,
+        loopItemInputMode: group.itemInputMode,
+        loopItemResultMode: group.itemResultMode,
         loopPipeline: group.label,
         loopSize: group.nodeIds.length,
         loopItemsTotal: totalItems,
@@ -492,6 +575,9 @@ const stepList = computed(() => {
         loopItemsPending: pendingItems,
         loopActiveIndex: activeIndex,
         canInspectResult: loopResultCount > 0,
+        loopResultStoreCount: loopResultStateCounts.store,
+        loopResultMemoryCount: loopResultStateCounts.memory,
+        loopResultPrunedCount: loopResultStateCounts.pruned,
       })
       insertedGroups.add(group.id)
     }
@@ -506,6 +592,11 @@ const stepList = computed(() => {
       status: state?.status || 'idle',
       error: state?.error,
       result: state?.result,
+      resultModeDeclared: state?.result_mode_declared,
+      resultModeEffective: state?.result_mode_effective,
+      resultOnMemoryFail: state?.result_on_memory_fail,
+      resultAvailable: state?.result_available,
+      resultState: state?.result_state,
       retries: state?.retries,
       isLoop: false,
       loopOver: group?.over,
@@ -523,6 +614,42 @@ const stepList = computed(() => {
   }
 
   return out
+})
+
+const runResultStorageMode = computed<'memory' | 'store' | 'stream' | 'none'>(() => {
+  return status.value?.output_result_mode_effective || 'none'
+})
+
+const resultOverview = computed(() => {
+  const nodeStates = status.value?.nodes || {}
+  let readyMemory = 0
+  let readyStore = 0
+  let readyStream = 0
+  let prunedMemory = 0
+  let pending = 0
+
+  for (const [uid, cp] of Object.entries(nodeStates)) {
+    const state = resultStateForNodeCheckpoint(uid, cp)
+    if (state.resultState === 'pending') {
+      pending += 1
+      continue
+    }
+    if (state.resultState === 'pruned') {
+      prunedMemory += 1
+      continue
+    }
+    if (state.effectiveMode === 'store') readyStore += 1
+    else if (state.effectiveMode === 'stream') readyStream += 1
+    else readyMemory += 1
+  }
+
+  return {
+    readyMemory,
+    readyStore,
+    readyStream,
+    prunedMemory,
+    pending,
+  }
 })
 
 const selectedStep = ref<string | null>(null)
@@ -1140,10 +1267,29 @@ const formattedNodeResult = computed(() => {
                       <div class="text-[10px] uppercase tracking-wide text-zinc-500">Queue Receipts</div>
                       <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ statusQueueReceiptCount }}</div>
                     </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Run Result Mode</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ runResultStorageMode }}</div>
+                    </div>
+                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2 col-span-2">
+                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Node Result Availability</div>
+                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        store {{ resultOverview.readyStore }} · memory {{ resultOverview.readyMemory }} · stream {{ resultOverview.readyStream }}
+                      </div>
+                      <div class="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1">
+                        pending {{ resultOverview.pending }} · memory pruned {{ resultOverview.prunedMemory }}
+                      </div>
+                    </div>
                   </div>
 
                   <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
                     Receipt queues {{ statusQueueReceiptQueueCount }}, receipt nodes {{ statusQueueReceiptNodeCount }}.
+                  </div>
+                  <div v-if="status?.store_key" class="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300 font-mono break-all">
+                    store_key: {{ status.store_key }}
+                  </div>
+                  <div v-if="status?.result_error" class="mt-2 rounded border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+                    {{ status.result_error }}
                   </div>
                 </div>
 
@@ -1240,6 +1386,9 @@ const formattedNodeResult = computed(() => {
             :started-at="status.created_at"
             :completed-at="status.updated_at"
             :loop-overview="loopOverviewStats"
+            :result-overview="resultOverview"
+            :run-result-mode="runResultStorageMode"
+            :store-key="status.store_key"
             :result="status.result"
             :flow-def="flowMeta"
             @select-step="selectedStep = $event"

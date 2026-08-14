@@ -411,6 +411,53 @@ describe('defineWorkflow compilation', () => {
     expect([...plan.nodes['done'].depends_on].sort()).toEqual(['audit', 'branch-a-item-final'])
   })
 
+  it('maps loop itemReturnType to loop node result returnType', async () => {
+    const workflow = defineWorkflow({
+      name: 'loop-item-result-store',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('load-items', input)
+        const result = await ctx.loop(items, async loop => {
+          return loop.call('process-item', loop.item)
+        }, { itemReturnType: 'store' })
+
+        return ctx.call('finalize', result)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['process-item'].result).toMatchObject({
+      returnType: 'store',
+    })
+    expect(plan.nodes['process-item'].fanout).toEqual({
+      over: 'node:load-items',
+    })
+  })
+
+  it('does not leak loop itemReturnType to sibling loops', async () => {
+    const workflow = defineWorkflow({
+      name: 'loop-item-result-store-is-scoped',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('load-items', input)
+
+        await ctx.loop(items, async loop => {
+          return loop.call('branch-a-item', loop.item)
+        }, { itemReturnType: 'store' })
+
+        await ctx.loop(items, async loop => {
+          return loop.call('branch-b-item', loop.item)
+        })
+
+        return ctx.call('done', input)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['branch-a-item'].result).toMatchObject({ returnType: 'store' })
+    expect(plan.nodes['branch-b-item'].result).toMatchObject({ returnType: 'memory' })
+  })
+
   it('allows returning an earlier result while executing later side-effect steps', async () => {
     const workflow = defineWorkflow({
       name: 'stale-output-node-regression',

@@ -60,7 +60,7 @@ async function getFunctionExecutionConfig(functionId: string): Promise<{
   return { runtime: 'unknown' }
 }
 
-function normalizeInput(input: any, deps: string[]): { from: string | string[], template?: string } {
+function normalizeInput(input: any, deps: string[]): { from: string | string[], template?: string, value?: unknown } {
   return normalizeWorkflowInput(input, deps, isWorkflowValueRef)
 }
 
@@ -91,7 +91,16 @@ export interface WorkflowContext {
     input?: any
     retry?: { max_attempts?: number }
     depends_on?: string[]
-    fanout?: string | { over: string, mode?: 'parallel' | 'sequential' }
+    fanout?: string | { over: string, mode?: 'parallel' | 'sequential', itemReturnType?: 'memory' | 'store' }
+    result?: {
+      returnType?: 'memory' | 'store' | 'stream'
+      streamChunkSize?: number
+      onMemoryFail?: 'store' | 'error'
+    }
+    inputPolicy?: {
+      returnType?: 'memory' | 'store'
+      onMemoryFail?: 'store' | 'error'
+    }
     agent?: any
     executor?: any
   }) => Promise<T>
@@ -118,7 +127,7 @@ export interface WorkflowContext {
    * const result1 = await ctx.call('process', input)
    * const result2 = await ctx.call('analyze', result1)
    */
-  call: <T = any>(...args: any[]) => Promise<T>
+  call: WorkflowCall
 
   /**
    * Persist a workflow-scoped variable and return its current value reference.
@@ -199,6 +208,18 @@ export interface WorkflowLoopOptions {
    * - sequential: process one item at a time in index order
    */
   mode?: WorkflowLoopMode
+  /**
+   * Per-item result storage policy for nodes declared inside this loop:
+   * - memory (default): keep item results in worker memory only
+   * - store: persist item results in internal workflow state
+   */
+  itemReturnType?: 'memory' | 'store'
+  /**
+   * Fanout item input transport/storage policy:
+   * - memory (default): keep fanout input payloads in worker memory only
+   * - store: persist fanout input payloads in internal workflow state
+   */
+  itemInputReturnType?: 'memory' | 'store'
 }
 
 const WORKFLOW_BRANCH = Symbol('workflow.branch')
@@ -278,6 +299,31 @@ type CallOptions = {
   runtime?: 'nodejs' | 'python' | 'rust' | 'unknown'
   engine_retry?: { max_attempts?: number }
   retry?: { max_attempts?: number }
+  returnType?: 'memory' | 'store' | 'stream'
+  streamChunkSize?: number
+  onMemoryFail?: 'store' | 'error'
+  inputReturnType?: 'memory' | 'store'
+  inputOnMemoryFail?: 'store' | 'error'
+}
+
+type WorkflowCall = {
+  <T = any>(functionId: string): Promise<T>
+  <T = any>(functionId: string, input: any): Promise<T>
+  <T = any>(functionId: string, input: any, options: CallOptions): Promise<T>
+  <T = any>(nodeId: string, functionId: string): Promise<T>
+  <T = any>(nodeId: string, functionId: string, input: any): Promise<T>
+  <T = any>(nodeId: string, functionId: string, input: any, options: CallOptions): Promise<T>
+}
+
+type NodeResultOptions = {
+  returnType?: 'memory' | 'store' | 'stream'
+  streamChunkSize?: number
+  onMemoryFail?: 'store' | 'error'
+}
+
+type NodeInputOptions = {
+  returnType?: 'memory' | 'store'
+  onMemoryFail?: 'store' | 'error'
 }
 
 function isCallOptions(value: unknown): value is CallOptions {
@@ -287,12 +333,28 @@ function isCallOptions(value: unknown): value is CallOptions {
   const keys = Object.keys(v)
   if (keys.length === 0) return false
 
-  const allowedKeys = new Set(['label', 'queue', 'runtime', 'engine_retry', 'retry'])
+  const allowedKeys = new Set([
+    'label',
+    'queue',
+    'runtime',
+    'engine_retry',
+    'retry',
+    'returnType',
+    'streamChunkSize',
+    'onMemoryFail',
+    'inputReturnType',
+    'inputOnMemoryFail',
+  ])
   if (keys.some(key => !allowedKeys.has(key))) return false
 
   if ('label' in v && v.label != null && typeof v.label !== 'string') return false
   if ('queue' in v && v.queue != null && typeof v.queue !== 'string') return false
   if ('runtime' in v && v.runtime != null && !['nodejs', 'python', 'rust', 'unknown'].includes(String(v.runtime))) return false
+  if ('returnType' in v && v.returnType != null && !['memory', 'store', 'stream'].includes(String(v.returnType))) return false
+  if ('streamChunkSize' in v && v.streamChunkSize != null && (typeof v.streamChunkSize !== 'number' || Number.isNaN(v.streamChunkSize) || v.streamChunkSize <= 0)) return false
+  if ('onMemoryFail' in v && v.onMemoryFail != null && !['store', 'error'].includes(String(v.onMemoryFail))) return false
+  if ('inputReturnType' in v && v.inputReturnType != null && !['memory', 'store'].includes(String(v.inputReturnType))) return false
+  if ('inputOnMemoryFail' in v && v.inputOnMemoryFail != null && !['store', 'error'].includes(String(v.inputOnMemoryFail))) return false
 
   const hasRetryShape = (candidate: unknown): boolean => {
     if (candidate == null) return true
@@ -306,7 +368,32 @@ function isCallOptions(value: unknown): value is CallOptions {
   if ('retry' in v && !hasRetryShape(v.retry)) return false
 
   // `label` alone is too ambiguous with normal payload objects.
-  return 'queue' in v || 'runtime' in v || 'engine_retry' in v || 'retry' in v
+  return (
+    'queue' in v
+    || 'runtime' in v
+    || 'engine_retry' in v
+    || 'retry' in v
+    || 'returnType' in v
+    || 'streamChunkSize' in v
+    || 'onMemoryFail' in v
+    || 'inputReturnType' in v
+    || 'inputOnMemoryFail' in v
+  )
+}
+
+function buildResultPolicy(result?: NodeResultOptions): NodeResultOptions {
+  return {
+    returnType: result?.returnType ?? 'memory',
+    ...(result?.streamChunkSize ? { streamChunkSize: result.streamChunkSize } : {}),
+    ...(result?.onMemoryFail ? { onMemoryFail: result.onMemoryFail } : {}),
+  }
+}
+
+function buildInputPolicy(inputPolicy?: NodeInputOptions): NodeInputOptions {
+  return {
+    returnType: inputPolicy?.returnType ?? 'memory',
+    ...(inputPolicy?.onMemoryFail ? { onMemoryFail: inputPolicy.onMemoryFail } : {}),
+  }
 }
 
 type ParsedCall = {
@@ -319,7 +406,17 @@ type ParsedCall = {
 function parseCallArguments(args: any[]): ParsedCall {
   const work = [...args]
   let callOptions: CallOptions | undefined
-  if (work.length > 0 && isCallOptions(work[work.length - 1])) {
+  const lastArg = work[work.length - 1]
+  const hasEmptyOptionsObject =
+    work.length >= 3
+    && typeof work[0] === 'string'
+    && typeof work[1] !== 'string'
+    && !!lastArg
+    && typeof lastArg === 'object'
+    && !Array.isArray(lastArg)
+    && Object.keys(lastArg as Record<string, unknown>).length === 0
+
+  if (work.length > 0 && (isCallOptions(lastArg) || hasEmptyOptionsObject)) {
     callOptions = work.pop()
   }
 
@@ -396,6 +493,13 @@ export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends 
   input?: Parseable<TInput>
   /** Schema for the handler output. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
   output?: Parseable<TOutput>
+  /**
+   * Input transport policy for the workflow invocation payload sent to
+   * workflow::start (run input only).
+   *
+   * This does not set or override per-node inputPolicy values.
+   */
+  inputPolicy?: NodeInputOptions
   request_format?: Record<string, any>
   response_format?: Record<string, any>
 }
@@ -419,6 +523,9 @@ export function defineWorkflow<
   // Extract JSON schemas if provided via input/output
   const request_format = options.request_format ?? (options.input ? extractJsonSchema(options.input) : undefined)
   const response_format = options.response_format ?? (options.output ? extractJsonSchema(options.output) : undefined)
+  const workflowInputPolicy = options.inputPolicy
+    ? buildInputPolicy(options.inputPolicy)
+    : undefined
 
   const workflow = {
     ...options,
@@ -453,7 +560,8 @@ export function defineWorkflow<
           function_id: 'workflow::start',
           payload: {
             definition,
-            input
+            input,
+            ...(workflowInputPolicy ? { inputPolicy: workflowInputPolicy } : {}),
           }
         })
       } catch (error) {
@@ -472,7 +580,6 @@ export function defineWorkflow<
       let controlFrontier: string[] = []
       let parallelCollector: string[] | null = null
       let parallelFixedFrontier: string[] | null = null
-
       const collectNodeRefs = (obj: any, refs: Set<string>) => {
         if (!obj || typeof obj !== 'object') return
         const dynamicRef = (obj as { $ref?: unknown }).$ref
@@ -539,6 +646,16 @@ export function defineWorkflow<
         return 'parallel'
       }
 
+      const resolveLoopItemResultReturnType = (options?: WorkflowLoopOptions): 'memory' | 'store' => {
+        if (options?.itemReturnType === 'store') return 'store'
+        return 'memory'
+      }
+
+      const resolveLoopItemInputReturnType = (options?: WorkflowLoopOptions): 'memory' | 'store' => {
+        if (options?.itemInputReturnType === 'store') return 'store'
+        return 'memory'
+      }
+
       const applyAutoNodeSuffix = (id: string): string => {
         if (nodes[id]) return `${id}_${++autoNodeCounter}`
         return id
@@ -571,6 +688,8 @@ export function defineWorkflow<
             depends_on: dependsOn,
             input: normalizeInput(spec.input, dataDeps),
             fanout: typeof spec.fanout === 'string' ? { over: spec.fanout } : spec.fanout,
+            result: buildResultPolicy(spec.result),
+            ...(spec.inputPolicy ? { inputPolicy: buildInputPolicy(spec.inputPolicy) } : {}),
           }
 
           // Update control-flow frontier
@@ -632,7 +751,20 @@ export function defineWorkflow<
           return ctx.node(nodeId, {
             label: parsed.callOptions?.label,
             function: functionSpec,
-            input: parsed.input
+            input: parsed.input,
+            result: {
+              returnType: parsed.callOptions?.returnType,
+              streamChunkSize: parsed.callOptions?.streamChunkSize,
+              onMemoryFail: parsed.callOptions?.onMemoryFail,
+            },
+            ...(parsed.callOptions?.inputReturnType || parsed.callOptions?.inputOnMemoryFail
+              ? {
+                  inputPolicy: {
+                    returnType: parsed.callOptions?.inputReturnType,
+                    onMemoryFail: parsed.callOptions?.inputOnMemoryFail,
+                  },
+                }
+              : {}),
           })
         },
 
@@ -651,6 +783,8 @@ export function defineWorkflow<
         loop: async <T = any>(items: any, fn: (loopCtx: WorkflowLoopContext) => T | Promise<T>, options?: WorkflowLoopOptions): Promise<T> => {
           const fanoutOver = resolveFanoutOver(items)
           const loopMode = resolveLoopMode(options)
+          const loopItemResultReturnType = resolveLoopItemResultReturnType(options)
+          const loopItemInputReturnType = resolveLoopItemInputReturnType(options)
           const loopItemRef = createWorkflowValueRef('fanout_item', 'fanout_item') as WorkflowLoopItemRef
 
           const loopCtx: WorkflowLoopContext = {
@@ -669,7 +803,21 @@ export function defineWorkflow<
                 fanout: {
                   over: fanoutOver,
                   ...(loopMode !== 'parallel' ? { mode: loopMode } : {}),
+                  ...(loopItemInputReturnType !== 'memory' ? { itemReturnType: loopItemInputReturnType } : {}),
                 },
+                result: {
+                  returnType: parsed.callOptions?.returnType ?? loopItemResultReturnType,
+                  streamChunkSize: parsed.callOptions?.streamChunkSize,
+                  onMemoryFail: parsed.callOptions?.onMemoryFail,
+                },
+                ...(parsed.callOptions?.inputReturnType || parsed.callOptions?.inputOnMemoryFail
+                  ? {
+                      inputPolicy: {
+                        returnType: parsed.callOptions?.inputReturnType,
+                        onMemoryFail: parsed.callOptions?.inputOnMemoryFail,
+                      },
+                    }
+                  : {}),
               })
             },
             foreach: async (nodeId: string, nestedItems: any, functionId: string) => {
