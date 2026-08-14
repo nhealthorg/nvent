@@ -171,7 +171,15 @@ jobs:
           fi
 
       - name: Generate changelog
-        run: npx changelogithub
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Try to generate changelog for the resolved release tag first.
+            TAG="v${{ needs.resolve-version.outputs.version }}"
+            npx changelogithub --tag "$TAG" || npx changelogithub || true
+          else
+            npx changelogithub || true
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
