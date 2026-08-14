@@ -237,7 +237,9 @@ fn collect_loop_stats(
             }
         }
 
-        let active_index = if fanout.mode == Some(crate::types::FanoutMode::Sequential) {
+        let active_index = if fanout.mode == Some(crate::types::FanoutMode::Sequential)
+            || fanout.mode == Some(crate::types::FanoutMode::Batch)
+        {
             (0..total_items).find(|idx| {
                 let uid = format!("{}#{}", node_id, idx);
                 !matches!(
@@ -252,10 +254,10 @@ fn collect_loop_stats(
         out.insert(
             node_id.clone(),
             LoopStats {
-                mode: if fanout.mode == Some(crate::types::FanoutMode::Sequential) {
-                    "sequential".to_string()
-                } else {
-                    "parallel".to_string()
+                mode: match fanout.mode {
+                    Some(crate::types::FanoutMode::Sequential) => "sequential".to_string(),
+                    Some(crate::types::FanoutMode::Batch) => "batch".to_string(),
+                    _ => "parallel".to_string(),
                 },
                 over: fanout.over.clone(),
                 expanded: record.fanout_src.contains_key(node_id),
@@ -565,6 +567,7 @@ mod tests {
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.items".to_string(),
                     mode: Some(FanoutMode::Sequential),
+                    batch_size: None,
                     item_return_type: None,
                 }),
                 result: None,

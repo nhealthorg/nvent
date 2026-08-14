@@ -34,9 +34,10 @@ interface WorkflowRunStatusResponse {
   }>
   node_result_states?: Record<string, 'ready' | 'pruned' | 'pending'>
   loop_stats?: Record<string, {
-    mode: 'parallel' | 'sequential' | string
+    mode: 'parallel' | 'sequential' | 'batch' | string
     over: string
     expanded: boolean
+    batch_size?: number | null
     total_items: number
     completed_items: number
     running_items: number
@@ -207,7 +208,8 @@ const normalizedStatus = computed(() => {
 
 type LoopGroupInfo = {
   id: string
-  mode: 'parallel' | 'sequential'
+  mode: 'parallel' | 'sequential' | 'batch'
+  batchSize: number | undefined
   over: string
   itemInputMode: 'memory' | 'store'
   itemResultMode: 'memory' | 'store' | 'mixed'
@@ -273,8 +275,12 @@ const loopGroups = computed<{
   for (const id of loopNodeIds) {
     const fanout = nodeDefs[id]?.fanout || {}
     const over = String(fanout.over || '')
-    const mode = fanout.mode === 'sequential' ? 'sequential' : 'parallel'
-    sigByNode.set(id, `${over}::${mode}`)
+    const mode = fanout.mode === 'sequential'
+      ? 'sequential'
+      : (fanout.mode === 'batch' ? 'batch' : 'parallel')
+    const batchSize = Number(fanout.batchSize)
+    const sigBatchSize = Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 0
+    sigByNode.set(id, `${over}::${mode}::${sigBatchSize}`)
   }
 
   const adjacency = new Map<string, Set<string>>()
@@ -312,36 +318,42 @@ const loopGroups = computed<{
     components.push(component)
   }
 
-  const groups: LoopGroupInfo[] = components
-    .map((component, index) => {
-      const first = component[0]
-      if (!first) return null
-      const fanout = nodeDefs[first]?.fanout || {}
-      const mode: 'parallel' | 'sequential' = fanout.mode === 'sequential' ? 'sequential' : 'parallel'
-      const over = String(fanout.over || '')
-      const orderedNodes = topoSortSubset(component, nodeDefs, fallbackOrder)
-      const itemInputMode: 'memory' | 'store' = fanout.itemReturnType === 'store' ? 'store' : 'memory'
-      const perNodeResultModes = orderedNodes.map((nodeId) => {
-        const returnType = String(nodeDefs[nodeId]?.result?.returnType || 'memory')
-        return returnType === 'store' ? 'store' : 'memory'
-      })
-      const hasStoreResults = perNodeResultModes.includes('store')
-      const hasMemoryResults = perNodeResultModes.includes('memory')
-      const itemResultMode: 'memory' | 'store' | 'mixed' = hasStoreResults && hasMemoryResults
-        ? 'mixed'
-        : (hasStoreResults ? 'store' : 'memory')
-      return {
-        id: `loop-${index + 1}`,
-        mode,
-        over,
-        itemInputMode,
-        itemResultMode,
-        nodeIds: orderedNodes,
-        label: orderedNodes.join(' -> '),
-      }
+  const groups = components.flatMap((component, index) => {
+    const first = component[0]
+    if (!first) return []
+
+    const fanout = nodeDefs[first]?.fanout || {}
+    const mode: 'parallel' | 'sequential' | 'batch' = fanout.mode === 'sequential'
+      ? 'sequential'
+      : (fanout.mode === 'batch' ? 'batch' : 'parallel')
+    const batchSizeValue = Number(fanout.batchSize)
+    const over = String(fanout.over || '')
+    const orderedNodes = topoSortSubset(component, nodeDefs, fallbackOrder)
+    const itemInputMode: 'memory' | 'store' = fanout.itemReturnType === 'store' ? 'store' : 'memory'
+    const perNodeResultModes = orderedNodes.map((nodeId) => {
+      const returnType = String(nodeDefs[nodeId]?.result?.returnType || 'memory')
+      return returnType === 'store' ? 'store' : 'memory'
     })
-    .filter((group): group is LoopGroupInfo => Boolean(group))
-    .sort((a, b) => {
+    const hasStoreResults = perNodeResultModes.includes('store')
+    const hasMemoryResults = perNodeResultModes.includes('memory')
+    const itemResultMode: 'memory' | 'store' | 'mixed' = hasStoreResults && hasMemoryResults
+      ? 'mixed'
+      : (hasStoreResults ? 'store' : 'memory')
+
+    const group: LoopGroupInfo = {
+      id: `loop-${index + 1}`,
+      mode,
+      batchSize: Number.isFinite(batchSizeValue) && batchSizeValue > 0 ? batchSizeValue : undefined,
+      over,
+      itemInputMode,
+      itemResultMode,
+      nodeIds: orderedNodes,
+      label: orderedNodes.join(' -> '),
+    }
+    return [group]
+  }) as unknown as LoopGroupInfo[]
+
+  groups.sort((a: LoopGroupInfo, b: LoopGroupInfo) => {
       const firstA = fallbackOrder.indexOf(a.nodeIds[0] || '')
       const firstB = fallbackOrder.indexOf(b.nodeIds[0] || '')
       return firstA - firstB
@@ -378,6 +390,7 @@ const flowMeta = computed(() => {
       isLoop: Boolean(loopGroup),
       loopOver: loopGroup?.over,
       loopMode: loopGroup?.mode || 'parallel',
+      loopBatchSize: loopGroup?.batchSize,
       loopGroupId: loopGroup?.id,
       loopGroupSize: loopGroup?.nodeIds.length || 0,
       loopPipeline: loopGroup?.label,
@@ -497,7 +510,48 @@ const stepList = computed(() => {
 
   const ordered = sortNodesByLevel(definition.value.nodes)
   const nodeStates = status.value?.nodes ?? {}
+  const nodeStateEntries = Object.entries(nodeStates) as Array<[string, any]>
   const groupsById = Object.fromEntries(loopGroups.value.groups.map(group => [group.id, group])) as Record<string, LoopGroupInfo>
+  const groupIdByNodeId = Object.fromEntries(
+    Object.entries(loopGroups.value.byNodeId).map(([nodeId, group]) => [nodeId, group.id]),
+  ) as Record<string, string>
+
+  const groupResultCounts: Record<string, { total: number, store: number, memory: number, pruned: number }> = {}
+  const loopChildResultUidsByBase: Record<string, string[]> = {}
+
+  for (const [uid, cp] of nodeStateEntries) {
+    const base = uid.split('#')[0] || ''
+    const groupId = groupIdByNodeId[base]
+    if (!groupId) {
+      if (cp?.result_ref) {
+        if (!loopChildResultUidsByBase[base]) loopChildResultUidsByBase[base] = []
+        loopChildResultUidsByBase[base].push(uid)
+      }
+      continue
+    }
+
+    if (!groupResultCounts[groupId]) {
+      groupResultCounts[groupId] = { total: 0, store: 0, memory: 0, pruned: 0 }
+    }
+    groupResultCounts[groupId].total += Number(Boolean(cp?.result_ref))
+
+    const resultState = resultStateForNodeCheckpoint(uid, cp)
+    if (resultState.effectiveMode === 'store') {
+      groupResultCounts[groupId].store += Number(resultState.resultAvailable)
+    } else if (resultState.effectiveMode === 'memory') {
+      groupResultCounts[groupId].memory += Number(resultState.resultAvailable)
+      groupResultCounts[groupId].pruned += Number(resultState.resultState === 'pruned')
+    }
+
+    if (cp?.result_ref) {
+      if (!loopChildResultUidsByBase[base]) loopChildResultUidsByBase[base] = []
+      loopChildResultUidsByBase[base].push(uid)
+    }
+  }
+
+  for (const uidList of Object.values(loopChildResultUidsByBase)) {
+    uidList.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  }
   const insertedGroups = new Set<string>()
   const out: any[] = []
 
@@ -512,10 +566,11 @@ const stepList = computed(() => {
         .filter(Boolean) as Array<NonNullable<WorkflowRunStatusResponse['loop_stats']>[string]>
 
       const totalItems = groupLoopNodeStats.reduce((max, entry) => Math.max(max, Number(entry.total_items || 0)), 0)
-      const completedItems = groupLoopNodeStats.reduce((min, entry) => {
+      const completedItemsPipeline = groupLoopNodeStats.reduce((min, entry) => {
         const value = Number(entry.completed_items || 0)
         return min === null ? value : Math.min(min, value)
       }, null as number | null) ?? 0
+      const completedItemsAny = groupLoopNodeStats.reduce((max, entry) => Math.max(max, Number(entry.completed_items || 0)), 0)
       const runningItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.running_items || 0), 0)
       const failedItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.failed_items || 0), 0)
       const pendingItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.pending_items || 0), 0)
@@ -528,26 +583,7 @@ const stepList = computed(() => {
         .map(memberId => stepStates.value[memberId])
         .filter(Boolean)
       const statuses = memberStates.map((memberState: any) => String(memberState?.status || '').toLowerCase())
-      const loopResultCount = Object.entries(nodeStates)
-        .filter(([uid, cp]: [string, any]) => {
-          const base = uid.split('#')[0]
-          return group.nodeIds.includes(base || '') && Boolean(cp?.result_ref)
-        })
-        .length
-      const loopResultStateCounts = Object.entries(nodeStates)
-        .filter(([uid]) => {
-          const base = uid.split('#')[0]
-          return group.nodeIds.includes(base || '')
-        })
-        .reduce((acc, [uid, cp]: [string, any]) => {
-          const resultState = resultStateForNodeCheckpoint(uid, cp)
-          if (resultState.effectiveMode === 'store') acc.store += Number(resultState.resultAvailable)
-          if (resultState.effectiveMode === 'memory') {
-            acc.memory += Number(resultState.resultAvailable)
-            acc.pruned += Number(resultState.resultState === 'pruned')
-          }
-          return acc
-        }, { store: 0, memory: 0, pruned: 0 })
+      const loopResultCounts = groupResultCounts[group.id] || { total: 0, store: 0, memory: 0, pruned: 0 }
 
       let groupStatus = 'idle'
       if (statuses.some(s => s === 'failed' || s === 'error')) groupStatus = 'failed'
@@ -564,27 +600,27 @@ const stepList = computed(() => {
         loopGroupId: group.id,
         loopOver: group.over,
         loopMode: group.mode,
+        loopBatchSize: group.batchSize,
         loopItemInputMode: group.itemInputMode,
         loopItemResultMode: group.itemResultMode,
         loopPipeline: group.label,
         loopSize: group.nodeIds.length,
         loopItemsTotal: totalItems,
-        loopItemsDone: completedItems,
+        loopItemsDone: completedItemsAny,
+        loopItemsPipelineDone: completedItemsPipeline,
         loopItemsRunning: runningItems,
         loopItemsFailed: failedItems,
         loopItemsPending: pendingItems,
         loopActiveIndex: activeIndex,
-        canInspectResult: loopResultCount > 0,
-        loopResultStoreCount: loopResultStateCounts.store,
-        loopResultMemoryCount: loopResultStateCounts.memory,
-        loopResultPrunedCount: loopResultStateCounts.pruned,
+        canInspectResult: loopResultCounts.total > 0,
+        loopResultStoreCount: loopResultCounts.store,
+        loopResultMemoryCount: loopResultCounts.memory,
+        loopResultPrunedCount: loopResultCounts.pruned,
       })
       insertedGroups.add(group.id)
     }
 
-    const loopChildResultUids = Object.entries(nodeStates)
-      .filter(([uid, cp]: [string, any]) => uid.startsWith(`${id}#`) && Boolean(cp?.result_ref))
-      .map(([uid]) => uid)
+    const loopChildResultUids = loopChildResultUidsByBase[id] || []
 
     out.push({
       key: id,
@@ -601,6 +637,7 @@ const stepList = computed(() => {
       isLoop: false,
       loopOver: group?.over,
       loopMode: group?.mode || 'parallel',
+      loopBatchSize: group?.batchSize,
       loopGroupId: group?.id,
       loopSize: group?.nodeIds.length || 0,
       loopPipeline: groupsById[group?.id || '']?.label,
@@ -894,11 +931,28 @@ const statusQueueReceiptNodeCount = computed(() => new Set(statusQueueReceipts.v
 
 const loopOverviewStats = computed(() => {
   const loopStats = status.value?.loop_stats || {}
-  const values = Object.values(loopStats)
-  const loops = values.length
-  const expandedLoops = values.filter(item => Boolean(item?.expanded)).length
-  const totalItems = values.reduce((sum, item) => sum + Number(item?.total_items || 0), 0)
-  const completedItems = values.reduce((sum, item) => sum + Number(item?.completed_items || 0), 0)
+  const groups = loopGroups.value.groups
+
+  const loops = groups.length
+  const expandedLoops = groups.reduce((sum, group) => {
+    const anyExpanded = group.nodeIds.some(nodeId => Boolean(loopStats[nodeId]?.expanded))
+    return sum + Number(anyExpanded)
+  }, 0)
+
+  const totalItems = groups.reduce((sum, group) => {
+    const groupTotal = group.nodeIds.reduce((max, nodeId) => {
+      return Math.max(max, Number(loopStats[nodeId]?.total_items || 0))
+    }, 0)
+    return sum + groupTotal
+  }, 0)
+
+  const completedItems = groups.reduce((sum, group) => {
+    const groupCompleted = group.nodeIds.reduce((max, nodeId) => {
+      return Math.max(max, Number(loopStats[nodeId]?.completed_items || 0))
+    }, 0)
+    return sum + groupCompleted
+  }, 0)
+
   return {
     loops,
     expandedLoops,

@@ -40,7 +40,8 @@ export interface WorkflowFunctionSpec {
 
 export interface WorkflowFanoutSpec {
   over: string
-  mode?: 'parallel' | 'sequential'
+  mode?: 'parallel' | 'sequential' | 'batch'
+  batchSize?: number
   itemReturnType?: 'memory' | 'store'
 }
 
@@ -80,7 +81,7 @@ export interface QueueReceiptRecord {
 }
 
 export interface LoopStats {
-  mode: 'parallel' | 'sequential' | string
+  mode: 'parallel' | 'sequential' | 'batch' | string
   over: string
   expanded: boolean
   total_items: number

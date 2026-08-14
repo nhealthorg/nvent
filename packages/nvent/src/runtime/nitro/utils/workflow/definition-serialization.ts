@@ -182,12 +182,30 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
         }
 
         const mode = (fanout as any).mode
-        if (mode != null && mode !== 'parallel' && mode !== 'sequential') {
+        if (mode != null && mode !== 'parallel' && mode !== 'sequential' && mode !== 'batch') {
           issues.push({
             path: `definition.nodes.${nodeId}.fanout.mode`,
-            message: 'fanout.mode must be parallel or sequential when provided',
+            message: 'fanout.mode must be parallel, sequential, or batch when provided',
             value: mode,
           })
+        }
+
+        const batchSize = (fanout as any).batchSize
+        if (batchSize != null) {
+          if (!Number.isInteger(batchSize) || batchSize <= 0) {
+            issues.push({
+              path: `definition.nodes.${nodeId}.fanout.batchSize`,
+              message: 'fanout.batchSize must be a positive integer when provided',
+              value: batchSize,
+            })
+          }
+          if (mode !== 'batch') {
+            issues.push({
+              path: `definition.nodes.${nodeId}.fanout.batchSize`,
+              message: 'fanout.batchSize is only valid when fanout.mode is batch',
+              value: batchSize,
+            })
+          }
         }
 
         const itemReturnType = (fanout as any).itemReturnType

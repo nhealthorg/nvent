@@ -533,6 +533,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
               payload: {
                 run_id: workflow.run_id,
                 node_uid: workflow.node_uid,
+                attempt: Number(workflow.attempt ?? 0),
                 trace_id: trace.getActiveSpan()?.spanContext().traceId,
                 function_id: fn.id,
                 runtime: 'nodejs',
@@ -557,6 +558,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
             payload: {
               run_id: workflow.run_id,
               node_uid: workflow.node_uid,
+              attempt: Number(workflow.attempt ?? 0),
               trace_id: trace.getActiveSpan()?.spanContext().traceId,
               function_id: fn.id,
               runtime: 'nodejs',

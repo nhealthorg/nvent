@@ -16,6 +16,9 @@ pub struct NodeResultWriteRequest {
     /// Node uid: node id for plain nodes, or "{node_id}#{i}" for fanout items.
     #[serde(alias = "uid")]
     pub node_uid: String,
+    /// Optional dispatch attempt number for out-of-order protection.
+    #[serde(default)]
+    pub attempt: Option<u32>,
     pub result: Value,
 }
 
@@ -37,6 +40,20 @@ pub async fn handle(deps: &Deps, req: NodeResultWriteRequest) -> Result<(), Work
     let Some(record) = state::get_run(&deps.iii, &req.run_id).await? else {
         return Ok(());
     };
+
+    let Some(checkpoint) = record.nodes.get(&req.node_uid) else {
+        return Ok(());
+    };
+
+    if checkpoint.state != crate::types::NodeState::Running {
+        return Ok(());
+    }
+
+    if let Some(attempt) = req.attempt {
+        if checkpoint.retries != attempt {
+            return Ok(());
+        }
+    }
 
     let base_node_id = req.node_uid.split('#').next().unwrap_or(req.node_uid.as_str());
     let result_policy = state::get_def(&deps.iii, &record.def_ref)
@@ -69,10 +86,12 @@ mod tests {
         let req: NodeResultWriteRequest = serde_json::from_value(json!({
             "run_id": "r",
             "uid": "step#1",
+            "attempt": 2,
             "result": {"ok": true}
         }))
         .expect("decode with uid alias");
         assert_eq!(req.node_uid, "step#1");
+        assert_eq!(req.attempt, Some(2));
     }
 
     #[test]

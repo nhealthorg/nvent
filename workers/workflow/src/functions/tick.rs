@@ -1013,6 +1013,7 @@ pub(crate) async fn fire_node(
         "_workflow": {
             "run_id": record.run_id,
             "node_uid": node_uid,
+            "attempt": attempt,
             "trace_id": record.workflow_trace_id,
             "result_policy": node.result
         },
@@ -1570,6 +1571,7 @@ mod tests {
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
                     mode: None,
+                    batch_size: None,
                     item_return_type: None,
                 }),
                 result: None,
@@ -2233,6 +2235,7 @@ mod tests {
             read.fanout = Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
                 mode: None,
+                batch_size: None,
                 item_return_type: None,
             });
             read.input = InputSpec {
@@ -2245,6 +2248,7 @@ mod tests {
             synth.fanout = Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
                 mode: None,
+                batch_size: None,
                 item_return_type: None,
             });
             synth.input = InputSpec {

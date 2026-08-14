@@ -144,6 +144,15 @@
 
             <div class="mt-2 flex flex-wrap items-center gap-1.5">
               <UBadge
+                v-if="item.step.loopMode === 'batch'"
+                size="xs"
+                color="info"
+                variant="soft"
+                :title="'Batch window size for this loop group.'"
+              >
+                batch {{ Number(item.step.loopBatchSize || 50) }}
+              </UBadge>
+              <UBadge
                 size="xs"
                 color="info"
                 variant="outline"
@@ -169,6 +178,12 @@
                 <div class="text-cyan-700/80 dark:text-cyan-300/80 uppercase tracking-wide">Items</div>
                 <div class="text-cyan-900 dark:text-cyan-100 font-semibold">
                   {{ item.step.loopItemsDone || 0 }}/{{ item.step.loopItemsTotal || 0 }} done
+                </div>
+                <div
+                  v-if="item.step.loopItemsPipelineDone !== undefined && item.step.loopItemsPipelineDone !== item.step.loopItemsDone"
+                  class="text-cyan-700/85 dark:text-cyan-300/85"
+                >
+                  pipeline {{ item.step.loopItemsPipelineDone || 0 }}/{{ item.step.loopItemsTotal || 0 }}
                 </div>
               </div>
               <div class="rounded border border-cyan-200/70 dark:border-cyan-800/60 bg-white/70 dark:bg-cyan-950/20 px-1.5 py-1">

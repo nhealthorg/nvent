@@ -17,6 +17,7 @@ const MAX_FANOUT_ITEMS: usize = 10_000;
 // fan out into a resource bomb (each item is a harness session + a checkpoint
 // stored in the run's single JSON record). Safety ceiling, not a tuning knob.
 const MAX_TOTAL_NODES: usize = 50_000;
+const DEFAULT_FANOUT_BATCH_SIZE: usize = 50;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -308,7 +309,7 @@ fn deps_done_for_fanout_item(
     true
 }
 
-fn same_sequential_fanout_group(def: &WorkflowDef, a: &str, b: &str) -> bool {
+fn same_ordered_fanout_group(def: &WorkflowDef, a: &str, b: &str, mode: FanoutMode) -> bool {
     if a == b {
         return true;
     }
@@ -326,9 +327,7 @@ fn same_sequential_fanout_group(def: &WorkflowDef, a: &str, b: &str) -> bool {
         return false;
     };
 
-    if a_fanout.mode != Some(FanoutMode::Sequential)
-        || b_fanout.mode != Some(FanoutMode::Sequential)
-    {
+    if a_fanout.mode != Some(mode) || b_fanout.mode != Some(mode) {
         return false;
     }
 
@@ -341,7 +340,7 @@ fn same_sequential_fanout_group(def: &WorkflowDef, a: &str, b: &str) -> bool {
     a_def.depends_on.iter().any(|dep| dep == b) || b_def.depends_on.iter().any(|dep| dep == a)
 }
 
-fn sequential_group_members(def: &WorkflowDef, seed: &str) -> Vec<String> {
+fn ordered_group_members(def: &WorkflowDef, seed: &str, mode: FanoutMode) -> Vec<String> {
     let mut out = Vec::new();
     let mut queue = vec![seed.to_string()];
     let mut seen = BTreeSet::new();
@@ -356,7 +355,7 @@ fn sequential_group_members(def: &WorkflowDef, seed: &str) -> Vec<String> {
             if seen.contains(candidate) {
                 continue;
             }
-            if same_sequential_fanout_group(def, &current, candidate) {
+            if same_ordered_fanout_group(def, &current, candidate, mode) {
                 queue.push(candidate.clone());
             }
         }
@@ -366,12 +365,13 @@ fn sequential_group_members(def: &WorkflowDef, seed: &str) -> Vec<String> {
     out
 }
 
-fn sequential_group_active_index(
+fn ordered_group_active_index(
     def: &WorkflowDef,
     record: &WorkflowRunRecord,
     seed: &str,
+    mode: FanoutMode,
 ) -> Option<usize> {
-    let members = sequential_group_members(def, seed);
+    let members = ordered_group_members(def, seed, mode);
     if members.is_empty() {
         return None;
     }
@@ -481,9 +481,15 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                     node_def.fanout.as_ref().and_then(|f| f.mode),
                     Some(FanoutMode::Sequential)
                 );
+                let batch = matches!(
+                    node_def.fanout.as_ref().and_then(|f| f.mode),
+                    Some(FanoutMode::Batch)
+                );
 
                 let active_index = if sequential {
-                    sequential_group_active_index(def, record, node_id.as_str())
+                    ordered_group_active_index(def, record, node_id.as_str(), FanoutMode::Sequential)
+                } else if batch {
+                    ordered_group_active_index(def, record, node_id.as_str(), FanoutMode::Batch)
                 } else {
                     None
                 };
@@ -514,13 +520,34 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                         }
                     }
                 } else {
-                    for i in 0..*total_items {
-                        let uid = node_uid(node_id, Some(i as u32));
-                        if let Some(cp) = record.nodes.get(&uid) {
-                            if cp.state == NodeState::Pending
-                                && deps_done_for_fanout_item(def, record, node_id, i)
-                            {
-                                frontier.push(uid);
+                    let fanout = node_def.fanout.as_ref();
+                    if batch {
+                        let batch_size = fanout
+                            .and_then(|f| f.batch_size)
+                            .filter(|v| *v > 0)
+                            .unwrap_or(DEFAULT_FANOUT_BATCH_SIZE);
+                        let start = active_index.unwrap_or(0);
+                        let end = start.saturating_add(batch_size).min(*total_items);
+
+                        for i in start..end {
+                            let uid = node_uid(node_id, Some(i as u32));
+                            if let Some(cp) = record.nodes.get(&uid) {
+                                if cp.state == NodeState::Pending
+                                    && deps_done_for_fanout_item(def, record, node_id, i)
+                                {
+                                    frontier.push(uid);
+                                }
+                            }
+                        }
+                    } else {
+                        for i in 0..*total_items {
+                            let uid = node_uid(node_id, Some(i as u32));
+                            if let Some(cp) = record.nodes.get(&uid) {
+                                if cp.state == NodeState::Pending
+                                    && deps_done_for_fanout_item(def, record, node_id, i)
+                                {
+                                    frontier.push(uid);
+                                }
                             }
                         }
                     }
@@ -793,6 +820,7 @@ mod tests {
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
                     mode: None,
+                    batch_size: None,
                     item_return_type: None,
                 }),
                 result: None,
@@ -1109,6 +1137,33 @@ mod tests {
         r.nodes.insert("read#1".into(), done_checkpoint());
         let frontier3 = ready_frontier(&d, &r);
         assert_eq!(frontier3, vec!["read#2".to_string()]);
+    }
+
+    #[test]
+    fn frontier_batch_fanout_releases_window() {
+        let (mut d, mut r) = (def(), record());
+        if let Some(read) = d.nodes.get_mut("read") {
+            if let Some(fanout) = read.fanout.as_mut() {
+                fanout.mode = Some(FanoutMode::Batch);
+                fanout.batch_size = Some(2);
+            }
+        }
+
+        r.nodes.insert("plan".into(), done_checkpoint());
+        let mut results = BTreeMap::new();
+        results.insert("plan".to_string(), json!({"docs":["a","b","c","d"]}));
+        expand_ready_fanouts(&d, &mut r, &results);
+
+        let frontier1 = ready_frontier(&d, &r);
+        assert_eq!(frontier1, vec!["read#0".to_string(), "read#1".to_string()]);
+
+        r.nodes.insert("read#0".into(), done_checkpoint());
+        let frontier2 = ready_frontier(&d, &r);
+        assert_eq!(frontier2, vec!["read#1".to_string(), "read#2".to_string()]);
+
+        r.nodes.insert("read#1".into(), done_checkpoint());
+        let frontier3 = ready_frontier(&d, &r);
+        assert_eq!(frontier3, vec!["read#2".to_string(), "read#3".to_string()]);
     }
 
     // -----------------------------------------------------------------------

@@ -91,7 +91,7 @@ export interface WorkflowContext {
     input?: any
     retry?: { max_attempts?: number }
     depends_on?: string[]
-    fanout?: string | { over: string, mode?: 'parallel' | 'sequential', itemReturnType?: 'memory' | 'store' }
+    fanout?: string | { over: string, mode?: 'parallel' | 'sequential' | 'batch', batchSize?: number, itemReturnType?: 'memory' | 'store' }
     result?: {
       returnType?: 'memory' | 'store' | 'stream'
       streamChunkSize?: number
@@ -199,7 +199,7 @@ export interface WorkflowLoopContext extends WorkflowContext {
   item: WorkflowLoopItemRef
 }
 
-export type WorkflowLoopMode = 'parallel' | 'sequential'
+export type WorkflowLoopMode = 'parallel' | 'sequential' | 'batch'
 
 export interface WorkflowLoopOptions {
   /**
@@ -208,6 +208,11 @@ export interface WorkflowLoopOptions {
    * - sequential: process one item at a time in index order
    */
   mode?: WorkflowLoopMode
+  /**
+   * Batch size used when mode is `batch`.
+   * Defaults to 50 when omitted.
+   */
+  batchSize?: number
   /**
    * Per-item result storage policy for nodes declared inside this loop:
    * - memory (default): keep item results in worker memory only
@@ -633,7 +638,12 @@ export function defineWorkflow<
 
       const resolveFanoutOver = (items: any): string => {
         if (items && typeof items === 'object' && '$ref' in items && typeof items.$ref === 'string') {
-          return items.$ref
+          const refPath = Array.isArray(items.$path)
+            ? items.$path.filter((part: unknown) => typeof part === 'string' && part.length > 0)
+            : []
+          return refPath.length > 0
+            ? `${items.$ref}.${refPath.join('.')}`
+            : items.$ref
         }
         if (typeof items === 'string') {
           return items
@@ -643,7 +653,17 @@ export function defineWorkflow<
 
       const resolveLoopMode = (options?: WorkflowLoopOptions): WorkflowLoopMode => {
         if (options?.mode === 'sequential') return 'sequential'
+        if (options?.mode === 'batch') return 'batch'
         return 'parallel'
+      }
+
+      const resolveLoopBatchSize = (options?: WorkflowLoopOptions): number | undefined => {
+        if (options?.mode !== 'batch') return undefined
+        if (options?.batchSize == null) return 50
+        if (!Number.isInteger(options.batchSize) || options.batchSize <= 0) {
+          throw new Error('loop options.batchSize must be a positive integer when mode is batch')
+        }
+        return options.batchSize
       }
 
       const resolveLoopItemResultReturnType = (options?: WorkflowLoopOptions): 'memory' | 'store' => {
@@ -783,6 +803,7 @@ export function defineWorkflow<
         loop: async <T = any>(items: any, fn: (loopCtx: WorkflowLoopContext) => T | Promise<T>, options?: WorkflowLoopOptions): Promise<T> => {
           const fanoutOver = resolveFanoutOver(items)
           const loopMode = resolveLoopMode(options)
+          const loopBatchSize = resolveLoopBatchSize(options)
           const loopItemResultReturnType = resolveLoopItemResultReturnType(options)
           const loopItemInputReturnType = resolveLoopItemInputReturnType(options)
           const loopItemRef = createWorkflowValueRef('fanout_item', 'fanout_item') as WorkflowLoopItemRef
@@ -803,6 +824,7 @@ export function defineWorkflow<
                 fanout: {
                   over: fanoutOver,
                   ...(loopMode !== 'parallel' ? { mode: loopMode } : {}),
+                  ...(loopMode === 'batch' ? { batchSize: loopBatchSize } : {}),
                   ...(loopItemInputReturnType !== 'memory' ? { itemReturnType: loopItemInputReturnType } : {}),
                 },
                 result: {

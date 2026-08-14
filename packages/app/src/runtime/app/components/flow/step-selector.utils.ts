@@ -109,11 +109,15 @@ export function getStepDisplayName(step: any): string {
 }
 
 export function getLoopModeLabel(mode?: string): string {
-  return mode === 'sequential' ? 'Sequential' : 'Parallel'
+  if (mode === 'sequential') return 'Sequential'
+  if (mode === 'batch') return 'Batch'
+  return 'Parallel'
 }
 
 export function getLoopModeColor(mode?: string): string {
-  return mode === 'sequential' ? 'warning' : 'success'
+  if (mode === 'sequential') return 'warning'
+  if (mode === 'batch') return 'info'
+  return 'success'
 }
 
 export function getResultModeLabel(mode?: string): string {

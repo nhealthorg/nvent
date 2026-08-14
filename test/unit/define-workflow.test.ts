@@ -384,6 +384,50 @@ describe('defineWorkflow compilation', () => {
     expect(plan.nodes['finalize'].depends_on).toEqual(['process-item'])
   })
 
+  it('compiles loop with batch mode and batchSize', async () => {
+    const workflow = defineWorkflow({
+      name: 'loop-batch',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('load-items', input)
+
+        const processed = await ctx.loop(items, async loop => {
+          return loop.call('process-item', loop.item)
+        }, { mode: 'batch', batchSize: 25 })
+
+        return ctx.call('finalize', processed)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['process-item'].fanout).toEqual({
+      over: 'node:load-items',
+      mode: 'batch',
+      batchSize: 25,
+    })
+  })
+
+  it('supports loop sources from nested node result paths', async () => {
+    const workflow = defineWorkflow({
+      name: 'loop-nested-path',
+      async handler(input: { text: string }, ctx) {
+        const data = await ctx.call('load-data', input)
+
+        const processed = await ctx.loop(data.items, async loop => {
+          return loop.call('process-item', loop.item)
+        })
+
+        return ctx.call('finalize', processed)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes['process-item'].fanout).toEqual({
+      over: 'node:load-data.items',
+    })
+  })
+
   it('supports loops inside parallel all blocks', async () => {
     const workflow = defineWorkflow({
       name: 'loop-in-all',

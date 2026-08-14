@@ -21,7 +21,9 @@ export default defineWorkflow({
           const first = await loopCtx.call('process-item', loopCtx.item)
           return loopCtx.call('enrich-item', first)
         },{
-          itemReturnType: 'store'
+          itemReturnType: 'store',
+          mode: 'batch',
+          batchSize: 4
         })
         return b.call('summarize-branch-a', loopResult)
       }),
@@ -29,7 +31,9 @@ export default defineWorkflow({
         const loopResult = await b.loop(items, async loopCtx => {
           const transformed = await loopCtx.call('transform-item', loopCtx.item)
           return loopCtx.call('score-item', transformed)
-        }, { mode: 'sequential' })
+        }, { 
+          mode: 'sequential'
+        })
         return b.call('summarize-branch-b', loopResult)
       }),
     ] as const)

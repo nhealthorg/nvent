@@ -74,6 +74,7 @@ fn three_node_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
                 mode: None,
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -759,6 +760,7 @@ fn fanout_empty_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:a.result.items".to_string(),
                 mode: None,
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1221,6 +1223,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(mode),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1239,6 +1242,7 @@ fn loop_pipeline_def(mode: FanoutMode) -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(mode),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1406,6 +1410,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1424,6 +1429,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1442,6 +1448,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1463,6 +1470,7 @@ fn sequential_loop_with_parallel_all_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1599,6 +1607,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),
@@ -1618,6 +1627,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
                 Some(FanoutSpec {
                     over: "node:plan.result.items".to_string(),
                     mode: Some(FanoutMode::Sequential),
+                    batch_size: None,
                     item_return_type: None,
                 }),
             ),
@@ -1645,6 +1655,7 @@ fn sequential_loop_with_parallel_all_three_branches_def() -> WorkflowDef {
             Some(FanoutSpec {
                 over: "node:plan.result.items".to_string(),
                 mode: Some(FanoutMode::Sequential),
+                batch_size: None,
                 item_return_type: None,
             }),
         ),

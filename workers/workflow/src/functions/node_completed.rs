@@ -45,6 +45,9 @@ pub struct NodeCompletedEvent {
     /// Optional error message (failure path).
     #[serde(default)]
     pub result_error: Option<String>,
+    /// Optional dispatch attempt number for out-of-order protection.
+    #[serde(default)]
+    pub attempt: Option<u32>,
     // Note: Additional fields like _caller_worker_id may be injected by iii-engine
     // and will be silently ignored (no deny_unknown_fields)
 }
@@ -89,6 +92,33 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
             "run already terminal, ignoring event"
         );
         return Ok(());
+    }
+
+    let checkpoint = record.nodes.get(&event.node_uid);
+    let node_is_running = checkpoint
+        .map(|cp| cp.state == crate::types::NodeState::Running)
+        .unwrap_or(false);
+
+    if !node_is_running {
+        tracing::debug!(
+            run_id = %event.run_id,
+            node_uid = %event.node_uid,
+            "ignoring node-completed event for non-running node"
+        );
+        return Ok(());
+    }
+
+    if let (Some(event_attempt), Some(cp)) = (event.attempt, checkpoint) {
+        if cp.retries != event_attempt {
+            tracing::debug!(
+                run_id = %event.run_id,
+                node_uid = %event.node_uid,
+                event_attempt,
+                expected_attempt = cp.retries,
+                "ignoring stale node-completed event due to attempt mismatch"
+            );
+            return Ok(());
+        }
     }
 
     // Optional fast-path payload persistence: runtimes may include result/error
@@ -187,6 +217,7 @@ mod tests {
         let event: NodeCompletedEvent = serde_json::from_value(serde_json::json!({
             "run_id": "run_abc",
             "node_uid": "gen#2",
+            "attempt": 1,
             "trace_id": "1234567890abcdef1234567890abcdef",
             "function_id": "process-text",
                 "runtime": "nodejs",
@@ -201,6 +232,7 @@ mod tests {
         );
         assert_eq!(event.function_id.as_deref(), Some("process-text"));
         assert_eq!(event.runtime.as_deref(), Some("nodejs"));
+        assert_eq!(event.attempt, Some(1));
         assert_eq!(event.result, Some(serde_json::json!({ "ok": true })));
     }
 

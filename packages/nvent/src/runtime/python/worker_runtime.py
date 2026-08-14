@@ -1186,6 +1186,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
+                                    'attempt': int(wf.get('attempt', 0) or 0),
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
@@ -1208,6 +1209,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'attempt': int(wf.get('attempt', 0) or 0),
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
@@ -1303,6 +1305,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
+                                    'attempt': int(wf.get('attempt', 0) or 0),
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
@@ -1323,6 +1326,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'attempt': int(wf.get('attempt', 0) or 0),
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
@@ -1452,6 +1456,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
+                                    'attempt': int(wf.get('attempt', 0) or 0),
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
@@ -1472,6 +1477,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'attempt': int(wf.get('attempt', 0) or 0),
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',
@@ -1579,6 +1585,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
+                                'attempt': int(wf.get('attempt', 0) or 0),
                                 'trace_id': _current_trace_id_hex(),
                                 'function_id': _fn_id,
                                 'runtime': 'python',

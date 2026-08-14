@@ -310,6 +310,10 @@ pub struct FanoutSpec {
     /// - `sequential`: process one item at a time in index order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<FanoutMode>,
+    /// Maximum number of pending/running items concurrently released when
+    /// `mode` is `batch`. Ignored for other modes.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "batchSize")]
+    pub batch_size: Option<usize>,
     /// Fanout item transport/storage policy.
     /// - `memory` (default): keep fanout items in process memory only.
     /// - `store`: persist fanout items in internal state store.
@@ -322,6 +326,7 @@ pub struct FanoutSpec {
 pub enum FanoutMode {
     Parallel,
     Sequential,
+    Batch,
 }
 
 /// Caller-supplied completion callback. When a run reaches a terminal state the

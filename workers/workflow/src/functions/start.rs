@@ -104,7 +104,7 @@ const ALLOWED_NODE_KEYS: &[&str] = &[
 const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "queue", "engine_retry", "runtime"];
 const ALLOWED_RESULT_KEYS: &[&str] = &["returnType", "streamChunkSize", "onMemoryFail"];
 const ALLOWED_INPUT_POLICY_KEYS: &[&str] = &["returnType", "onMemoryFail"];
-const ALLOWED_FANOUT_KEYS: &[&str] = &["over", "mode", "itemReturnType"];
+const ALLOWED_FANOUT_KEYS: &[&str] = &["over", "mode", "batchSize", "itemReturnType"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
 // structural problem (plus the canonical shape), instead of serde's fail-fast
@@ -458,11 +458,30 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
                 if let Some(mode) = fanout_obj.get("mode") {
                     let valid = mode
                         .as_str()
-                        .map(|v| matches!(v, "parallel" | "sequential"))
+                        .map(|v| matches!(v, "parallel" | "sequential" | "batch"))
                         .unwrap_or(false);
                     if !valid {
                         p.push(format!(
-                            "node `{id}`.fanout.mode must be one of: parallel, sequential"
+                            "node `{id}`.fanout.mode must be one of: parallel, sequential, batch"
+                        ));
+                    }
+                }
+
+                if let Some(batch_size) = fanout_obj.get("batchSize") {
+                    let valid = batch_size.as_u64().map(|v| v > 0).unwrap_or(false);
+                    if !valid {
+                        p.push(format!(
+                            "node `{id}`.fanout.batchSize must be a positive integer"
+                        ));
+                    }
+                    let is_batch_mode = fanout_obj
+                        .get("mode")
+                        .and_then(|m| m.as_str())
+                        .map(|m| m == "batch")
+                        .unwrap_or(false);
+                    if !is_batch_mode {
+                        p.push(format!(
+                            "node `{id}`.fanout.batchSize is only valid when fanout.mode is batch"
                         ));
                     }
                 }
@@ -1005,6 +1024,7 @@ mod tests {
             fanout: fanout_over.map(|over| FanoutSpec {
                 over: over.to_string(),
                 mode: None,
+                batch_size: None,
                 item_return_type: None,
             }),
             result: None,
@@ -1152,6 +1172,70 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("fanout.itemReturnType must be one of: memory, store")),
             "invalid fanout.itemReturnType must be rejected"
+        );
+    }
+
+    #[test]
+    fn collect_def_problems_accepts_batch_mode_with_batch_size() {
+        let payload = json!({
+            "definition": {
+                "version": 1,
+                "nodes": {
+                    "plan": {
+                        "function": { "id": "plan-fn" },
+                        "input": { "from": "run_input" }
+                    },
+                    "read": {
+                        "function": { "id": "read-fn" },
+                        "input": { "from": "fanout_item" },
+                        "fanout": {
+                            "over": "node:plan.result.docs",
+                            "mode": "batch",
+                            "batchSize": 25
+                        }
+                    }
+                },
+                "output": { "from": "node:read" }
+            }
+        });
+
+        let problems = collect_def_problems(&payload);
+        assert!(
+            problems.iter().all(|p| !p.contains("fanout.batchSize") && !p.contains("fanout.mode")),
+            "fanout.mode=batch with batchSize should be accepted"
+        );
+    }
+
+    #[test]
+    fn collect_def_problems_rejects_batch_size_without_batch_mode() {
+        let payload = json!({
+            "definition": {
+                "version": 1,
+                "nodes": {
+                    "plan": {
+                        "function": { "id": "plan-fn" },
+                        "input": { "from": "run_input" }
+                    },
+                    "read": {
+                        "function": { "id": "read-fn" },
+                        "input": { "from": "fanout_item" },
+                        "fanout": {
+                            "over": "node:plan.result.docs",
+                            "mode": "parallel",
+                            "batchSize": 10
+                        }
+                    }
+                },
+                "output": { "from": "node:read" }
+            }
+        });
+
+        let problems = collect_def_problems(&payload);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("fanout.batchSize is only valid when fanout.mode is batch")),
+            "batchSize without mode=batch must be rejected"
         );
     }
 
