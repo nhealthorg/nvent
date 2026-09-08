@@ -558,12 +558,36 @@ fn new_run_reference_set() -> RunReferenceSet {
 /// keeps `validate_def`'s cycle check honest about the graph that actually executes.
 /// Run BEFORE `validate_def`. Idempotent.
 fn add_read_dependencies(def: &mut WorkflowDef) {
+    fn collect_value_node_refs(value: &Value, refs: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(source) = map.get("$wf_ref").and_then(|v| v.as_str()) {
+                    if let Some(rest) = source.strip_prefix("node:") {
+                        refs.push(rest.split('.').next().unwrap_or(rest).to_string());
+                    }
+                }
+                for v in map.values() {
+                    collect_value_node_refs(v, refs);
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr {
+                    collect_value_node_refs(v, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
     for node in def.nodes.values_mut() {
         let mut refs: Vec<String> = Vec::new();
         for src in node.input.from.sources() {
             if let Some(rest) = src.strip_prefix("node:") {
                 refs.push(rest.split('.').next().unwrap_or(rest).to_string());
             }
+        }
+        if let Some(payload) = node.input.value.as_ref() {
+            collect_value_node_refs(payload, &mut refs);
         }
         if let Some(fanout) = &node.fanout {
             if let Some(rest) = fanout.over.strip_prefix("node:") {
@@ -1073,6 +1097,36 @@ mod tests {
         add_read_dependencies(&mut def);
         assert_eq!(def.nodes["read"].depends_on, vec!["plan".to_string()]);
         assert!(validate_def(&def).is_ok());
+    }
+
+    #[test]
+    fn add_read_dependencies_includes_dynamic_input_value_refs() {
+        let mut def = well_formed_def();
+        if let Some(node) = def.nodes.get_mut("summarize") {
+            node.depends_on = vec!["read".to_string()];
+            node.input = InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: Some(json!({
+                    "direct": {
+                        "$wf_ref": "node:plan",
+                        "$wf_path": ["storageKey"]
+                    },
+                    "nested": {
+                        "child": {
+                            "$wf_ref": "node:read",
+                            "$wf_path": ["result"]
+                        }
+                    }
+                })),
+            };
+        }
+
+        add_read_dependencies(&mut def);
+
+        let deps = &def.nodes["summarize"].depends_on;
+        assert!(deps.contains(&"plan".to_string()));
+        assert!(deps.contains(&"read".to_string()));
     }
 
     #[test]

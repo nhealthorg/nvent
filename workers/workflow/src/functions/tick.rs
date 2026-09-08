@@ -211,6 +211,34 @@ fn collect_prunable_memory_result_uids(
         .strip_prefix("node:")
         .unwrap_or(&def.output.from);
 
+    fn push_node_ref_base(source: &str, out: &mut HashSet<String>) {
+        if let Some(rest) = source.strip_prefix("node:") {
+            let base = rest.split('.').next().unwrap_or(rest);
+            if !base.is_empty() {
+                out.insert(base.to_string());
+            }
+        }
+    }
+
+    fn collect_dynamic_value_node_refs(value: &Value, out: &mut HashSet<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(source) = map.get("$wf_ref").and_then(|v| v.as_str()) {
+                    push_node_ref_base(source, out);
+                }
+                for v in map.values() {
+                    collect_dynamic_value_node_refs(v, out);
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr {
+                    collect_dynamic_value_node_refs(v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut required_by_active: HashSet<String> = HashSet::new();
     for node_id in def.nodes.keys() {
         if node_group_terminal(def, record, node_id) {
@@ -219,6 +247,15 @@ fn collect_prunable_memory_result_uids(
         if let Some(node) = def.nodes.get(node_id) {
             for dep in &node.depends_on {
                 required_by_active.insert(dep.clone());
+            }
+            for src in node.input.from.sources() {
+                push_node_ref_base(src, &mut required_by_active);
+            }
+            if let Some(payload) = node.input.value.as_ref() {
+                collect_dynamic_value_node_refs(payload, &mut required_by_active);
+            }
+            if let Some(fanout) = node.fanout.as_ref() {
+                push_node_ref_base(&fanout.over, &mut required_by_active);
             }
         }
     }
@@ -1967,6 +2004,143 @@ mod tests {
         assert!(
             to_prune.is_empty(),
             "must not prune when downstream nodes still depend on the result"
+        );
+    }
+
+    #[test]
+    fn prune_selection_keeps_results_referenced_only_in_dynamic_payload_value() {
+        let mut nodes = BTreeMap::new();
+
+        nodes.insert(
+            "load".to_string(),
+            NodeDef {
+                label: None,
+                function: FunctionSpec {
+                    id: "load-fn".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                },
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+                result: Some(NodeResultSpec {
+                    return_type: NodeResultReturnType::Memory,
+                    stream_chunk_size: None,
+                    on_memory_fail: None,
+                }),
+                input_policy: None,
+            },
+        );
+
+        nodes.insert(
+            "middle".to_string(),
+            NodeDef {
+                label: None,
+                function: FunctionSpec {
+                    id: "middle-fn".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                },
+                input: InputSpec {
+                    from: "node:load".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec!["load".to_string()],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        nodes.insert(
+            "consume".to_string(),
+            NodeDef {
+                label: None,
+                function: FunctionSpec {
+                    id: "consume-fn".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                },
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: Some(json!({
+                        "storageKey": {
+                            "$wf_ref": "node:load",
+                            "$wf_path": ["storageKey"]
+                        },
+                        "meta": {
+                            "$wf_ref": "node:middle",
+                            "$wf_path": ["sourceType"]
+                        }
+                    })),
+                },
+                // Simulate transitive reduction: only `middle` is listed in depends_on,
+                // while input.value still directly reads node:load.
+                depends_on: vec!["middle".to_string()],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        let def = WorkflowDef {
+            version: 1,
+            nodes,
+            output: OutputRef {
+                from: "node:consume".to_string(),
+            },
+            default_functions: None,
+            metadata: None,
+        };
+
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "load".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/load".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+        record.nodes.insert(
+            "middle".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some("run_test/middle".to_string()),
+                result_error: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(2),
+                worker_name: None,
+            },
+        );
+
+        let to_prune = collect_prunable_memory_result_uids(&def, &record);
+        assert!(
+            !to_prune.contains(&"load".to_string()),
+            "load result must not be pruned: still read via input.value.$wf_ref"
         );
     }
 
