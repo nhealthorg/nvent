@@ -160,16 +160,49 @@ pub struct WorkflowMetadata {
 
 /// Optional hook function ids for workflow lifecycle events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkflowLifecycleHookTarget {
+    #[serde(alias = "functionId")]
+    pub function: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum WorkflowLifecycleHookSpec {
+    FunctionId(String),
+    Target(WorkflowLifecycleHookTarget),
+}
+
+impl WorkflowLifecycleHookSpec {
+    pub fn function_id(&self) -> &str {
+        match self {
+            Self::FunctionId(function_id) => function_id.as_str(),
+            Self::Target(target) => target.function.as_str(),
+        }
+    }
+
+    pub fn static_input(&self) -> Option<&BTreeMap<String, Value>> {
+        match self {
+            Self::FunctionId(_) => None,
+            Self::Target(target) => target.input.as_ref(),
+        }
+    }
+}
+
+/// Optional hook function specs for workflow lifecycle events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowLifecycleHooks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_start: Option<String>,
+    pub on_start: Option<WorkflowLifecycleHookSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_end: Option<String>,
+    pub on_end: Option<WorkflowLifecycleHookSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_error: Option<String>,
+    pub on_error: Option<WorkflowLifecycleHookSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_delete: Option<String>,
+    pub on_delete: Option<WorkflowLifecycleHookSpec>,
 }
 
 /// Selects the node whose result becomes the run's `result`.

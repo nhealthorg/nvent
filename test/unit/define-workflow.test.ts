@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const registryMock: { functions: any[] } = { functions: [] }
+const triggerMock = vi.fn()
 
 vi.mock('#nvent/iii-registry', () => ({
   default: registryMock,
@@ -9,7 +10,7 @@ vi.mock('#nvent/iii-registry', () => ({
 
 vi.mock('#imports', () => ({
   useIii: () => ({
-    trigger: vi.fn(),
+    trigger: triggerMock,
   }),
 }))
 
@@ -18,6 +19,7 @@ import { defineWorkflow } from '../../packages/nvent/src/runtime/nitro/utils/def
 describe('defineWorkflow compilation', () => {
   beforeEach(() => {
     registryMock.functions = []
+    triggerMock.mockReset()
   })
 
   it('keeps control-flow deps separate from older data refs after a parallel block', async () => {
@@ -629,6 +631,36 @@ describe('defineWorkflow compilation', () => {
           $wf_path: ['text'],
         },
       },
+    })
+  })
+
+  it('maps workflow hooks from string and object specs into metadata', async () => {
+    triggerMock.mockResolvedValue({ run_id: 'run_123' })
+
+    const workflow = defineWorkflow({
+      name: 'hook-spec-support',
+      hooks: {
+        onStart: {
+          function: 'hook::start',
+          input: { team: 'ops', priority: 'high' },
+        },
+        onError: 'hook::error',
+      },
+      async handler(input: { text: string }, ctx) {
+        return ctx.call('process', input)
+      },
+    })
+
+    await workflow.handler({ text: 'Hello' })
+
+    expect(triggerMock).toHaveBeenCalledTimes(1)
+    const payload = triggerMock.mock.calls[0]?.[0]?.payload
+    expect(payload?.definition?.metadata?.hooks).toEqual({
+      on_start: {
+        function: 'hook::start',
+        input: { team: 'ops', priority: 'high' },
+      },
+      on_error: 'hook::error',
     })
   })
 })

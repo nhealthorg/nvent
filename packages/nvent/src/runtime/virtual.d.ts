@@ -32,6 +32,8 @@ declare module '#nvent/server' {
     SubscribeTriggerConfig,
     LogTriggerConfig,
     CustomTriggerConfig,
+    HookEventType,
+    HookEventsInput,
     HttpRequest,
   } from './nitro/utils/defineFunction'
   export { useIii, useIiiHealth } from './nitro/utils/useIii'

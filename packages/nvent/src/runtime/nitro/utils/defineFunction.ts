@@ -23,6 +23,13 @@
  * ```
  */
 
+import type {
+  WorkflowHookInput,
+  WorkflowOnDeleteHookInput,
+  WorkflowOnStartHookInput,
+  WorkflowOnTerminalHookInput,
+} from './defineWorkflow'
+
 // ─── HTTP request shape ──────────────────────────────────────────────────────
 
 /**
@@ -214,6 +221,23 @@ export interface WorkflowFunctionOptions {
   }
 }
 
+export type HookEventType = 'onStart' | 'onSuccess' | 'onEnd' | 'onError' | 'onDelete'
+
+type HookEventToInput<
+  TEvent extends HookEventType,
+  TStaticInput extends WorkflowHookInput,
+> =
+  TEvent extends 'onStart'
+    ? WorkflowOnStartHookInput<TStaticInput>
+    : TEvent extends 'onDelete'
+      ? WorkflowOnDeleteHookInput<TStaticInput>
+      : WorkflowOnTerminalHookInput<TStaticInput>
+
+export type HookEventsInput<
+  TEvents extends readonly HookEventType[],
+  TStaticInput extends WorkflowHookInput = WorkflowHookInput,
+> = HookEventToInput<TEvents[number], TStaticInput>
+
 export type FunctionHandler<TInput = unknown, TOutput = unknown> = (
   input: TInput,
   context: FunctionContext,
@@ -228,6 +252,10 @@ export interface FunctionDef<TInput = unknown, TOutput = unknown> {
   triggers?: TriggerConfig[]
   /** Enable workflow execution support for this function. */
   workflow?: boolean | WorkflowFunctionOptions
+  /** Optional function type classification for UX and typing helpers. */
+  type?: 'function' | 'hook'
+  /** Declares which lifecycle hook events this function handles when type is `hook`. */
+  hookEvent?: readonly HookEventType[]
   handler: FunctionHandler<TInput, TOutput>
   /** JSON Schema for the function input — registered with iii for agent/CLI discovery. */
   request_format?: Record<string, unknown>
@@ -277,6 +305,37 @@ function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined
  * You may also pass raw JSON Schema objects as `request_format` / `response_format`
  * if you prefer explicit control.
  */
+export function defineFunction<
+  TEvents extends readonly HookEventType[],
+  TStaticInput extends WorkflowHookInput = WorkflowHookInput,
+  TInSchema extends Parseable<any> | undefined = undefined,
+  TOutSchema extends Parseable<any> | undefined = undefined,
+  TInput = TInSchema extends Parseable<infer T> ? T : HookEventsInput<TEvents, TStaticInput>,
+  TOutput = TOutSchema extends Parseable<infer T> ? T : unknown,
+>(
+  config: {
+    /** Optional explicit function id override. Defaults to file-path-derived id. */
+    name?: string
+    /** Optional UI-facing label for workflow/inspector views. */
+    label?: string
+    description?: string
+    type: 'hook'
+    hookEvent: TEvents
+    /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
+    input?: TInSchema
+    /** Schema for the handler output. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
+    output?: TOutSchema
+    /** Raw JSON Schema override for the input (takes precedence over `input` extraction). */
+    request_format?: Record<string, unknown>
+    /** Raw JSON Schema override for the output (takes precedence over `output` extraction). */
+    response_format?: Record<string, unknown>
+    /** Enable workflow execution support; optionally choose the dispatch queue. */
+    workflow?: boolean | WorkflowFunctionOptions
+    triggers?: TriggerConfig[]
+    handler: FunctionHandler<TInput, TOutput>
+  },
+): FunctionDef<TInput, TOutput>
+
 export function defineFunction<
   TInSchema extends Parseable<any> | undefined = undefined,
   TOutSchema extends Parseable<any> | undefined = undefined,

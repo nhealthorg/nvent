@@ -24,6 +24,8 @@ export type {
   SubscribeTriggerConfig,
   LogTriggerConfig,
   CustomTriggerConfig,
+  HookEventType,
+  HookEventsInput,
   HttpRequest,
 } from './utils/defineFunction'
 

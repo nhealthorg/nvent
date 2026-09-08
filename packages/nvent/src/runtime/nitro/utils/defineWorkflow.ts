@@ -199,6 +199,61 @@ export interface WorkflowLoopContext extends WorkflowContext {
   item: WorkflowLoopItemRef
 }
 
+export type WorkflowHookInput = Record<string, unknown>
+
+export type WorkflowHookEvent = 'on_start' | 'on_end' | 'on_error' | 'on_delete'
+
+export interface WorkflowHookBasePayload {
+  event: WorkflowHookEvent
+  run_id: string
+  status: WorkflowRunRecord['status']
+  workflow_name?: string
+}
+
+export interface WorkflowOnStartHookPayload extends WorkflowHookBasePayload {
+  event: 'on_start'
+  created_at: number
+}
+
+export interface WorkflowOnTerminalHookPayload extends WorkflowHookBasePayload {
+  event: 'on_end' | 'on_error'
+  result?: unknown
+  result_error?: string
+  updated_at: number
+}
+
+export interface WorkflowOnDeleteHookPayload extends WorkflowHookBasePayload {
+  event: 'on_delete'
+  was_terminal: boolean
+  result?: unknown
+  result_error?: string
+  deleted_at: number
+}
+
+export type WorkflowAnyHookPayload =
+  | WorkflowOnStartHookPayload
+  | WorkflowOnTerminalHookPayload
+  | WorkflowOnDeleteHookPayload
+
+export type WorkflowHookPayloadWithStaticInput<
+  TStaticInput extends WorkflowHookInput,
+  TPayload extends object,
+> = Omit<TStaticInput, keyof TPayload> & TPayload
+
+export type WorkflowOnStartHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput> =
+  WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnStartHookPayload>
+
+export type WorkflowOnTerminalHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput> =
+  WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnTerminalHookPayload>
+
+export type WorkflowOnDeleteHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput> =
+  WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnDeleteHookPayload>
+
+export type WorkflowHookSpec<TInput extends WorkflowHookInput = WorkflowHookInput> = string | {
+  function: string
+  input?: TInput
+}
+
 export type WorkflowLoopMode = 'parallel' | 'sequential' | 'batch'
 
 export interface WorkflowLoopOptions {
@@ -488,10 +543,10 @@ export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends 
   handler: WorkflowHandler<TInput, TOutput>
   description?: string
   hooks?: {
-    onStart?: string
-    onEnd?: string
-    onError?: string
-    onDelete?: string
+    onStart?: WorkflowHookSpec
+    onEnd?: WorkflowHookSpec
+    onError?: WorkflowHookSpec
+    onDelete?: WorkflowHookSpec
   }
   triggers?: TTriggers
   /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
@@ -507,6 +562,26 @@ export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends 
   inputPolicy?: NodeInputOptions
   request_format?: Record<string, any>
   response_format?: Record<string, any>
+}
+
+function normalizeWorkflowHook(spec?: WorkflowHookSpec): WorkflowHookSpec | undefined {
+  if (!spec) return undefined
+  if (typeof spec === 'string') {
+    return spec.trim().length > 0 ? spec : undefined
+  }
+
+  const fn = typeof spec.function === 'string' ? spec.function.trim() : ''
+  if (!fn) return undefined
+
+  const normalized: WorkflowHookSpec = {
+    function: fn,
+  }
+
+  if (spec.input && typeof spec.input === 'object' && !Array.isArray(spec.input)) {
+    ;(normalized as any).input = spec.input
+  }
+
+  return normalized
 }
 
 /**
@@ -549,10 +624,10 @@ export function defineWorkflow<
           name: options.name,
           description: options.description,
           hooks: options.hooks ? {
-            on_start: options.hooks.onStart,
-            on_end: options.hooks.onEnd,
-            on_error: options.hooks.onError,
-            on_delete: options.hooks.onDelete,
+            on_start: normalizeWorkflowHook(options.hooks.onStart),
+            on_end: normalizeWorkflowHook(options.hooks.onEnd),
+            on_error: normalizeWorkflowHook(options.hooks.onError),
+            on_delete: normalizeWorkflowHook(options.hooks.onDelete),
           } : undefined,
           created_by_worker: `nvent-nodejs-${process.pid}`,
         },
