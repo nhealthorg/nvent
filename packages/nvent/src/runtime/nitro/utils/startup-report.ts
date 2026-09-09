@@ -1,3 +1,5 @@
+import consola from 'consola'
+
 export interface NventStartupReportOptions {
   wsUrl: string
   httpPort: number
@@ -6,6 +8,9 @@ export interface NventStartupReportOptions {
   consolePort?: number
   consoleEnabled: boolean
   composeNamespace: string
+  projectNamespace?: string
+  namespaceMode?: 'single' | 'mapped'
+  namespaceMap?: Record<string, string>
   composeFilePath: string
 }
 
@@ -14,11 +19,13 @@ export function printNventStartupReport(options: NventStartupReportOptions): voi
   const streamUrl = `ws://${options.httpHost}:${options.streamPort}`
   const consoleUrl = options.consoleEnabled ? `http://${options.httpHost}:${options.consolePort}` : '(disabled)'
 
-  console.info('[nvent] Runtime')
-  console.info(`  -> iii ws:       ${options.wsUrl}`)
-  console.info(`  -> iii http:     ${httpUrl}`)
-  console.info(`  -> iii stream:   ${streamUrl}`)
-  console.info(`  -> iii console:  ${consoleUrl}`)
-  console.info(`  -> compose ns:   ${options.composeNamespace}`)
-  console.info(`  -> compose file: ${options.composeFilePath}`)
+  consola.info('[nvent] Runtime')
+  consola.info(`  -> iii ws:       ${options.wsUrl}`)
+  consola.info(`  -> iii http:     ${httpUrl}`)
+  consola.info(`  -> iii stream:   ${streamUrl}`)
+  consola.info(`  -> iii console:  ${consoleUrl}`)
+  consola.info(`  -> namespace:    ${options.namespaceMode ?? 'single'} / default=${options.namespaceMap?.app ?? 'default'}`)
+  consola.info(`  -> compose ns:   ${options.composeNamespace}`)
+  consola.info(`  -> project ns:   ${options.projectNamespace ?? options.composeNamespace}`)
+  consola.info(`  -> compose file: ${options.composeFilePath}`)
 }

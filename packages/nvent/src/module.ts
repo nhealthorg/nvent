@@ -28,8 +28,7 @@ import {
   updateTemplates,
   hasNuxtModule,
 } from '@nuxt/kit'
-import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync, utimesSync, cpSync, rmSync } from 'node:fs'
-import { createServer } from 'node:net'
+import { readFileSync, copyFileSync, mkdirSync, writeFileSync, existsSync, chmodSync, statSync, cpSync, rmSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { addCustomTab } from '@nuxt/devtools-kit'
 import { ensureIiiEngine, ensureIiiWorker, assertSupportedIiiVersion } from './iii/install'
@@ -37,14 +36,18 @@ import {
   buildEngineConfig,
 } from './iii/config'
 import { generateWorkerComposeYaml } from './iii/compose'
+import { resolveComposeEngineAdvanced } from './iii/compose-advanced'
+import { resolveNamespaceSettings } from './iii/namespace'
 import { resolveExtendedFunctionAbsPath } from './iii/extendedFunctionPath'
-import { mergeExtendedQueueConfigs, type NventExtendedQueueDefinition } from './iii/extendedQueues'
+import { mergeExtendedQueueConfigs } from './iii/extendedQueues'
+import type { NventExtendFunctionsHookPayload, NventExtendQueuesHookPayload } from './iii/module-hooks'
+import { cleanupLingeringEngineForNamespace, getWorkflowBinaryName, pickFirstExistingPath, resolveRuntimePorts, stageWorkflowBinary, validateComposeFile } from './iii/runtime-support'
 import type { NventIiiOptions } from './types'
 import { scanFunctions, generateIiiRegistryTemplate, type ScannedRegistry, type PythonPathRewrite, type LayerInfo } from './iii/registry'
 import { installNventPyToSitePackages, installPythonRequirements, writePyrightConfig, ensurePythonVenv, installPythonPackages } from './iii/python'
 import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
-import { WorkflowWorkerManager, resolveWorkflowBinaryFromPackageRoot } from './runtime/nitro/utils/workers/workflow'
-import { createComposeManager } from './runtime/nitro/utils/compose'
+import { WorkflowWorkerManager } from './runtime/nitro/utils/workers/workflow'
+import { ComposeStartupError, createComposeManager } from './runtime/nitro/utils/compose'
 import { printNventStartupReport } from './runtime/nitro/utils/startup-report'
 
 import chokidar from 'chokidar'
@@ -61,144 +64,6 @@ const meta = {
 }
 
 const III_REGISTRY_TEMPLATE = 'iii-registry.mjs'
-
-function getWorkflowBinaryName(): string {
-  return process.platform === 'win32' ? 'workflow.exe' : 'workflow'
-}
-
-async function resolveAvailablePort(preferredPort: number, host = '127.0.0.1', maxAttempts = 25): Promise<number> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const port = preferredPort + i
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const server = createServer()
-        server.once('error', reject)
-        server.once('listening', () => {
-          server.close(() => resolve())
-        })
-        server.listen(port, host)
-      })
-      return port
-    }
-    catch {
-      // Port is occupied; keep scanning only as a fallback.
-    }
-  }
-  return preferredPort
-}
-
-function pickFirstExistingPath(candidates: string[]): string {
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
-  }
-  return candidates[0] ?? ''
-}
-
-function stageWorkflowBinary(targetBinDir: string, packageRootDir: string): string | undefined {
-  try {
-    const source = resolveWorkflowBinaryFromPackageRoot(packageRootDir)
-    if (!source) return undefined
-    if (!existsSync(source)) return undefined
-    
-    mkdirSync(targetBinDir, { recursive: true })
-    const target = join(targetBinDir, getWorkflowBinaryName())
-
-    // Check if the target is already modern and exists before copying.
-    // This prevents "Text file busy" errors if the engine is already running 
-    // or another process has the binary open.
-    if (existsSync(target)) {
-      try {
-        const sourceStat = statSync(source)
-        const targetStat = statSync(target)
-        // If the binary is current (size AND mtime), skip the copy.
-        if (sourceStat.size === targetStat.size && sourceStat.mtimeMs === targetStat.mtimeMs) {
-          return target
-        }
-      } catch {
-        // Fallback to copy if stat fails
-      }
-    }
-
-    try {
-      copyFileSync(source, target)
-    }
-    catch (err: any) {
-      // Another still-running process may execute this file during a quick dev restart.
-      // Reuse the existing binary instead of failing the whole managed startup.
-      if (err?.code === 'ETXTBSY' && existsSync(target)) {
-        return target
-      }
-      throw err
-    }
-    utimesSync(target, statSync(source).atime, statSync(source).mtime)
-    if (process.platform !== 'win32') {
-      chmodSync(target, 0o755)
-    }
-    return target
-  }
-  catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.warn(`[nvent] workflow worker binary could not be staged to .nvent/bin: ${message}`)
-    return undefined
-  }
-}
-
-export interface NventExtendedFunction {
-  /** iii function ID (e.g. `fhir::terminology::lookup`) */
-  id: string
-  /** Absolute file path, or root-relative path, to a TS/JS function module */
-  absPath: string
-  /** Optional human-readable description */
-  description?: string
-}
-
-export interface NventExtendedPythonFunction {
-  /** iii function ID (e.g. `fhir::terminology::expand`) */
-  id: string
-  /** Absolute file path, or root-relative path, to a .py file */
-  absPath: string
-  /** When true, start this function in a dedicated worker process */
-  standalone?: boolean
-}
-
-export interface NventExtendFunctionsHookPayload {
-  /** Push extra TS/JS function files to register */
-  functions: NventExtendedFunction[]
-  /** Push extra Python function files to register */
-  pythonFunctions: NventExtendedPythonFunction[]
-  /** Push extra Workflow files to register */
-  workflows: NventExtendedFunction[]
-  /** Nuxt project root */
-  rootDir: string
-  /** Layer scan context (same as nvent internal scan) */
-  layerInfos: LayerInfo[]
-  /** Configured functions dir relative to each layer's server dir */
-  functionsDir: string
-  /** Configured workflows dir relative to each layer's server dir */
-  workflowsDir: string
-}
-
-export interface NventExtendQueuesHookPayload {
-  /** Push extra named queues to register in iii engine config. */
-  queues: NventExtendedQueueDefinition[]
-  /** Nuxt project root */
-  rootDir: string
-}
-
-declare module '@nuxt/schema' {
-  interface NuxtHooks {
-    /**
-     * Extend nvent function discovery with additional TS/JS or Python function files.
-     * Useful for Nuxt modules that ship their own iii handlers.
-     */
-    'nvent:functions:extend': (payload: NventExtendFunctionsHookPayload) => void | Promise<void>
-    /**
-     * Extend iii named queue definitions so module-owned workflows can enqueue safely.
-     * Duplicate policy: first queue definition wins; later duplicates are ignored with a warning.
-     */
-    'nvent:queues:extend': (payload: NventExtendQueuesHookPayload) => void | Promise<void>
-  }
-}
 
 export default defineNuxtModule<NventIiiOptions>({
   meta,
@@ -232,11 +97,6 @@ export default defineNuxtModule<NventIiiOptions>({
 
     const functionsDir = opts.functions?.dir ?? 'functions'
     const workflowsDir = opts.workflows?.dir ?? 'workflows'
-    const defaultWsPort = 49134
-    const defaultHttpPort = 3111
-    const defaultStreamPort = 3112
-    const defaultConsolePort = 3113
-
     const rawPythonPath = opts.functions?.python?.devPath ?? '.venv/bin/python3'
     const pythonBin = isAbsolute(rawPythonPath) ? rawPythonPath : join(nuxt.options.rootDir, rawPythonPath)
     const skipPython = opts.functions?.python?.skip ?? false
@@ -247,20 +107,20 @@ export default defineNuxtModule<NventIiiOptions>({
     const configuredStreamPort = iiiOpts.streamPort
     const configuredConsolePort = consoleCfg.port
 
-    const resolvedWsPort = configuredWsPort ?? await resolveAvailablePort(defaultWsPort)
-    const resolvedHttpPort = configuredHttpPort ?? await resolveAvailablePort(defaultHttpPort)
-    const resolvedStreamPort = configuredStreamPort ?? await resolveAvailablePort(defaultStreamPort)
-    const resolvedConsolePort = configuredConsolePort ?? await resolveAvailablePort(defaultConsolePort)
-    const wsUrl = iiiOpts.wsUrl ?? `ws://localhost:${resolvedWsPort}`
     const composeOpts = iiiOpts.compose ?? {}
+    const composeEngineAdvanced = resolveComposeEngineAdvanced(composeOpts.engine)
     const namespaceOpts = iiiOpts.namespace ?? {}
-    const namespaceMode = namespaceOpts.mode ?? 'single'
-    const namespaceDefault = (namespaceOpts.default ?? 'default').trim() || 'default'
-    const namespaceMap = namespaceOpts.map ?? {}
-    const composeDaemonNamespace = (composeOpts.daemonNamespace ?? namespaceDefault).trim() || namespaceDefault
-    const composeProjectNamespace = namespaceMode === 'mapped'
-      ? ((namespaceMap.compose ?? namespaceDefault).trim() || namespaceDefault)
-      : namespaceDefault
+    const namespaceSettings = resolveNamespaceSettings({
+      mode: namespaceOpts.mode,
+      default: namespaceOpts.default,
+      map: namespaceOpts.map,
+      daemonNamespace: composeOpts.daemonNamespace,
+    })
+    const namespaceMode = namespaceSettings.mode
+    const namespaceDefault = namespaceSettings.defaultNamespace
+    const namespaceMap = namespaceSettings.map
+    const composeDaemonNamespace = namespaceSettings.daemonNamespace
+    const composeProjectNamespace = namespaceSettings.projectNamespace
 
     // Compose is the only runtime path in iii 0.23+.
     const managed = composeOpts.managed ?? true
@@ -277,11 +137,33 @@ export default defineNuxtModule<NventIiiOptions>({
     const logLevel = iiiOpts.logLevel ?? 'warn'
     const failOnInstallFailure = iiiOpts.failOnInstallFailure ?? false
 
-    const packageRootDir = workflowPackageRoot
     // Nuxt-native runtime root: dev under .nuxt, build staging under node_modules/.nvent.
     const nventDir = nuxt.options.dev
       ? join(nuxt.options.buildDir, 'nvent')
       : join(nuxt.options.rootDir, 'node_modules', '.nvent')
+
+    // A previous failed compose startup can leave an engine process running in the
+    // same namespace. Clean that up before strict stream-port validation.
+    if (nuxt.options.dev && managed && composeUpOnStart) {
+      await cleanupLingeringEngineForNamespace({
+        nventDir,
+        daemonNamespace: composeDaemonNamespace,
+        logLevel: composeLogLevel,
+      })
+    }
+
+    const { wsPort: resolvedWsPort, httpPort: resolvedHttpPort, streamPort: resolvedStreamPort, consolePort: resolvedConsolePort } = await resolveRuntimePorts({
+      configuredWsPort,
+      configuredHttpPort,
+      configuredStreamPort,
+      configuredConsolePort,
+      defaultWsPort: 49134,
+      defaultHttpPort: 3111,
+      defaultStreamPort: 3112,
+      defaultConsolePort: 3113,
+    })
+    const wsUrl = iiiOpts.wsUrl ?? `ws://localhost:${resolvedWsPort}`
+    const packageRootDir = workflowPackageRoot
     const nventBinDir = join(nventDir, 'bin')
     const stagedWorkflowBinary = stageWorkflowBinary(nventBinDir, packageRootDir)
 
@@ -361,6 +243,9 @@ export default defineNuxtModule<NventIiiOptions>({
       includeHttp: engineCfg.modules.httpFunctions === true,
       includeStream: engineCfg.modules.stream !== false,
       includeConsole: !!iiiOpts.console,
+      startupTimeout: composeEngineAdvanced.startupTimeout,
+      stopTimeout: composeEngineAdvanced.stopTimeout,
+      engineWorkerOverrides: composeEngineAdvanced.workers,
       consoleVersion: consoleCfg.version,
       consoleConfig: iiiOpts.console ? { http_port: resolvedConsolePort } : undefined,
       workflowWorker: {
@@ -693,6 +578,8 @@ export default defineNuxtModule<NventIiiOptions>({
 
         if (binaryPath) {
           try {
+            await validateComposeFile(binaryPath, composeFilePath, nventDir, composeLogLevel)
+
             const compose = createComposeManager({
               binaryPath,
               composeFilePath,
@@ -730,6 +617,9 @@ export default defineNuxtModule<NventIiiOptions>({
           }
           catch (err: any) {
             console.error('[nvent] Failed to start iii compose daemon — continuing without managed runtime. Error:')
+            if (err instanceof ComposeStartupError) {
+              console.error(`[nvent] compose startup error code: ${err.code}`)
+            }
             if (err && err.stack) console.error(err.stack)
             else console.error(JSON.stringify(err, Object.getOwnPropertyNames(err)))
             if (failOnInstallFailure) {
@@ -844,6 +734,8 @@ export default defineNuxtModule<NventIiiOptions>({
         }
 
         if (binaryPath) {
+          await validateComposeFile(binaryPath, composeFilePath, nventDir, composeLogLevel)
+
           ;(nuxt.hook as any)('nitro:build:public-assets', async (nitro: any) => {
             const outputNventDir = join(nitro.options.output.dir, 'nvent')
             const outputBinDir = join(outputNventDir, 'bin')

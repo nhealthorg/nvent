@@ -123,7 +123,7 @@ async function waitForRequiredTriggerTypes(
 
 async function registerTriggerWithRetry(
   iii: IiiClient,
-  trigger: { type: string, function_id: string, config: Record<string, unknown> },
+  trigger: { type: string, function_id: string, config: Record<string, unknown>, trigger_namespace?: string },
   options?: { maxAttempts?: number, initialDelayMs?: number },
 ): Promise<void> {
   const maxAttempts = options?.maxAttempts ?? 25
@@ -180,7 +180,7 @@ export interface NodeFnInfo {
   id: string
   description?: string
   handler: (input: unknown, context: FunctionContext) => Promise<unknown> | unknown
-  triggers: Array<{ type: string; function_id?: string; config?: Record<string, unknown> }>
+  triggers: Array<{ type: string; function_id?: string; trigger_namespace?: string; config?: Record<string, unknown> }>
   /** JSON Schema for input — passed to iii for agent/CLI discovery. */
   request_format?: Record<string, unknown>
   /** JSON Schema for output — passed to iii for agent/CLI discovery. */
@@ -588,7 +588,12 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
     // Register all declared triggers
     for (const trigger of fn.triggers ?? []) {
       const cfg = trigger.config ?? {}
-      await registerTriggerWithRetry(iii, { type: trigger.type, function_id: fn.id, config: cfg })
+      await registerTriggerWithRetry(iii, {
+        type: trigger.type,
+        function_id: fn.id,
+        trigger_namespace: trigger.trigger_namespace,
+        config: cfg,
+      })
     }
 
     // Register workflow queue subscriber only when explicitly enabled via defineFunction({ workflow }).

@@ -2,6 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const registryMock: { functions: any[] } = { functions: [] }
 const triggerMock = vi.fn()
+const runtimeConfigMock: any = {
+  nvent: {
+    iii: {
+      namespace: {
+        default: 'default',
+        map: {
+          workflows: 'default',
+        },
+      },
+    },
+  },
+}
 
 vi.mock('#nvent/iii-registry', () => ({
   default: registryMock,
@@ -12,6 +24,7 @@ vi.mock('#imports', () => ({
   useIii: () => ({
     trigger: triggerMock,
   }),
+  useRuntimeConfig: () => runtimeConfigMock,
 }))
 
 import { defineWorkflow } from '../../packages/nvent/src/runtime/nitro/utils/defineWorkflow'
@@ -20,6 +33,8 @@ describe('defineWorkflow compilation', () => {
   beforeEach(() => {
     registryMock.functions = []
     triggerMock.mockReset()
+    runtimeConfigMock.nvent.iii.namespace.default = 'default'
+    runtimeConfigMock.nvent.iii.namespace.map.workflows = 'default'
   })
 
   it('keeps control-flow deps separate from older data refs after a parallel block', async () => {
@@ -658,9 +673,86 @@ describe('defineWorkflow compilation', () => {
     expect(payload?.definition?.metadata?.hooks).toEqual({
       on_start: {
         function: 'hook::start',
+        namespace: 'default',
         input: { team: 'ops', priority: 'high' },
       },
-      on_error: 'hook::error',
+      on_error: {
+        function: 'hook::error',
+        namespace: 'default',
+      },
     })
+  })
+
+  it('defaults hook namespace to configured workflows namespace', async () => {
+    runtimeConfigMock.nvent.iii.namespace.default = 'default'
+    runtimeConfigMock.nvent.iii.namespace.map.workflows = 'workflows'
+    triggerMock.mockResolvedValue({ run_id: 'run_234' })
+
+    const workflow = defineWorkflow({
+      name: 'hook-namespace-default',
+      hooks: {
+        onStart: 'hook::start',
+      },
+      async handler(input: { text: string }, ctx) {
+        return ctx.call('process', input)
+      },
+    })
+
+    await workflow.handler({ text: 'Hello' })
+
+    const payload = triggerMock.mock.calls[0]?.[0]?.payload
+    expect(payload?.definition?.metadata?.hooks).toEqual({
+      on_start: {
+        function: 'hook::start',
+        namespace: 'workflows',
+      },
+    })
+  })
+
+  it('keeps explicit hook namespace override', async () => {
+    runtimeConfigMock.nvent.iii.namespace.map.workflows = 'workflows'
+    triggerMock.mockResolvedValue({ run_id: 'run_345' })
+
+    const workflow = defineWorkflow({
+      name: 'hook-namespace-override',
+      hooks: {
+        onError: {
+          function: 'hook::error',
+          namespace: 'ops-alerts',
+        },
+      },
+      async handler(input: { text: string }, ctx) {
+        return ctx.call('process', input)
+      },
+    })
+
+    await workflow.handler({ text: 'Hello' })
+
+    const payload = triggerMock.mock.calls[0]?.[0]?.payload
+    expect(payload?.definition?.metadata?.hooks).toEqual({
+      on_error: {
+        function: 'hook::error',
+        namespace: 'ops-alerts',
+      },
+    })
+  })
+
+  it('rejects empty explicit hook namespace', async () => {
+    triggerMock.mockResolvedValue({ run_id: 'run_456' })
+
+    const workflow = defineWorkflow({
+      name: 'hook-namespace-empty',
+      hooks: {
+        onDelete: {
+          function: 'hook::delete',
+          namespace: '   ',
+        },
+      },
+      async handler(input: { text: string }, ctx) {
+        return ctx.call('process', input)
+      },
+    })
+
+    await expect(workflow.handler({ text: 'Hello' })).rejects.toThrow(/hook namespace must not be empty/)
   })
 })

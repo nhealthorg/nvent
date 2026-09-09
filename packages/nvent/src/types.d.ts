@@ -20,6 +20,25 @@ export interface NventNamespaceOptions {
 }
 
 export interface NventComposeOptions {
+  /**
+   * Advanced compose engine overrides (strictly validated whitelist).
+   * Unknown fields cause a build/startup error.
+   */
+  engine?: {
+    /** Optional top-level compose startup timeout override, e.g. '60s'. */
+    startupTimeout?: string
+    /** Optional top-level compose stop timeout override, e.g. '10s'. */
+    stopTimeout?: string
+    /** Curated engine worker override map. */
+    workers?: {
+      configuration?: Record<string, unknown>
+      'iii-worker-manager'?: Record<string, unknown>
+      'iii-worker-manager#rbac'?: Record<string, unknown>
+      'iii-http-functions'?: Record<string, unknown>
+      'iii-stream'?: Record<string, unknown>
+      'iii-sandbox'?: Record<string, unknown>
+    }
+  }
   /** nvent controls compose/engine lifecycle when true. Default: true */
   managed?: boolean
   /** Compose daemon namespace. Default: namespace.default or 'default' */

@@ -1,4 +1,4 @@
-import { useIii } from '#imports'
+import { useIii, useRuntimeConfig } from '#imports'
 import type { TriggerConfig } from './defineFunction'
 import type { WorkflowRunRecord } from './workflow-types'
 import { normalizeWorkflowInput } from './workflow/input-spec'
@@ -251,6 +251,7 @@ export type WorkflowOnDeleteHookInput<TStaticInput extends WorkflowHookInput = W
 
 export type WorkflowHookSpec<TInput extends WorkflowHookInput = WorkflowHookInput> = string | {
   function: string
+  namespace?: string
   input?: TInput
 }
 
@@ -564,17 +565,41 @@ export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends 
   response_format?: Record<string, any>
 }
 
-function normalizeWorkflowHook(spec?: WorkflowHookSpec): WorkflowHookSpec | undefined {
+function resolveWorkflowHookNamespaceDefault(): string {
+  const runtimeConfig = useRuntimeConfig() as any
+  const nventIii = runtimeConfig?.nvent?.iii
+  const value = String(
+    nventIii?.namespace?.map?.workflows
+    ?? nventIii?.namespace?.default
+    ?? 'default',
+  ).trim()
+  return value.length > 0 ? value : 'default'
+}
+
+function normalizeWorkflowHook(spec: WorkflowHookSpec | undefined, defaultNamespace: string): WorkflowHookSpec | undefined {
   if (!spec) return undefined
   if (typeof spec === 'string') {
-    return spec.trim().length > 0 ? spec : undefined
+    const fn = spec.trim()
+    if (!fn) return undefined
+    return {
+      function: fn,
+      namespace: defaultNamespace,
+    }
   }
 
   const fn = typeof spec.function === 'string' ? spec.function.trim() : ''
   if (!fn) return undefined
 
+  const namespace = typeof spec.namespace === 'string'
+    ? spec.namespace.trim()
+    : defaultNamespace
+  if (!namespace) {
+    throw new Error('[nvent/workflow] hook namespace must not be empty when provided.')
+  }
+
   const normalized: WorkflowHookSpec = {
     function: fn,
+    namespace,
   }
 
   if (spec.input && typeof spec.input === 'object' && !Array.isArray(spec.input)) {
@@ -617,6 +642,7 @@ export function defineWorkflow<
     // the workflow and starts the execution via the workflow-worker.
     async handler(input: TInput) {
       const plan = await workflow.compile(input)
+      const hookNamespaceDefault = resolveWorkflowHookNamespaceDefault()
       const definitionCandidate: Record<string, unknown> = {
         ...plan,
         // Add workflow metadata for UI display
@@ -624,10 +650,10 @@ export function defineWorkflow<
           name: options.name,
           description: options.description,
           hooks: options.hooks ? {
-            on_start: normalizeWorkflowHook(options.hooks.onStart),
-            on_end: normalizeWorkflowHook(options.hooks.onEnd),
-            on_error: normalizeWorkflowHook(options.hooks.onError),
-            on_delete: normalizeWorkflowHook(options.hooks.onDelete),
+            on_start: normalizeWorkflowHook(options.hooks.onStart, hookNamespaceDefault),
+            on_end: normalizeWorkflowHook(options.hooks.onEnd, hookNamespaceDefault),
+            on_error: normalizeWorkflowHook(options.hooks.onError, hookNamespaceDefault),
+            on_delete: normalizeWorkflowHook(options.hooks.onDelete, hookNamespaceDefault),
           } : undefined,
           created_by_worker: `nvent-nodejs-${process.pid}`,
         },

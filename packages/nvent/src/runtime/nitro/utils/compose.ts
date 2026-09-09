@@ -2,6 +2,30 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { delimiter, dirname } from 'node:path'
 
+export type ComposeStartupErrorCode =
+  | 'PROJECT_DID_NOT_START'
+  | 'STARTUP_TIMEOUT'
+  | 'INVALID_NAMESPACE'
+  | 'ENGINE_STARTUP_TIMEOUT'
+  | 'MANAGED_ENGINE_ENDPOINT_MISMATCH'
+  | 'COMPOSE_UP_FAILED'
+
+export class ComposeStartupError extends Error {
+  readonly code: ComposeStartupErrorCode
+  readonly hint: string
+  readonly detail?: string
+
+  constructor(code: ComposeStartupErrorCode, message: string, hint: string, detail?: string) {
+    const lines = [`[${code}] ${message}`, `hint: ${hint}`]
+    if (detail) lines.push(`detail: ${detail}`)
+    super(lines.join('\n'))
+    this.name = 'ComposeStartupError'
+    this.code = code
+    this.hint = hint
+    this.detail = detail
+  }
+}
+
 export interface ComposeManagerOptions {
   binaryPath: string
   composeFilePath: string
@@ -34,6 +58,12 @@ interface UpProgress {
   failureLine?: string
 }
 
+interface ComposeStartupErrorContext {
+  daemonNamespace: string
+  composeFilePath: string
+  upTimeoutMs: number
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -58,6 +88,52 @@ function normalizeComposeLine(line: string): string {
     .replace(/^\[compose(?::[^\]]+)?\]\s*/i, '')
     .replace(/^(stdout|stderr)\s+/i, '')
     .trim()
+}
+
+export function classifyComposeStartupError(detail?: string): ComposeStartupErrorCode {
+  const text = String(detail ?? '').toLowerCase()
+
+  if (/invalid\s+namespace|namespace\s+.*invalid|unknown\s+namespace/.test(text)) {
+    return 'INVALID_NAMESPACE'
+  }
+  if (/engine\s+startup\s+timeout|engine\s+.*timed\s*out/.test(text)) {
+    return 'ENGINE_STARTUP_TIMEOUT'
+  }
+  if (/managed\s+engine\s+endpoint\s+mismatch|endpoint\s+mismatch|engine\s+endpoint\s+.*mismatch/.test(text)) {
+    return 'MANAGED_ENGINE_ENDPOINT_MISMATCH'
+  }
+  if (/startup\s+timeout|timed\s*out|up\s+timeout/.test(text)) {
+    return 'STARTUP_TIMEOUT'
+  }
+  if (/child_exited_before_registration|project\s+.*did\s+not\s+start|exited\s+before\s+startup\s+completed|address\s+already\s+in\s+use/.test(text)) {
+    return 'PROJECT_DID_NOT_START'
+  }
+
+  return 'COMPOSE_UP_FAILED'
+}
+
+function composeStartupHint(code: ComposeStartupErrorCode, ctx: ComposeStartupErrorContext): string {
+  switch (code) {
+    case 'INVALID_NAMESPACE':
+      return `Check nvent.iii.namespace and compose daemon namespace. Current daemon namespace: '${ctx.daemonNamespace}'.`
+    case 'ENGINE_STARTUP_TIMEOUT':
+      return `Engine workers did not become ready in time. Inspect compose logs and increase nvent.iii.compose.upTimeoutMs if startup is expected to be slow.`
+    case 'MANAGED_ENGINE_ENDPOINT_MISMATCH':
+      return `Ensure compose is allowed to manage the engine URL from worker-compose.yaml and avoid overriding with conflicting external endpoints.`
+    case 'STARTUP_TIMEOUT':
+      return `Compose startup exceeded ${ctx.upTimeoutMs}ms. Check worker startup logs or raise nvent.iii.compose.upTimeoutMs.`
+    case 'PROJECT_DID_NOT_START':
+      return `A project worker failed to come up. Check for port collisions and inspect compose logs for failing container entries.`
+    default:
+      return `Compose startup failed. Inspect daemon logs for ${ctx.composeFilePath}.`
+  }
+}
+
+function createComposeStartupError(detail: string | undefined, ctx: ComposeStartupErrorContext): ComposeStartupError {
+  const code = classifyComposeStartupError(detail)
+  const message = `Compose startup failed for namespace '${ctx.daemonNamespace}' using ${ctx.composeFilePath}.`
+  const hint = composeStartupHint(code, ctx)
+  return new ComposeStartupError(code, message, hint, detail)
 }
 
 export class ComposeManager {
@@ -185,17 +261,22 @@ export class ComposeManager {
 
     if (upOnStart && waitForUp) {
       const startTs = Date.now()
+      const startupContext: ComposeStartupErrorContext = {
+        daemonNamespace,
+        composeFilePath,
+        upTimeoutMs,
+      }
       while (Date.now() - startTs < upTimeoutMs) {
         if (progress.completed) return
         if (progress.failed) {
-          throw new Error(progress.failureLine || 'compose up failed')
+          throw createComposeStartupError(progress.failureLine || 'compose up failed', startupContext)
         }
         if (!this.isRunning()) {
-          throw new Error('compose daemon exited before startup completed')
+          throw createComposeStartupError('compose daemon exited before startup completed', startupContext)
         }
         await sleep(100)
       }
-      throw new Error(`compose up timeout after ${upTimeoutMs}ms`)
+      throw createComposeStartupError(`compose up timeout after ${upTimeoutMs}ms`, startupContext)
     }
   }
 

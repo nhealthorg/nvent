@@ -1,4 +1,5 @@
 import { stringifyYAML } from 'confbox'
+import type { ComposeEngineWorkerOverrides } from './compose-advanced'
 
 export type WorkflowWorkerSource = 'path' | 'package'
 
@@ -32,9 +33,29 @@ export interface ComposeGenerationOptions {
   includeHttp: boolean
   includeStream: boolean
   includeConsole: boolean
+  startupTimeout?: string
+  stopTimeout?: string
+  engineWorkerOverrides?: ComposeEngineWorkerOverrides
   consoleVersion?: string
   consoleConfig?: Record<string, unknown>
   workflowWorker?: ComposeWorkflowWorkerOptions
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function deepMergeRecord(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base }
+  for (const [key, overrideValue] of Object.entries(override)) {
+    const baseValue = out[key]
+    if (isObjectRecord(baseValue) && isObjectRecord(overrideValue)) {
+      out[key] = deepMergeRecord(baseValue, overrideValue)
+      continue
+    }
+    out[key] = overrideValue
+  }
+  return out
 }
 
 function normalizeNamespace(input: string | undefined, fallback: string): string {
@@ -203,6 +224,16 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
     engineWorkers['iii-stream'] = streamCfg
   }
 
+  if (options.engineWorkerOverrides) {
+    for (const [workerName, workerOverride] of Object.entries(options.engineWorkerOverrides)) {
+      if (!workerOverride) continue
+      const current = engineWorkers[workerName]
+      engineWorkers[workerName] = isObjectRecord(current)
+        ? deepMergeRecord(current, workerOverride)
+        : workerOverride
+    }
+  }
+
   const containers: Record<string, Record<string, unknown>> = {
     ...defaultServiceContainers,
     [workflowContainer.containerName]: workflowContainer.entry as Record<string, unknown>,
@@ -214,8 +245,8 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
 
   const composeDoc = {
     namespace: projectNamespace,
-    startup_timeout: '60s',
-    stop_timeout: '10s',
+    startup_timeout: options.startupTimeout ?? '60s',
+    stop_timeout: options.stopTimeout ?? '10s',
     engine: {
       url: options.engineUrl,
       workers: engineWorkers,

@@ -26,6 +26,18 @@ export interface WorkflowMetadata {
   name?: string
   description?: string
   tags?: string[]
+  hooks?: {
+    on_start?: WorkflowHookMetadataSpec
+    on_end?: WorkflowHookMetadataSpec
+    on_error?: WorkflowHookMetadataSpec
+    on_delete?: WorkflowHookMetadataSpec
+  }
+}
+
+export type WorkflowHookMetadataSpec = string | {
+  function: string
+  namespace?: string
+  input?: Record<string, unknown>
 }
 
 export interface WorkflowOutputRef {

@@ -58,6 +58,8 @@ export interface HttpRequest {
 
 export interface HttpTriggerConfig {
   type: 'http'
+  /** Namespace of the trigger provider. For built-ins this must be 'default' when set. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config: {
@@ -72,6 +74,8 @@ export interface HttpTriggerConfig {
 
 export interface CronTriggerConfig {
   type: 'cron'
+  /** Namespace of the trigger provider. For built-ins this must be 'default' when set. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config: {
@@ -84,6 +88,8 @@ export interface CronTriggerConfig {
 
 export interface QueueTriggerConfig {
   type: 'durable:subscriber'
+  /** Namespace of the trigger provider. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config: {
@@ -94,6 +100,8 @@ export interface QueueTriggerConfig {
 
 export interface StateTriggerConfig {
   type: 'state'
+  /** Namespace of the trigger provider. For built-ins this must be 'default' when set. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config?: {
@@ -105,6 +113,8 @@ export interface StateTriggerConfig {
 
 export interface StreamTriggerConfig {
   type: 'stream'
+  /** Namespace of the trigger provider. For built-ins this must be 'default' when set. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config: {
@@ -116,6 +126,8 @@ export interface StreamTriggerConfig {
 
 export interface SubscribeTriggerConfig {
   type: 'subscribe'
+  /** Namespace of the trigger provider. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config?: {
@@ -126,6 +138,8 @@ export interface SubscribeTriggerConfig {
 
 export interface LogTriggerConfig {
   type: 'log'
+  /** Namespace of the trigger provider. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config?: Record<string, unknown>
@@ -135,6 +149,8 @@ export interface LogTriggerConfig {
 export interface CustomTriggerConfig {
   /** The custom trigger type name (e.g. 'kafka', 'mqtt', 'file-watcher'). */
   type: string
+  /** Namespace of the trigger provider. Required for custom trigger types. */
+  trigger_namespace?: string
   /** @internal injected at registration time */
   function_id?: string
   config?: Record<string, unknown>
@@ -276,6 +292,32 @@ function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined
   return undefined
 }
 
+const BUILTIN_TRIGGER_TYPES = new Set<string>(['http', 'cron', 'state', 'stream', 'durable:subscriber', 'subscribe', 'log'])
+
+function normalizeTriggerNamespace(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function validateTriggerNamespaces(triggers: TriggerConfig[]): void {
+  for (const trigger of triggers) {
+    const triggerNamespace = normalizeTriggerNamespace(trigger.trigger_namespace)
+
+    if (BUILTIN_TRIGGER_TYPES.has(trigger.type)) {
+      // Built-in providers are expected in `default`. Explicit non-default is invalid.
+      if (triggerNamespace && triggerNamespace !== 'default') {
+        throw new Error(`[nvent] trigger '${trigger.type}' must use trigger_namespace='default' when set (received '${triggerNamespace}').`)
+      }
+      continue
+    }
+
+    if (!triggerNamespace) {
+      throw new Error(`[nvent] custom trigger '${trigger.type}' requires trigger_namespace to be set explicitly.`)
+    }
+  }
+}
+
 /**
  * Defines a nvent function: config + handler in one call.
  *
@@ -344,9 +386,15 @@ export function defineFunction<
   TOutput = TOutSchema extends Parseable<infer T> ? T : unknown,
 >(
   config: {
+    /** Optional explicit function id override. Defaults to file-path-derived id. */
+    name?: string
     /** Optional UI-facing label for workflow/inspector views. */
     label?: string
     description?: string
+    /** Optional explicit function classification for non-hook functions. */
+    type?: 'function' | 'hook'
+    /** Optional hook event declaration (validated by overloads). */
+    hookEvent?: readonly HookEventType[]
     /** Schema for the handler input. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
     input?: TInSchema
     /** Schema for the handler output. Infers the TypeScript type and auto-extracts JSON Schema for iii. */
@@ -360,11 +408,29 @@ export function defineFunction<
     triggers?: TTriggers
     handler: FunctionHandler<TInput, TOutput>
   },
-): FunctionDef<TInput, TOutput> {
+): FunctionDef<TInput, TOutput>
+
+export function defineFunction(
+  config: {
+    name?: string
+    label?: string
+    description?: string
+    type?: 'function' | 'hook'
+    hookEvent?: readonly HookEventType[]
+    input?: Parseable<any>
+    output?: Parseable<any>
+    request_format?: Record<string, unknown>
+    response_format?: Record<string, unknown>
+    workflow?: boolean | WorkflowFunctionOptions
+    triggers?: TriggerConfig[]
+    handler: FunctionHandler<any, any>
+  },
+): FunctionDef<any, any> {
   const { input, output, request_format, response_format, ...rest } = config
+  validateTriggerNamespaces(config.triggers ?? [])
   return {
     ...rest,
     request_format: request_format ?? extractJsonSchema(input),
     response_format: response_format ?? extractJsonSchema(output),
-  } as FunctionDef<TInput, TOutput>
+  } as FunctionDef<any, any>
 }

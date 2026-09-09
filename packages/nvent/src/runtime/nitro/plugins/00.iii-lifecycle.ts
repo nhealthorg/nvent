@@ -89,6 +89,9 @@ export default defineNitroPlugin(async (nitroApp) => {
     consolePort: iiiCfg.console?.port,
     consoleEnabled: !!iiiCfg.console,
     composeNamespace: composeCfg.daemonNamespace ?? iiiCfg.namespace?.default ?? 'default',
+    projectNamespace: iiiCfg.namespace?.map?.compose ?? iiiCfg.namespace?.default ?? composeCfg.daemonNamespace ?? 'default',
+    namespaceMode: iiiCfg.namespace?.mode ?? 'single',
+    namespaceMap: iiiCfg.namespace?.map,
     composeFilePath,
   })
 
