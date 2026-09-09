@@ -906,7 +906,6 @@ def _register_workflow_subscriber(client, fn_id: str, workflow_cfg) -> bool:
     if not queue:
         return False
 
-    print(f"[nvent/workflow] subscribing workflow-enabled function {fn_id!r} to queue {queue!r}", flush=True)
     _register_workflow_subscriber_with_retry(client, fn_id, queue)
     return True
 
@@ -1635,7 +1634,12 @@ if __name__ == "__main__":
 
     options = _iii_sdk.InitOptions(
         worker_name=_worker_name,
-        otel={"enabled": True, "service_name": "nvent", "metrics_enabled": False},
+        otel={
+            "enabled": True,
+            "service_name": "nvent",
+            "metrics_enabled": False,
+            "engine_ws_url": _ws_url,
+        },
         telemetry=_iii_sdk.TelemetryOptions(framework="nvent", project_name=_worker_name),
     )
     client = _iii_sdk.register_worker(_ws_url, options)
@@ -1643,8 +1647,7 @@ if __name__ == "__main__":
     # Avoid startup races: queue/http trigger registration can fail if worker modules
     # are still booting while Python handlers are being registered.
     try:
-        _wait_for_required_workers(client, {"queue", "iii-http"}, timeout_s=25.0)
-        _wait_for_required_trigger_types(client, {"durable:subscriber", "http", "cron"}, timeout_s=25.0)
+        _wait_for_required_workers(client, {"queue", "iii-http-functions"}, timeout_s=25.0)
     except Exception as _e:
         print(f"[nvent] WARNING: worker readiness wait failed: {_e}", flush=True)
 

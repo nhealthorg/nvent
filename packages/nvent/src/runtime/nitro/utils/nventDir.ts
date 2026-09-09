@@ -52,18 +52,21 @@ export function resolveNventDir(importMetaUrl: string): string {
   const fromArgv = resolveFromEntryArgv()
   if (fromArgv) return fromArgv
 
-  // Dev fallback: point to node_modules/.nvent if it exists in CWD or up-tree.
-  // This is where module.ts stages binaries in development.
+  // Dev fallback: prefer Nuxt-native .nuxt/nvent runtime roots.
   let current = process.cwd()
   for (let i = 0; i < 3; i++) {
-    const candidate = join(current, 'node_modules', '.nvent')
-    if (fsExistsSync(candidate)) return candidate
+    const nuxtCandidate = join(current, '.nuxt', 'nvent')
+    if (fsExistsSync(nuxtCandidate)) return nuxtCandidate
+
+    const legacyCandidate = join(current, 'node_modules', '.nvent')
+    if (fsExistsSync(legacyCandidate)) return legacyCandidate
+
     const parent = dirname(current)
     if (parent === current) break
     current = parent
   }
 
-  // Final fallback: use a local 'nvent' directory if it exists, otherwise 
+  // Final fallback: use a local 'nvent' directory if it exists, otherwise
   // default to CWD/nvent (even if missing) to let the caller handle errors.
   const localNvent = resolve(process.cwd(), 'nvent')
   return localNvent

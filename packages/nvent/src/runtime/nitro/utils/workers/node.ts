@@ -451,23 +451,22 @@ function createContextLogger(iii: IiiClient, functionId: string, context: { run_
  */
 export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): Promise<void> {
   const requiredWorkers = new Set<string>()
-  const requiredTriggerTypes = new Set<string>()
+  let workflowSubscriptionCount = 0
 
   for (const fn of fns) {
     for (const trigger of fn.triggers ?? []) {
-      if (trigger.type === 'http') requiredWorkers.add('iii-http')
-      if (trigger.type === 'cron') requiredWorkers.add('iii-cron')
+      // Compose-first runtime uses `cron` package worker and engine-owned
+      // `iii-http-functions` (not legacy `iii-cron` / `iii-http`).
+      if (trigger.type === 'http') requiredWorkers.add('iii-http-functions')
+      if (trigger.type === 'cron') requiredWorkers.add('cron')
       if (trigger.type === 'durable:subscriber') requiredWorkers.add('queue')
-      requiredTriggerTypes.add(trigger.type)
     }
     if (fn.workflow) {
       requiredWorkers.add('queue')
-      requiredTriggerTypes.add('durable:subscriber')
     }
   }
 
   await waitForRequiredWorkers(iii, requiredWorkers)
-  await waitForRequiredTriggerTypes(iii, requiredTriggerTypes)
 
   for (const fn of fns) {
     // Wrap handler to auto-emit workflow completion events
@@ -503,6 +502,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
         const activeSpan = trace.getActiveSpan()
         activeSpan?.setAttribute('workflow.run_id', workflow.run_id)
         activeSpan?.setAttribute('workflow.node_uid', workflow.node_uid)
+        let workflowSubscriptionCount = 0
         activeSpan?.setAttribute('iii.function.id', fn.id)
         activeSpan?.setAttribute('workflow.runtime', 'nodejs')
         if (workflow.trace_id) {
@@ -596,9 +596,13 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
       const queue = typeof fn.workflow === 'object' && fn.workflow.queue
         ? fn.workflow.queue
         : 'default'
-      console.log(`[nvent/workflow] subscribing workflow-enabled function ${fn.id} to queue ${queue}`)
       await registerWorkflowQueueSubscriber(iii, fn.id, queue)
+      workflowSubscriptionCount++
     }
+  }
+
+  if (workflowSubscriptionCount > 0) {
+    console.log(`[nvent/workflow] registered ${workflowSubscriptionCount} workflow queue subscriber(s)`)
   }
 }
 

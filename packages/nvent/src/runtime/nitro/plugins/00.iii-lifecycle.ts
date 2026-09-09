@@ -1,27 +1,28 @@
 /**
  * iii Lifecycle Plugin
  *
- * Manages the iii engine and console process lifecycle at **server runtime**.
+ * Manages the iii compose daemon lifecycle at **server runtime**.
  *
- * - **Development**: no-op. The Nuxt module (module.ts) starts engine + console
+ * - **Development**: no-op. The Nuxt module (module.ts) starts compose
  *   in the parent Nuxt process so they survive Nitro hot-reloads naturally.
- * - **Production** (`managed: true`, `mode: 'local'`): starts engine + console here.
+ * - **Production** (`compose.managed: true`): starts compose here.
  *
- * Binaries and iii-config.yaml are placed by `nuxt build` (module.ts) into
+ * Binaries and worker-compose.yaml are placed by `nuxt build` (module.ts) into
  * `.output/nvent/`. The plugin finds them by walking up from import.meta.url —
  * this is CWD-independent and works when .output/ is copied or deployed elsewhere.
  *
- * This plugin does NOT download anything — it finds what build already placed.
+ * This plugin does NOT download any workers — compose resolves package workers.
  *
  * Worker registration (Node.js + Python) is handled by 00.iii-worker.ts.
  */
 
-import { defineNitroPlugin, useRuntimeConfig } from '#imports'
+import { useRuntimeConfig } from '#imports'
+import { defineNitroPlugin } from 'nitropack/runtime'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createEngineManager } from '../utils/engine'
-import { ConsoleManager } from '../utils/console'
+import { createComposeManager } from '../utils/compose'
 import { resolveNventDir } from '../utils/nventDir'
+import { printNventStartupReport } from '../utils/startup-report'
 
 /** Returns the first path that exists among the candidates. */
 function findExisting(...candidates: string[]): string | undefined {
@@ -32,16 +33,14 @@ export default defineNitroPlugin(async (nitroApp) => {
   const rc = useRuntimeConfig() as any
   const cfg = rc.nvent ?? {}
   const iiiCfg = cfg.iii ?? {}
+  const composeCfg = iiiCfg.compose ?? {}
 
-  if (!iiiCfg.managed) return
-  if ((iiiCfg.mode ?? 'local') !== 'local') return
+  if (!composeCfg.managed) return
 
   // In dev, module.ts manages engine + console in the Nuxt parent process.
   if (process.env.NODE_ENV === 'development') return
 
-  const httpPort: number = iiiCfg.httpPort ?? 3111
-  const wsPort: number = iiiCfg.wsPort ?? 49134
-  const logLevel = (iiiCfg.logLevel ?? 'warn') as 'none' | 'error' | 'warn' | 'info'
+  const logLevel = ((composeCfg.logLevel ?? 'info') as 'none' | 'error' | 'warn' | 'info')
 
   const binaryName = process.platform === 'win32' ? 'iii.exe' : 'iii'
 
@@ -50,6 +49,8 @@ export default defineNitroPlugin(async (nitroApp) => {
   // Set NVENT_DIR env var to override for custom deploy layouts.
   const nventDir = resolveNventDir(import.meta.url)
   const binDir = join(nventDir, 'bin')
+  const composeFileName = (composeCfg.file ?? 'worker-compose.yaml').trim() || 'worker-compose.yaml'
+  const composeFilePath = join(nventDir, composeFileName)
 
   const binaryPath = findExisting(join(binDir, binaryName))
   if (!binaryPath) {
@@ -57,53 +58,63 @@ export default defineNitroPlugin(async (nitroApp) => {
     return
   }
 
-  // Prefer the build-generated config.yaml. Keep iii-config.yaml as legacy fallback.
-  let configPath = findExisting(join(nventDir, 'config.yaml'), join(nventDir, 'iii-config.yaml'))
-  if (!configPath) {
-    // Fallback: write from the build-time YAML stored in runtimeConfig.
-    if (!iiiCfg.engineConfigYaml) {
-      console.error('[nvent] config.yaml not found and no stored config available. Skipping engine start.')
+  if (!existsSync(composeFilePath)) {
+    if (!composeCfg.workerComposeYaml) {
+      console.error('[nvent] compose file missing and no runtime compose YAML available. Skipping compose startup.')
       return
     }
     mkdirSync(nventDir, { recursive: true })
-    configPath = join(nventDir, 'config.yaml')
-    writeFileSync(configPath, iiiCfg.engineConfigYaml, 'utf-8')
+    writeFileSync(composeFilePath, composeCfg.workerComposeYaml, 'utf-8')
   }
 
-  const engine = createEngineManager({
+  const compose = createComposeManager({
     binaryPath,
-    configPath,
-    httpPort,
-    wsPort,
+    composeFilePath,
+    daemonNamespace: composeCfg.daemonNamespace ?? iiiCfg.namespace?.default ?? 'default',
+    upOnStart: composeCfg.upOnStart ?? true,
+    composeStateDir: join(nventDir, '.compose-state'),
+    resetNamespaceStateOnStart: true,
     logLevel,
+    compactLogs: composeCfg.compactLogs ?? true,
+    waitForUp: composeCfg.waitForUp ?? true,
+    upTimeoutMs: composeCfg.upTimeoutMs ?? 120_000,
     workingDir: nventDir,
-    allowPortReuse: false,
   })
-  await engine.start()
 
-  let consoleManager: ConsoleManager | null = null
-  if (cfg.console?.enabled) {
-    const consoleBinaryName = process.platform === 'win32' ? 'iii-console.exe' : 'iii-console'
-    const consoleBinPath = findExisting(join(binDir, consoleBinaryName))
-    if (consoleBinPath) {
-      consoleManager = new ConsoleManager({
-        binaryPath: consoleBinPath,
-        port: cfg.console.port ?? 3113,
-        enginePort: httpPort,
-        bridgePort: wsPort,
-        flow: cfg.console.flow ?? true,
-        logLevel,
-      })
-      await consoleManager.start()
-    }
-    else {
-      console.warn('[nvent] iii-console binary not found — console UI will not start.')
-    }
+  printNventStartupReport({
+    wsUrl: iiiCfg.wsUrl ?? `ws://localhost:${iiiCfg.wsPort ?? 49134}`,
+    httpPort: iiiCfg.httpPort ?? 3111,
+    httpHost: iiiCfg.httpHost ?? 'localhost',
+    streamPort: iiiCfg.streamPort ?? 3112,
+    consolePort: iiiCfg.console?.port,
+    consoleEnabled: !!iiiCfg.console,
+    composeNamespace: composeCfg.daemonNamespace ?? iiiCfg.namespace?.default ?? 'default',
+    composeFilePath,
+  })
+
+  await compose.start()
+
+  let shuttingDown = false
+  let shutdownPromise: Promise<void> | null = null
+  const stopCompose = async () => {
+    if (shuttingDown) return shutdownPromise
+    shuttingDown = true
+    shutdownPromise = compose.stop().catch((err) => {
+      console.error('[nvent] compose shutdown failed:', err)
+    })
+    return shutdownPromise
   }
+
+  const handleSignal = (signal: NodeJS.Signals) => {
+    console.warn(`[nvent] received ${signal}; stopping iii compose before exit`)
+    void stopCompose()
+  }
+
+  process.once('SIGINT', handleSignal)
+  process.once('SIGTERM', handleSignal)
 
   nitroApp.hooks.hookOnce('close', async () => {
-    await consoleManager?.stop()
-    await engine.stop()
+    await stopCompose()
   })
 })
 

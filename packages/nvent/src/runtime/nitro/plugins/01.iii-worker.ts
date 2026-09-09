@@ -6,7 +6,8 @@
  * The iii instance is stored on nitroApp so consumers can reach it via useIii().
  */
 
-import { defineNitroPlugin, useRuntimeConfig } from '#imports'
+import { useRuntimeConfig } from '#imports'
+import { defineNitroPlugin } from 'nitropack/runtime'
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -178,7 +179,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
 
   // Register all Node.js functions and triggers with the iii engine
-  const nodeFunctions = (registry.functions ?? []).filter(f => f.runtime === 'nodejs')
+  const nodeFunctions = ((registry.functions ?? []).filter(f => f.runtime === 'nodejs') as any[])
   await registerNodeFunctions(iii, nodeFunctions)
 
   // Built-in RBAC auth function used by the browser worker-manager.
@@ -258,7 +259,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     // Resolve relative absPath entries to absolute paths using nventArtifactsDir.
     // The registry stores a functions-dir-relative path (e.g. 'analyze.py') so that
     // the runtime CWD doesn't matter — we always produce a correct absolute path here.
-    const resolvedPythonFunctions = (pythonFunctions ?? []).map(fn => ({
+    const resolvedPythonFunctions = ((pythonFunctions ?? []) as any[]).map((fn: any) => ({
       ...fn,
       absPath: isAbsolute(fn.absPath)
         ? fn.absPath

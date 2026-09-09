@@ -16,7 +16,7 @@ const execAsync = promisify(exec)
 const logger = consola.withTag('nvent:iii-install')
 
 const GITHUB_RELEASE_BASE = 'https://github.com/iii-hq/iii/releases/download'
-export const MIN_SUPPORTED_III_VERSION = '0.21.5'
+export const MIN_SUPPORTED_III_VERSION = '0.23.0'
 
 interface PlatformAsset {
   url: string

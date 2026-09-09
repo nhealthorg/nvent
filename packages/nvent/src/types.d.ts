@@ -6,12 +6,52 @@
  * `module.ts`.
  */
 
+export interface NventNamespaceMap {
+  app?: string
+  workflows?: string
+  browser?: string
+  compose?: string
+}
+
+export interface NventNamespaceOptions {
+  mode?: 'single' | 'mapped'
+  default?: string
+  map?: NventNamespaceMap
+}
+
+export interface NventComposeOptions {
+  /** nvent controls compose/engine lifecycle when true. Default: true */
+  managed?: boolean
+  /** Compose daemon namespace. Default: namespace.default or 'default' */
+  daemonNamespace?: string
+  /** Generated compose file name in the nvent runtime root. Default: 'worker-compose.yaml' */
+  file?: string
+  /** Run compose up automatically on startup in managed mode. Default: true */
+  upOnStart?: boolean
+  /** Log level for iii compose daemon output. Default: 'info' */
+  logLevel?: 'none' | 'error' | 'warn' | 'info'
+  /** Print only key compose lifecycle lines at startup. Default: true */
+  compactLogs?: boolean
+  /** Wait for compose up completion before continuing startup. Default: true */
+  waitForUp?: boolean
+  /** Timeout for compose up completion when waitForUp=true. Default: 120000 */
+  upTimeoutMs?: number
+  /** Workflow worker source type in compose. Default: 'path' */
+  workflowWorkerSource?: 'path' | 'package'
+  /** Optional workflow container name override. Default: 'workflow' */
+  workflowWorkerContainerName?: string
+  /** Package to use when workflowWorkerSource='package'. */
+  workflowWorkerPackageName?: string
+  /** Optional package version when workflowWorkerSource='package'. */
+  workflowWorkerPackageVersion?: string
+  /** Workflow container startup timeout in compose format, e.g. '60s'. */
+  workflowStartupTimeout?: string
+}
+
 export interface NventIiiOptions {
   iii?: {
-    /** Version of the iii engine to install. Default: 'latest' */
+    /** Version of the iii runtime to install. Default: 'latest' */
     version?: string
-    /** 'local' uses a local binary, 'docker' uses Docker, 'remote' skips lifecycle management */
-    mode?: 'local' | 'docker' | 'remote'
     /** WebSocket URL for workers to connect to (default: ws://localhost:49134) */
     wsUrl?: string
     /** HTTP port for iii REST API (default: 3111) */
@@ -22,9 +62,11 @@ export interface NventIiiOptions {
     wsPort?: number
     /** WebSocket port for the Stream module (default: 3112) */
     streamPort?: number
-    /** Whether nvent manages engine lifecycle. Default: true in dev, false in prod */
-    managed?: boolean
-    /** Exit with non-zero code if engine installation fails. Default: false */
+    /** Namespace routing model for iii 0.23+. */
+    namespace?: NventNamespaceOptions
+    /** Compose runtime options (compose is the only runtime path). */
+    compose?: NventComposeOptions
+    /** Exit with non-zero code if runtime installation/bootstrap fails. Default: false */
     failOnInstallFailure?: boolean
     modules?: {
       state?: boolean

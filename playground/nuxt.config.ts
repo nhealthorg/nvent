@@ -32,9 +32,11 @@ export default defineNuxtConfig({
 
   nvent: {
     iii: {
-      version: 'iii/v0.22.1',
+      version: 'iii/v0.23.0',
       failOnInstallFailure: true,
-      mode: 'local',
+      compose: {
+        managed: true,
+      },
       console: true,
       logLevel: 'warn',
       observability: {
