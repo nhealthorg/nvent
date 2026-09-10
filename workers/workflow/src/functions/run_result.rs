@@ -8,7 +8,7 @@ use super::Deps;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RunResultRequest {
-    /// The `run_id` returned by `workflow::start`.
+    /// The `run_id` returned by `nworkflow::start`.
     pub run_id: String,
 }
 

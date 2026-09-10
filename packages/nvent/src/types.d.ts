@@ -55,6 +55,18 @@ export interface NventComposeOptions {
   waitForUp?: boolean
   /** Timeout for compose up completion when waitForUp=true. Default: 120000 */
   upTimeoutMs?: number
+  /**
+   * Optional explicit package versions per compose worker container.
+   * These are independent from `iii.version` and only applied when set.
+   */
+  packageVersions?: {
+    state?: string
+    queue?: string
+    cron?: string
+    pubsub?: string
+    http?: string
+    console?: string
+  }
   /** Workflow worker source type in compose. Default: 'path' */
   workflowWorkerSource?: 'path' | 'package'
   /** Optional workflow container name override. Default: 'workflow' */

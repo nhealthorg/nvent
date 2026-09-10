@@ -469,7 +469,7 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
 /// - For a fanout node not yet expanded: skip (expansion happens first via
 ///   `expand_ready_fanouts`).
 /// - For a normal node: the `node_id` itself if no checkpoint exists yet, or if it was
-///   pre-initialized as `Pending` by `workflow::start` (still not started).
+///   pre-initialized as `Pending` by `nworkflow::start` (still not started).
 pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<String> {
     let mut frontier = Vec::new();
 
@@ -600,7 +600,7 @@ pub fn gather_input(
                     let key = dep.split('.').next().unwrap_or(dep).to_string();
                     obj.insert(key, gather_one(def, record, run_input, src, results));
                 }
-                // Non-`node:` entries are rejected at workflow::start; ignore here.
+                // Non-`node:` entries are rejected at nworkflow::start; ignore here.
             }
             Value::Object(obj)
         }

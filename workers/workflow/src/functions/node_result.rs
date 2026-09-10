@@ -12,10 +12,10 @@ use super::Deps;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct NodeResultRequest {
-    /// The `run_id` returned by `workflow::start`.
+    /// The `run_id` returned by `nworkflow::start`.
     pub run_id: String,
     /// Node uid: the node id for a plain node, or `"{node_id}#{i}"` for a
-    /// fanned-out item. `workflow::status` lists the uids that have a result
+    /// fanned-out item. `nworkflow::status` lists the uids that have a result
     /// under `node_results` (its keys ARE the uids). The canonical arg name is
     /// `node_uid`; the shorter `uid` is accepted as an alias.
     #[serde(alias = "uid")]

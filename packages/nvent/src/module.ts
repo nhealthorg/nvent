@@ -221,7 +221,7 @@ export default defineNuxtModule<NventIiiOptions>({
     rmSync(join(nventDir, 'config.yaml'), { force: true, recursive: false })
     rmSync(join(nventDir, 'iii-config.yaml'), { force: true, recursive: false })
 
-    const composeYaml = generateWorkerComposeYaml({
+    const buildComposeYaml = (includeConsole: boolean) => generateWorkerComposeYaml({
       nventVersion: meta.version,
       iiiVersion: version,
       daemonNamespace: composeDaemonNamespace,
@@ -242,10 +242,11 @@ export default defineNuxtModule<NventIiiOptions>({
       includePubsub: engineCfg.modules.pubsub === true,
       includeHttp: engineCfg.modules.httpFunctions === true,
       includeStream: engineCfg.modules.stream !== false,
-      includeConsole: !!iiiOpts.console,
+      includeConsole,
       startupTimeout: composeEngineAdvanced.startupTimeout,
       stopTimeout: composeEngineAdvanced.stopTimeout,
       engineWorkerOverrides: composeEngineAdvanced.workers,
+      packageVersions: composeOpts.packageVersions,
       consoleVersion: consoleCfg.version,
       consoleConfig: iiiOpts.console ? { http_port: resolvedConsolePort } : undefined,
       workflowWorker: {
@@ -256,6 +257,9 @@ export default defineNuxtModule<NventIiiOptions>({
         startupTimeout: composeOpts.workflowStartupTimeout,
       },
     })
+
+    let composeConsoleEnabled = !!iiiOpts.console
+    let composeYaml = buildComposeYaml(composeConsoleEnabled)
     const composeFilePath = join(nventDir, composeFileName)
     writeFileSync(composeFilePath, composeYaml, 'utf-8')
 
@@ -577,7 +581,7 @@ export default defineNuxtModule<NventIiiOptions>({
         }
 
         if (binaryPath) {
-          try {
+          const startManagedCompose = async () => {
             await validateComposeFile(binaryPath, composeFilePath, nventDir, composeLogLevel)
 
             const compose = createComposeManager({
@@ -615,7 +619,39 @@ export default defineNuxtModule<NventIiiOptions>({
             process.once('SIGTERM', handleSignal)
             nuxt.hook('close', async () => { await stopCompose() })
           }
-          catch (err: any) {
+
+          try {
+            await startManagedCompose()
+          }
+          catch (caughtErr: any) {
+            let err = caughtErr
+            let recovered = false
+
+            // In dev, console is optional. Retry once without console when package
+            // resolution fails so runtime startup does not depend on that package.
+            if (
+              err instanceof ComposeStartupError
+              && err.code === 'PACKAGE_NOT_RESOLVED'
+              && composeConsoleEnabled
+            ) {
+              try {
+                console.warn('[nvent] compose package resolution failed; retrying once without console container.')
+                composeConsoleEnabled = false
+                composeYaml = buildComposeYaml(false)
+                writeFileSync(composeFilePath, composeYaml, 'utf-8')
+                await startManagedCompose()
+                recovered = true
+                console.warn('[nvent] compose started without console container after package resolution fallback.')
+              }
+              catch (retryErr: any) {
+                err = retryErr
+              }
+            }
+
+            if (recovered) {
+              // Startup recovered after fallback.
+            }
+            else {
             console.error('[nvent] Failed to start iii compose daemon — continuing without managed runtime. Error:')
             if (err instanceof ComposeStartupError) {
               console.error(`[nvent] compose startup error code: ${err.code}`)
@@ -626,10 +662,11 @@ export default defineNuxtModule<NventIiiOptions>({
               console.error('[nvent] failOnInstallFailure enabled — aborting startup.')
               process.exit(1)
             }
+            }
           }
 
           // Console is started via compose container when enabled.
-          if (iiiOpts.console) {
+          if (iiiOpts.console && composeConsoleEnabled) {
             const consolePort = resolvedConsolePort
             addCustomTab({
               name: 'nvent-console',

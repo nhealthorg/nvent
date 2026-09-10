@@ -79,7 +79,7 @@ pub struct TickResponse {
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let d = deps.clone();
     iii.register_function(
-        "workflow::start",
+        "nworkflow::start",
         RegisterFunction::new_async(move |req: start::StartRequest| {
             let d = d.clone();
             async move { start::handle(&d, req).await.map_err(Error::from) }
@@ -93,8 +93,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              wrap a single reasoning step in a one-node workflow. For a genuine pipeline it runs \
              for as long as it needs without blocking the caller. PREFER `notify` (a function_id \
              pushed {run_id, status, result, result_error} once the run is terminal) over polling: \
-             each workflow::status call costs one of your turns and a poll loop can exhaust your \
-             turn budget. Use workflow::status only for the occasional check, not a tight loop. \
+             each nworkflow::status call costs one of your turns and a poll loop can exhaust your \
+             turn budget. Use nworkflow::status only for the occasional check, not a tight loop. \
              Request shape: \
              `{\"definition\":{\"version\":1,\"nodes\":{\"<id>\":{\"agent\":{\"model\":\"<id from \
              router::models::list>\"},\"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}},\
@@ -102,14 +102,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              keyed by node id (NOT an array); each node is `{agent, input, depends_on?, fanout?}`. To get \
              the result: set `reply_to:{}` (or notify) \
              and then END YOUR TURN — do NOT claim a result was delivered or produce one this turn, it \
-             arrives as a separate message when the run finishes. Never poll workflow::status in a loop. \
+             arrives as a separate message when the run finishes. Never poll nworkflow::status in a loop. \
              Full field docs are inline in this function's request schema.",
         ),
     );
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::log-write",
+        "nworkflow::log-write",
         RegisterFunction::new_async(move |req: log_write::LogWriteRequest| {
             let d = d.clone();
             async move { log_write::handle(&d, req).await.map_err(Error::from) }
@@ -119,7 +119,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::log-read",
+        "nworkflow::log-read",
         RegisterFunction::new_async(move |req: log_read::LogReadRequest| {
             let d = d.clone();
             async move { log_read::handle(&d, req).await.map_err(Error::from) }
@@ -129,7 +129,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::log-delete",
+        "nworkflow::log-delete",
         RegisterFunction::new_async(move |req: log_delete::LogDeleteRequest| {
             let d = d.clone();
             async move { log_delete::handle(&d, req).await.map_err(Error::from) }
@@ -139,7 +139,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::trace-write",
+        "nworkflow::trace-write",
         RegisterFunction::new_async(move |req: trace_write::TraceWriteRequest| {
             let d = d.clone();
             async move { trace_write::handle(&d, req).await.map_err(Error::from) }
@@ -149,7 +149,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::trace-read",
+        "nworkflow::trace-read",
         RegisterFunction::new_async(move |req: trace_read::TraceReadRequest| {
             let d = d.clone();
             async move { trace_read::handle(&d, req).await.map_err(Error::from) }
@@ -159,7 +159,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::trace-delete",
+        "nworkflow::trace-delete",
         RegisterFunction::new_async(move |req: trace_delete::TraceDeleteRequest| {
             let d = d.clone();
             async move { trace_delete::handle(&d, req).await.map_err(Error::from) }
@@ -169,7 +169,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::state-set",
+        "nworkflow::state-set",
         RegisterFunction::new_async(move |req: state_set::StateSetRequest| {
             let d = d.clone();
             async move { state_set::handle(&d, req).await.map_err(Error::from) }
@@ -179,7 +179,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::state-get",
+        "nworkflow::state-get",
         RegisterFunction::new_async(move |req: state_get::StateGetRequest| {
             let d = d.clone();
             async move { state_get::handle(&d, req).await.map_err(Error::from) }
@@ -189,7 +189,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::state-delete",
+        "nworkflow::state-delete",
         RegisterFunction::new_async(move |req: state_delete::StateDeleteRequest| {
             let d = d.clone();
             async move { state_delete::handle(&d, req).await.map_err(Error::from) }
@@ -199,7 +199,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::state-list",
+        "nworkflow::state-list",
         RegisterFunction::new_async(move |req: state_list::StateListRequest| {
             let d = d.clone();
             async move { state_list::handle(&d, req).await.map_err(Error::from) }
@@ -209,7 +209,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::var-list",
+        "nworkflow::var-list",
         RegisterFunction::new_async(move |req: var_list::VarListRequest| {
             let d = d.clone();
             async move { var_list::handle(&d, req).await.map_err(Error::from) }
@@ -219,7 +219,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::stream-publish",
+        "nworkflow::stream-publish",
         RegisterFunction::new_async(move |req: stream_publish::StreamPublishRequest| {
             let d = d.clone();
             async move { stream_publish::handle(&d, req).await.map_err(Error::from) }
@@ -229,7 +229,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::stream-list",
+        "nworkflow::stream-list",
         RegisterFunction::new_async(move |req: stream_list::StreamListRequest| {
             let d = d.clone();
             async move { stream_list::handle(&d, req).await.map_err(Error::from) }
@@ -239,7 +239,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::config",
+        "nworkflow::config",
         RegisterFunction::new_async(move |req: config_get::ConfigRequest| {
             let d = d.clone();
             async move { config_get::handle(&d, req).await.map_err(Error::from) }
@@ -249,7 +249,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::tick",
+        "nworkflow::tick",
         RegisterFunction::new_async(move |req: TickRequest| {
             let d = d.clone();
             async move { tick::handle(&d, req).await.map_err(Error::from) }
@@ -258,7 +258,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     );
     let d = deps.clone();
     iii.register_function(
-        "workflow::status",
+        "nworkflow::status",
         RegisterFunction::new_async(move |req: status::StatusRequest| {
             let d = d.clone();
             async move { status::handle(&d, req).await.map_err(Error::from) }
@@ -268,14 +268,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              node_results / result_ref / result / result_error), or null if not found. A single check is \
              cheap, but each call costs one of your turns — do NOT poll in a loop waiting for a \
              long run to finish, that exhausts your turn budget. To be pushed the outcome when \
-             the run reaches a terminal state, pass `notify` to workflow::start instead. For \
-             large outputs, set include_result=false and fetch the payload via workflow::run-result.",
+             the run reaches a terminal state, pass `notify` to nworkflow::start instead. For \
+             large outputs, set include_result=false and fetch the payload via nworkflow::run-result.",
         ),
     );
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::list-runs",
+        "nworkflow::list-runs",
         RegisterFunction::new_async(move |req: list_runs::ListRunsRequest| {
             let d = d.clone();
             async move { list_runs::handle(&d, req).await.map_err(Error::from) }
@@ -285,7 +285,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::node-result",
+        "nworkflow::node-result",
         RegisterFunction::new_async(move |req: node_result::NodeResultRequest| {
             let d = d.clone();
             async move { node_result::handle(&d, req).await.map_err(Error::from) }
@@ -293,7 +293,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         .description(
             "Fetch the stored JSON result of a single node by its uid — the `node_uid` arg \
              (alias `uid`): a node_id, or '{node_id}#{i}' for a fanned-out item. Use it to \
-             recover partial outputs after a run fails partway: workflow::status lists the uids \
+             recover partial outputs after a run fails partway: nworkflow::status lists the uids \
              that have a result under `node_results`. Returns {result: null} if the node has not \
              completed or has no stored result.",
         ),
@@ -301,20 +301,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::run-result",
+        "nworkflow::run-result",
         RegisterFunction::new_async(move |req: run_result::RunResultRequest| {
             let d = d.clone();
             async move { run_result::handle(&d, req).await.map_err(Error::from) }
         })
         .description(
-            "Fetch the terminal workflow output payload by run_id. Use this after workflow::status \
+            "Fetch the terminal workflow output payload by run_id. Use this after nworkflow::status \
              with include_result=false to keep polling lightweight for large outputs.",
         ),
     );
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::node-result-write",
+        "nworkflow::node-result-write",
         RegisterFunction::new_async(move |req: node_result_write::NodeResultWriteRequest| {
             let d = d.clone();
             async move {
@@ -330,7 +330,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::stop",
+        "nworkflow::stop",
         RegisterFunction::new_async(move |req: stop::StopRequest| {
             let d = d.clone();
             async move { stop::handle(&d, req).await.map_err(Error::from) }
@@ -340,7 +340,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let d = deps.clone();
     iii.register_function(
-        "workflow::run-delete",
+        "nworkflow::run-delete",
         RegisterFunction::new_async(move |req: run_delete::RunDeleteRequest| {
             let d = d.clone();
             async move { run_delete::handle(&d, req).await.map_err(Error::from) }

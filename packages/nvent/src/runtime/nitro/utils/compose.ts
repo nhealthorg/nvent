@@ -8,6 +8,7 @@ export type ComposeStartupErrorCode =
   | 'INVALID_NAMESPACE'
   | 'ENGINE_STARTUP_TIMEOUT'
   | 'MANAGED_ENGINE_ENDPOINT_MISMATCH'
+  | 'PACKAGE_NOT_RESOLVED'
   | 'COMPOSE_UP_FAILED'
 
 export class ComposeStartupError extends Error {
@@ -102,6 +103,9 @@ export function classifyComposeStartupError(detail?: string): ComposeStartupErro
   if (/managed\s+engine\s+endpoint\s+mismatch|endpoint\s+mismatch|engine\s+endpoint\s+.*mismatch/.test(text)) {
     return 'MANAGED_ENGINE_ENDPOINT_MISMATCH'
   }
+  if (/package_not_resolved|package\s+not\s+resolved|failed\s+to\s+resolve\s+package|could\s+not\s+resolve\s+package/.test(text)) {
+    return 'PACKAGE_NOT_RESOLVED'
+  }
   if (/startup\s+timeout|timed\s*out|up\s+timeout/.test(text)) {
     return 'STARTUP_TIMEOUT'
   }
@@ -112,7 +116,12 @@ export function classifyComposeStartupError(detail?: string): ComposeStartupErro
   return 'COMPOSE_UP_FAILED'
 }
 
-function composeStartupHint(code: ComposeStartupErrorCode, ctx: ComposeStartupErrorContext): string {
+function isRegistryUnavailableDetail(detail?: string): boolean {
+  const text = String(detail ?? '').toLowerCase()
+  return text.includes('http 503') || text.includes('503 service temporarily unavailable')
+}
+
+function composeStartupHint(code: ComposeStartupErrorCode, ctx: ComposeStartupErrorContext, detail?: string): string {
   switch (code) {
     case 'INVALID_NAMESPACE':
       return `Check nvent.iii.namespace and compose daemon namespace. Current daemon namespace: '${ctx.daemonNamespace}'.`
@@ -120,6 +129,11 @@ function composeStartupHint(code: ComposeStartupErrorCode, ctx: ComposeStartupEr
       return `Engine workers did not become ready in time. Inspect compose logs and increase nvent.iii.compose.upTimeoutMs if startup is expected to be slow.`
     case 'MANAGED_ENGINE_ENDPOINT_MISMATCH':
       return `Ensure compose is allowed to manage the engine URL from worker-compose.yaml and avoid overriding with conflicting external endpoints.`
+    case 'PACKAGE_NOT_RESOLVED':
+      if (isRegistryUnavailableDetail(detail)) {
+        return `The iii registry returned HTTP 503 while resolving package workers. This is a registry or network outage, not a local compose config issue. Retry later or check registry access.`
+      }
+      return `A package worker could not be resolved. Check network/registry access and pin compose worker versions instead of 'latest'.`
     case 'STARTUP_TIMEOUT':
       return `Compose startup exceeded ${ctx.upTimeoutMs}ms. Check worker startup logs or raise nvent.iii.compose.upTimeoutMs.`
     case 'PROJECT_DID_NOT_START':
@@ -132,7 +146,7 @@ function composeStartupHint(code: ComposeStartupErrorCode, ctx: ComposeStartupEr
 function createComposeStartupError(detail: string | undefined, ctx: ComposeStartupErrorContext): ComposeStartupError {
   const code = classifyComposeStartupError(detail)
   const message = `Compose startup failed for namespace '${ctx.daemonNamespace}' using ${ctx.composeFilePath}.`
-  const hint = composeStartupHint(code, ctx)
+  const hint = composeStartupHint(code, ctx, detail)
   return new ComposeStartupError(code, message, hint, detail)
 }
 

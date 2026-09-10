@@ -72,7 +72,7 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
                 id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
                 run_id: run_id_ref,
                 node_uid,
-                function_id: Some("workflow::stream-publish".to_string()),
+                function_id: Some("nworkflow::stream-publish".to_string()),
                 runtime: None,
                 event_name: "workflow.stream.publish".to_string(),
                 ts_unix_ms: deps.now_ms(),

@@ -39,7 +39,7 @@ pub async fn handle(deps: &Deps, req: StateSetRequest) -> Result<(), WorkflowErr
                 id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
                 run_id: req.run_id,
                 node_uid: req.node_uid,
-                function_id: Some("workflow::state-set".to_string()),
+                function_id: Some("nworkflow::state-set".to_string()),
                 runtime: None,
                 event_name: "workflow.state.set".to_string(),
                 ts_unix_ms: deps.now_ms(),

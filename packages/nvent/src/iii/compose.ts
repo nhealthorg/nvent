@@ -36,6 +36,14 @@ export interface ComposeGenerationOptions {
   startupTimeout?: string
   stopTimeout?: string
   engineWorkerOverrides?: ComposeEngineWorkerOverrides
+  packageVersions?: {
+    state?: string
+    queue?: string
+    cron?: string
+    pubsub?: string
+    http?: string
+    console?: string
+  }
   consoleVersion?: string
   consoleConfig?: Record<string, unknown>
   workflowWorker?: ComposeWorkflowWorkerOptions
@@ -64,7 +72,7 @@ function normalizeNamespace(input: string | undefined, fallback: string): string
 }
 
 function createWorkflowContainer(worker: ComposeWorkflowWorkerOptions | undefined) {
-  const containerName = (worker?.containerName || 'workflow').trim() || 'workflow'
+  const containerName = (worker?.containerName || 'nworkflow').trim() || 'nworkflow'
   const source = worker?.source ?? 'path'
   const startupTimeout = worker?.startupTimeout ?? '60s'
 
@@ -100,14 +108,21 @@ function normalizePackageVersion(input: string | undefined, fallback: string): s
   return raw.replace(/^iii\//, '').replace(/^v/, '')
 }
 
+function resolveContainerVersion(input: string | undefined): string | undefined {
+  const raw = String(input ?? '').trim()
+  if (!raw) return 'latest'
+  return normalizePackageVersion(raw, '')
+}
+
 function createConsoleContainer(options: ComposeGenerationOptions) {
   if (!options.includeConsole) return null
-  const version = normalizePackageVersion(options.consoleVersion, 'latest')
   const entry: Record<string, unknown> = {
     worker: 'package://api.workers.iii.dev/console',
-    version,
+    version: 'latest',
     config_name: 'console',
   }
+  const explicitVersion = resolveContainerVersion(options.consoleVersion ?? options.packageVersions?.console)
+  if (explicitVersion) entry.version = explicitVersion
   if (options.consoleConfig && Object.keys(options.consoleConfig).length > 0) {
     entry.config_override = options.consoleConfig
   }
@@ -118,14 +133,15 @@ function createConsoleContainer(options: ComposeGenerationOptions) {
 }
 
 function createDefaultServiceContainers(options: ComposeGenerationOptions): Record<string, Record<string, unknown>> {
-  const version = normalizePackageVersion(undefined, 'latest')
   const containers: Record<string, Record<string, unknown>> = {}
 
   if (options.includeState) {
     const entry: Record<string, unknown> = {
       worker: 'package://api.workers.iii.dev/state',
-      version,
+      version: 'latest',
     }
+    const version = resolveContainerVersion(options.packageVersions?.state)
+    if (version) entry.version = version
     if (options.stateConfig && Object.keys(options.stateConfig).length > 0) {
       entry.config_override = options.stateConfig
     }
@@ -135,8 +151,10 @@ function createDefaultServiceContainers(options: ComposeGenerationOptions): Reco
   if (options.includeQueue) {
     const entry: Record<string, unknown> = {
       worker: 'package://api.workers.iii.dev/queue',
-      version,
+      version: 'latest',
     }
+    const version = resolveContainerVersion(options.packageVersions?.queue)
+    if (version) entry.version = version
     if (options.queueConfig && Object.keys(options.queueConfig).length > 0) {
       entry.config_override = options.queueConfig
     }
@@ -146,8 +164,10 @@ function createDefaultServiceContainers(options: ComposeGenerationOptions): Reco
   if (options.includeCron) {
     const entry: Record<string, unknown> = {
       worker: 'package://api.workers.iii.dev/cron',
-      version,
+      version: 'latest',
     }
+    const version = resolveContainerVersion(options.packageVersions?.cron)
+    if (version) entry.version = version
     if (options.cronConfig && Object.keys(options.cronConfig).length > 0) {
       entry.config_override = options.cronConfig
     }
@@ -157,8 +177,10 @@ function createDefaultServiceContainers(options: ComposeGenerationOptions): Reco
   if (options.includePubsub) {
     const entry: Record<string, unknown> = {
       worker: 'package://api.workers.iii.dev/pubsub',
-      version,
+      version: 'latest',
     }
+    const version = resolveContainerVersion(options.packageVersions?.pubsub)
+    if (version) entry.version = version
     if (options.pubsubConfig && Object.keys(options.pubsubConfig).length > 0) {
       entry.config_override = options.pubsubConfig
     }
@@ -168,8 +190,10 @@ function createDefaultServiceContainers(options: ComposeGenerationOptions): Reco
   if (options.includeHttp) {
     const entry: Record<string, unknown> = {
       worker: 'package://api.workers.iii.dev/http',
-      version,
+      version: 'latest',
     }
+    const version = resolveContainerVersion(options.packageVersions?.http)
+    if (version) entry.version = version
     if (options.httpConfig && Object.keys(options.httpConfig).length > 0) {
       entry.config_override = options.httpConfig
     }

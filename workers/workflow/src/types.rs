@@ -101,9 +101,9 @@ pub struct NodeResultSpec {
 /// edges, `fanout` runs a node once per item of an upstream array (with a
 /// `depends_on` join acting as the barrier), and `output` picks which node's
 /// result the run returns. Each node runs as its own harness session, so a run
-/// is durable and crash-resumable. Submit via `workflow::start`, which returns
+/// is durable and crash-resumable. Submit via `nworkflow::start`, which returns
 /// a run_id immediately; supply `notify` to be pushed the outcome when the run
-/// finishes, or poll `workflow::status`.
+/// finishes, or poll `nworkflow::status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowDef {
@@ -365,7 +365,7 @@ pub enum FanoutMode {
 /// Caller-supplied completion callback. When a run reaches a terminal state the
 /// worker triggers `function_id` once with `{run_id, status, result,
 /// result_error}` so the caller is pushed the outcome instead of polling
-/// `workflow::status`. Delivery is durable (enqueued) and at-least-once — the
+/// `nworkflow::status`. Delivery is durable (enqueued) and at-least-once — the
 /// handler must dedup on `run_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -469,7 +469,7 @@ pub struct WorkflowRunRecord {
     /// Caller-supplied completion callback (push instead of poll). See `NotifySpec`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<NotifySpec>,
-    /// Session that started this run (the chat that called `workflow::start`).
+    /// Session that started this run (the chat that called `nworkflow::start`).
     /// Stamped onto every node session's metadata as `parent_session_id` so the
     /// console nests workflow nodes under their orchestrator. `None` for a
     /// non-agent caller (no session to nest under).

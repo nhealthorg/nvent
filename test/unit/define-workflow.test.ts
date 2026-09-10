@@ -598,7 +598,7 @@ describe('defineWorkflow compilation', () => {
 
     const plan = await workflow.compile({ text: 'Hello' })
 
-    expect(plan.nodes['var_config'].function).toMatchObject({ id: 'workflow::internal-var-set' })
+    expect(plan.nodes['var_config'].function).toMatchObject({ id: 'nworkflow::internal-var-set' })
     expect(plan.nodes['var_config'].input).toEqual({
       from: 'node:process',
       value: {

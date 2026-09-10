@@ -21,7 +21,7 @@ use super::Deps;
 const MAX_NODES: usize = 10_000;
 const MAX_IDEM_KEY_LEN: usize = 1024;
 const SUPPORTED_DEF_VERSION: u32 = 1;
-// Cap on sub-workflow nesting. The default node policy denies `workflow::*`, but a
+// Cap on sub-workflow nesting. The default node policy denies `nworkflow::*`, but a
 // node can opt back in with an explicit `functions`, so a node could launch a
 // sub-workflow whose node launches another, unbounded. Bound the chain. Safety
 // ceiling, not a tuning knob.
@@ -51,7 +51,7 @@ pub struct StartRequest {
     pub idempotency_key: Option<String>,
     /// Optional completion callback: a function the worker triggers once when the
     /// run reaches a terminal state, so the caller is pushed the outcome instead
-    /// of polling `workflow::status`.
+    /// of polling `nworkflow::status`.
     #[serde(default)]
     pub notify: Option<crate::types::NotifySpec>,
     /// The orchestrator session (for console nesting of node sessions).
@@ -509,7 +509,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
 fn format_problems(problems: &[String]) -> String {
     let n = problems.len();
     let mut s = format!(
-        "workflow::start: the `definition` has {n} problem{}:",
+        "nworkflow::start: the `definition` has {n} problem{}:",
         if n == 1 { "" } else { "s" }
     );
     for pr in problems {
@@ -818,7 +818,7 @@ pub async fn enqueue_tick(
     step: u64,
 ) -> Result<(), WorkflowError> {
     iii.trigger(iii_sdk::protocol::TriggerRequest {
-        function_id: "workflow::tick".into(),
+        function_id: "nworkflow::tick".into(),
         payload: json!({"run_id": run_id, "step": step}),
         action: Some(iii_sdk::TriggerAction::Enqueue {
             queue: "default".into(),
@@ -837,8 +837,8 @@ pub async fn enqueue_tick(
 /// Namespace an idempotency key by its caller. The key is stored in a flat global
 /// keyspace (`workflow_idempotency`), so an un-scoped key lets two different callers using
 /// the same string (e.g. "daily-report") collide: the second caller is handed
-/// back the first's `run_id`, leaking it — and, via `workflow::status` /
-/// `workflow::node-result`, the run's results. `caller_session_id` is hook-stamped
+/// back the first's `run_id`, leaking it — and, via `nworkflow::status` /
+/// `nworkflow::node-result`, the run's results. `caller_session_id` is hook-stamped
 /// from the caller's real session (never trusted from the agent), and session ids
 /// contain no `|`, so the prefix unambiguously isolates callers. Non-agent (trusted)
 /// callers share the `_anon` namespace.
@@ -881,7 +881,7 @@ async fn caller_workflow_depth(
 /// Start a run: validate, resolve the caller session, dedupe on the idempotency
 /// key, persist the Running record, and enqueue the first tick. Fire-and-forget —
 /// the caller gets the `run_id` back immediately and receives the outcome via
-/// `reply_to` / `notify` (or by polling `workflow::status`); the harness turn is
+/// `reply_to` / `notify` (or by polling `nworkflow::status`); the harness turn is
 /// never blocked.
 pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, WorkflowError> {
     // A node's reads ARE its dependencies for scheduling, but the UI should still
@@ -931,7 +931,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         .as_ref()
         .and_then(|m| m.name.clone());
 
-    // Bound sub-workflow nesting: a node that opted into `workflow::start` could
+    // Bound sub-workflow nesting: a node that opted into `nworkflow::start` could
     // otherwise recurse (sub-workflow → node → sub-workflow → …) without limit.
     let depth = caller_workflow_depth(deps, caller_session_id.as_deref()).await?;
     if depth > MAX_WORKFLOW_DEPTH {
@@ -1003,7 +1003,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 
     // The Running record is already persisted; if the first tick fails to enqueue,
     // only the cron sweep would recover it (up to a sweep interval later). Mark the
-    // run Failed best-effort so workflow::status / list don't surface a phantom
+    // run Failed best-effort so nworkflow::status / list don't surface a phantom
     // Running run in the meantime.
     if let Err(e) = enqueue_tick(&deps.iii, &run_id, 0).await {
         record.status = RunStatus::Failed;

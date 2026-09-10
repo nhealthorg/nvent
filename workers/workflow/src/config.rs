@@ -28,14 +28,14 @@ pub struct WorkerConfig {
 
     /// Retention window for terminal workflow run state (`workflow_run` plus
     /// referenced workflow internal definition/result records).
-    /// Terminal runs older than this value are deleted by `workflow::sweep`.
+    /// Terminal runs older than this value are deleted by `nworkflow::sweep`.
     /// Milliseconds.
     #[serde(default = "default_run_retention_ms")]
     pub run_retention_ms: u64,
 
     /// Retention window for workflow-owned observability records
     /// (`workflow_run_log` and `workflow_run_trace`).
-    /// Entries older than this value are pruned by `workflow::sweep`.
+    /// Entries older than this value are pruned by `nworkflow::sweep`.
     /// Milliseconds.
     #[serde(default = "default_observability_retention_ms")]
     pub observability_retention_ms: u64,

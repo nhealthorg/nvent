@@ -61,7 +61,7 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
     }, { immediate: true })
 
     if (current.value?.groupId) {
-      // workflow::stream-publish uses stream=<type>, group_id=<run_id>
+      // nworkflow::stream-publish uses stream=<type>, group_id=<run_id>
       stream.subscribe(type, current.value.groupId)
     }
 

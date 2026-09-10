@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                name: "workflow".to_string(),
+                name: "nworkflow".to_string(),
                 os: std::env::consts::OS.to_string(),
                 pid: Some(std::process::id()),
                 telemetry: None,

@@ -311,7 +311,7 @@ export function serializeWorkflowDefinitionOrThrow(plan: WorkflowPlanLike) {
     .join(' | ')
 
   throw new Error(
-    `workflow definition contains non-serializable input references for workflow::start: ${details}`,
+    `workflow definition contains non-serializable input references for nworkflow::start: ${details}`,
   )
 }
 

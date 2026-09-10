@@ -21,9 +21,9 @@ use crate::config::WorkerConfig;
 // Reuse the ConfigCell type declared in functions::mod — do NOT redefine.
 use crate::functions::ConfigCell;
 
-pub const CONFIG_ID: &str = "workflow";
-const CONFIG_FN_ID: &str = "workflow::on-config-change";
-pub const SWEEP_ID: &str = "workflow::sweep";
+pub const CONFIG_ID: &str = "nworkflow";
+const CONFIG_FN_ID: &str = "nworkflow::on-config-change";
+pub const SWEEP_ID: &str = "nworkflow::sweep";
 
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -130,7 +130,7 @@ fn rebind_slot(slot: &std::sync::Mutex<Option<Trigger>>, new: Option<Trigger>) {
     }
 }
 
-/// Internal `workflow::on-config-change` trigger payload.
+/// Internal `nworkflow::on-config-change` trigger payload.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed (advisory; the handler re-fetches).
@@ -138,7 +138,7 @@ pub struct OnConfigChangeEvent {
     pub id: Option<String>,
 }
 
-/// Ack returned by the internal `workflow::on-config-change` handler.
+/// Ack returned by the internal `nworkflow::on-config-change` handler.
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct OnConfigChangeResponse {
     pub ok: bool,

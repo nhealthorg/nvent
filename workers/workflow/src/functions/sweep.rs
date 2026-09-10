@@ -1,4 +1,4 @@
-//! `workflow::sweep` — cron-bound node-timeout sweep.
+//! `nworkflow::sweep` — cron-bound node-timeout sweep.
 //!
 //! Scans all `AwaitingNodes` runs. For each, re-runs reconciliation (to pick up
 //! any newly-completed nodes) and times out any `Running` checkpoint past its
@@ -22,7 +22,7 @@ fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallba
         .unwrap_or(fallback)
 }
 
-pub const SWEEP_ID: &str = "workflow::sweep";
+pub const SWEEP_ID: &str = "nworkflow::sweep";
 pub const SWEEP_DESC: &str =
     "Internal cron sweep: reconcile AwaitingNodes runs and time out nodes past their deadline. \
      Not called directly.";

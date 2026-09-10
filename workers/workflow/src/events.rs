@@ -29,7 +29,7 @@ async fn completed_payload(
 }
 
 /// Global fire-and-forget event broadcast when any run reaches a terminal state.
-/// Untargeted: bind a worker to `workflow::run-completed` to observe every run.
+/// Untargeted: bind a worker to `nworkflow::run-completed` to observe every run.
 /// For a per-run "notify me" callback, see `emit_notify` + `NotifySpec`.
 pub async fn emit_run_completed(
     deps: &crate::functions::Deps,
@@ -39,7 +39,7 @@ pub async fn emit_run_completed(
     let _ = deps
         .iii
         .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "workflow::run-completed".into(),
+            function_id: "nworkflow::run-completed".into(),
             payload,
             action: Some(iii_sdk::TriggerAction::Void),
             timeout_ms: None,
@@ -48,8 +48,8 @@ pub async fn emit_run_completed(
 }
 
 /// Fire the caller-supplied completion callback, if the run carries one. The
-/// caller named a `function_id` at `workflow::start` time; we push it the run
-/// outcome so the caller never has to poll `workflow::status`.
+/// caller named a `function_id` at `nworkflow::start` time; we push it the run
+/// outcome so the caller never has to poll `nworkflow::status`.
 ///
 /// Durable delivery (enqueued, defaulting to the `"default"` queue) and
 /// at-least-once: this fires inside `finalize`, before the terminal status is

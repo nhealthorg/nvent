@@ -743,7 +743,7 @@ async fn execute_internal_var_set(
         .get("key")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            WorkflowError::State("workflow::internal-var-set requires input.key".to_string())
+            WorkflowError::State("nworkflow::internal-var-set requires input.key".to_string())
         })?
         .to_string();
     let next_value = input_val.get("value").cloned().unwrap_or(Value::Null);
@@ -817,7 +817,7 @@ async fn execute_internal_var_set(
                 id: format!("tr_{}_{}", now, crate::ids::new_trace_id()),
                 run_id: record.run_id.clone(),
                 node_uid: Some(node_uid.to_string()),
-                function_id: Some("workflow::internal-var-set".to_string()),
+                function_id: Some("nworkflow::internal-var-set".to_string()),
                 runtime: Some("rust".to_string()),
                 event_name: "workflow.var.updated".to_string(),
                 ts_unix_ms: now,
@@ -953,7 +953,7 @@ pub(crate) async fn fire_node(
         results,
     );
 
-    if node.function.id == "workflow::internal-var-set" {
+    if node.function.id == "nworkflow::internal-var-set" {
         execute_internal_var_set(deps, record, node_uid, &input_val).await?;
         record.updated_at = deps.now_ms();
         state::put_run(&deps.iii, record).await?;
@@ -1227,7 +1227,7 @@ pub(crate) async fn fire_node(
 /// Flip every still-`Running` checkpoint to `Cancelled`. Called by `finalize`
 /// after the stop cascade: the cascade stops the live sessions, this records it in
 /// the run so a terminal run doesn't report siblings as "running" in
-/// workflow::status forever. Pure (no I/O), so it's unit-testable.
+/// nworkflow::status forever. Pure (no I/O), so it's unit-testable.
 fn cancel_running_checkpoints(nodes: &mut BTreeMap<String, NodeCheckpoint>) {
     for cp in nodes.values_mut() {
         if matches!(cp.state, NodeState::Running) {
@@ -1285,7 +1285,7 @@ async fn finalize(
         state::put_run_result(&deps.iii, result_ref, &out_val).await?;
     } else if status == RunStatus::Failed {
         // Surface WHY the run failed. Without this, `notify` delivers
-        // result_error: null and workflow::status shows a bare "failed" — the
+        // result_error: null and nworkflow::status shows a bare "failed" — the
         // caller can't tell a bad model id from a crashed node and gives up.
         let summarized = summarize_failure(&record.nodes);
         if summarized.is_some() {
@@ -1322,7 +1322,7 @@ async fn finalize(
 }
 
 /// Summarize the failed nodes' errors into one run-level message, so
-/// the run's `notify` callback (result_error) and `workflow::status` can report
+/// the run's `notify` callback (result_error) and `nworkflow::status` can report
 /// WHY a run failed instead of a bare "failed". Returns None when nothing failed.
 pub(crate) fn summarize_failure(nodes: &BTreeMap<String, NodeCheckpoint>) -> Option<String> {
     let mut errs: Vec<String> = nodes
@@ -2270,7 +2270,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // summarize_failure — the "failed to run" diagnosability gap: a node failed
     // with "no provider registered for model claude-sonnet-4-5" but `notify` /
-    // workflow::status returned result_error: null and showed a bare "failed".
+    // nworkflow::status returned result_error: null and showed a bare "failed".
     // -----------------------------------------------------------------------
 
     fn failed_cp(err: Option<&str>) -> NodeCheckpoint {

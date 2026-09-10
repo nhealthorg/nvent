@@ -17,12 +17,12 @@ use super::Deps;
 // ---------------------------------------------------------------------------
 
 /// Read a single snapshot of a workflow run's status. For a long-running
-/// pipeline, prefer `workflow::start` + a `notify` callback (pushed the outcome
+/// pipeline, prefer `nworkflow::start` + a `notify` callback (pushed the outcome
 /// once it's terminal) over polling this in a loop — each poll costs one of your
 /// turns and a poll loop can exhaust your turn budget.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StatusRequest {
-    /// The `run_id` returned by `workflow::start`.
+    /// The `run_id` returned by `nworkflow::start`.
     pub run_id: String,
     /// Whether to resolve and return the full terminal run result payload.
     /// Set false for lightweight polling when outputs can be large.
@@ -48,7 +48,7 @@ pub struct StatusResponse {
     /// The authored workflow definition (for UI visualization).
     pub definition: WorkflowDef,
     /// Nodes that have a stored result: node uid → result_ref.
-    /// Fetch the value with `workflow::node-result { run_id, node_uid }`. Lets a
+    /// Fetch the value with `nworkflow::node-result { run_id, node_uid }`. Lets a
     /// caller recover partial work from a run that failed partway (the run-level
     /// `result` is only set on a Completed run). Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

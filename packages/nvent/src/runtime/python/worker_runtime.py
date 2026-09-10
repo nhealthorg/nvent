@@ -169,7 +169,7 @@ async def _emit_workflow_trace_event(client, fn_id: str, wf: dict, event_name: s
 
     try:
         await client.trigger_async({
-            'function_id': 'workflow::trace-write',
+            'function_id': 'nworkflow::trace-write',
             'payload': payload,
         })
     except Exception as exc:
@@ -218,7 +218,7 @@ class _ContextLogger:
                 'data': structured,
             }
             task = asyncio.create_task(self._client.trigger_async({
-                'function_id': 'workflow::log-write',
+                'function_id': 'nworkflow::log-write',
                 'payload': log_payload,
             }))
         else:
@@ -581,13 +581,13 @@ class _WorkflowScopedState:
 
     async def get(self, key: str):
         return await self._client.trigger_async({
-            "function_id": "workflow::state-get",
+            "function_id": "nworkflow::state-get",
             "payload": {"run_id": self._run_id, "key": key},
         })
 
     async def set(self, key: str, value):
         await self._client.trigger_async({
-            "function_id": "workflow::state-set",
+            "function_id": "nworkflow::state-set",
             "payload": {
                 "run_id": self._run_id,
                 "key": key,
@@ -598,7 +598,7 @@ class _WorkflowScopedState:
 
     async def delete(self, key: str):
         await self._client.trigger_async({
-            "function_id": "workflow::state-delete",
+            "function_id": "nworkflow::state-delete",
             "payload": {
                 "run_id": self._run_id,
                 "key": key,
@@ -608,7 +608,7 @@ class _WorkflowScopedState:
 
     async def list(self):
         result = await self._client.trigger_async({
-            "function_id": "workflow::state-list",
+            "function_id": "nworkflow::state-list",
             "payload": {"run_id": self._run_id},
         })
         return result or []
@@ -651,7 +651,7 @@ class _WorkflowScopedStream:
 
     async def publish(self, stream_name: str, data: Any):
         await self._client.trigger_async({
-            "function_id": "workflow::stream-publish",
+            "function_id": "nworkflow::stream-publish",
             "payload": {
                 "run_id": self._run_id,
                 "stream": stream_name,
@@ -662,7 +662,7 @@ class _WorkflowScopedStream:
 
     async def send(self, type_name: str, data: dict = None):
         await self._client.trigger_async({
-            "function_id": "workflow::stream-publish",
+            "function_id": "nworkflow::stream-publish",
             "payload": {
                 "run_id": self._run_id,
                 "stream": type_name,
@@ -1181,7 +1181,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         try:
                             # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
-                                'function_id': 'workflow::node-completed',
+                                'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
@@ -1204,7 +1204,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
 
                         # Emit completion event
                         await _client.trigger_async({
-                            'function_id': 'workflow::node-completed',
+                            'function_id': 'nworkflow::node-completed',
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
@@ -1300,7 +1300,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         try:
                             # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
-                                'function_id': 'workflow::node-completed',
+                                'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
@@ -1321,7 +1321,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                     try:
                         # Emit completion event
                         await _client.trigger_async({
-                            'function_id': 'workflow::node-completed',
+                            'function_id': 'nworkflow::node-completed',
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
@@ -1451,7 +1451,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                         try:
                             # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
-                                'function_id': 'workflow::node-completed',
+                                'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
                                     'node_uid': wf['node_uid'],
@@ -1472,7 +1472,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     try:
                         # Emit completion event
                         await _client.trigger_async({
-                            'function_id': 'workflow::node-completed',
+                            'function_id': 'nworkflow::node-completed',
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],
@@ -1580,7 +1580,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     try:
                         # Emit completion event
                         await _client.trigger_async({
-                            'function_id': 'workflow::node-completed',
+                            'function_id': 'nworkflow::node-completed',
                             'payload': {
                                 'run_id': wf['run_id'],
                                 'node_uid': wf['node_uid'],

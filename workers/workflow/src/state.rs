@@ -557,7 +557,7 @@ pub async fn get_run(
 ///
 /// NOTE: `state::set` is an unconditional overwrite — iii-state (sdk 0.19.2)
 /// exposes no compare-and-set.  A multi-process deployment therefore requires
-/// run-level sharding (route all `workflow::tick` events for a `run_id` to one
+/// run-level sharding (route all `nworkflow::tick` events for a `run_id` to one
 /// owning instance) rather than record-level CAS.  See README §Scaling for the
 /// supported multi-instance topology.
 pub async fn put_run(_iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(), WorkflowError> {

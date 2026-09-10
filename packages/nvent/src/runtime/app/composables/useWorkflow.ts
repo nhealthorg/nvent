@@ -119,7 +119,7 @@ export function useWorkflow() {
           groupId: (streamValue as Record<string, unknown>).groupId as string,
         }
       : {
-          streamName: 'workflow',
+          streamName: 'nworkflow',
           groupId: runId,
         }
 
@@ -133,7 +133,7 @@ export function useWorkflow() {
   async function status(runId: string, options: WorkflowStatusOptions = {}): Promise<WorkflowStatusResponse | null> {
     const iii = await resolveConnectedIii(2)
     const res = await iii.trigger({
-      function_id: 'workflow::status',
+      function_id: 'nworkflow::status',
       payload: {
         run_id: runId,
         include_result: options.include_result ?? true,
@@ -152,7 +152,7 @@ export function useWorkflow() {
   async function runResult(runId: string): Promise<WorkflowRunResultResponse> {
     const iii = await resolveConnectedIii(2)
     const res = await iii.trigger({
-      function_id: 'workflow::run-result',
+      function_id: 'nworkflow::run-result',
       payload: { run_id: runId },
       timeoutMs: 15_000,
     })

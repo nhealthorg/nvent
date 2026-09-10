@@ -44,8 +44,8 @@ fn workflow_wrappers_report_node_results_via_node_completed_event() {
 
     for (name, content) in [("node.ts", node_wrapper), ("worker_runtime.py", py_wrapper)] {
         assert!(
-            content.contains("workflow::node-completed"),
-            "{name} must report workflow node completion via workflow::node-completed"
+            content.contains("nworkflow::node-completed"),
+            "{name} must report workflow node completion via nworkflow::node-completed"
         );
         assert!(
             content.contains("result_error"),
@@ -56,8 +56,8 @@ fn workflow_wrappers_report_node_results_via_node_completed_event() {
             "{name} must include result payload for successful workflow node completion"
         );
         assert!(
-            !content.contains("workflow::node-result-write"),
-            "{name} must not use workflow::node-result-write in the new single-event completion flow"
+            !content.contains("nworkflow::node-result-write"),
+            "{name} must not use nworkflow::node-result-write in the new single-event completion flow"
         );
         assert!(
             !content.contains("workflow_node_result"),
@@ -159,8 +159,8 @@ fn tick_status_and_cleanup_use_dedicated_run_result_store() {
         "delete_run must cleanup dedicated run result blob"
     );
     assert!(
-        mod_rs.contains("workflow::run-result"),
-        "workflow::run-result must be registered as dedicated run-output fetch API"
+        mod_rs.contains("nworkflow::run-result"),
+        "nworkflow::run-result must be registered as dedicated run-output fetch API"
     );
 }
 
@@ -252,8 +252,8 @@ fn run_delete_api_is_registered_and_cleanup_covers_session_index() {
     let store_trait_rs = read_repo_file("workers/workflow/src/internal_state/mod.rs");
 
     assert!(
-        mod_rs.contains("workflow::run-delete"),
-        "workflow::run-delete must be registered"
+        mod_rs.contains("nworkflow::run-delete"),
+        "nworkflow::run-delete must be registered"
     );
     assert!(
         state_rs.contains("delete_session_index(iii, session_id).await?"),

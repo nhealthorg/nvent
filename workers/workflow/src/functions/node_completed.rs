@@ -1,4 +1,4 @@
-//! Handle `workflow::node-completed` events emitted by functions to wake the
+//! Handle `nworkflow::node-completed` events emitted by functions to wake the
 //! orchestrator tick when a node finishes execution asynchronously.
 //!
 //! Functions running in a queue can emit this event to immediately trigger the
@@ -15,7 +15,7 @@ use crate::functions::{start, Deps};
 use crate::observability::ObservabilityAdapter;
 use crate::types::{NodeMemoryFailPolicy, NodeResultReturnType};
 
-pub const NODE_COMPLETED_ID: &str = "workflow::node-completed";
+pub const NODE_COMPLETED_ID: &str = "nworkflow::node-completed";
 
 pub const NODE_COMPLETED_DESC: &str =
     "Internal: called by workflow functions when they complete asynchronously to wake \
@@ -122,7 +122,7 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
     }
 
     // Optional fast-path payload persistence: runtimes may include result/error
-    // directly in this event and skip the extra workflow::node-result-write call.
+    // directly in this event and skip the extra nworkflow::node-result-write call.
     if event.result.is_some() || event.result_error.is_some() {
         let value = match event.result_error {
             Some(err) => json!({ "__workflow_error__": err }),

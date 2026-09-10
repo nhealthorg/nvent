@@ -4,8 +4,8 @@ import type { FunctionDef, FunctionContext, WorkflowFunctionOptions } from '../d
 
 type IiiClient = ReturnType<typeof registerWorker>
 
-const WORKFLOW_STATE_SCOPE = 'workflow_run_state'
-const WORKFLOW_STREAM_NAME = 'workflow'
+const WORKFLOW_STATE_SCOPE = 'nworkflow_run_state'
+const WORKFLOW_STREAM_NAME = 'nworkflow'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -204,7 +204,7 @@ function createWorkflowScopedContext(
       scopeId: workflow.run_id,
       async get<T = unknown>(userKey: string): Promise<T | null> {
         const result = await iii.trigger({
-          function_id: 'workflow::state-get',
+          function_id: 'nworkflow::state-get',
           payload: { run_id: workflow.run_id, key: userKey },
           timeoutMs: 10_000,
         })
@@ -212,7 +212,7 @@ function createWorkflowScopedContext(
       },
       async set<T = unknown>(userKey: string, value: T): Promise<void> {
         await iii.trigger({
-          function_id: 'workflow::state-set',
+          function_id: 'nworkflow::state-set',
           payload: {
             run_id: workflow.run_id,
             key: userKey,
@@ -225,7 +225,7 @@ function createWorkflowScopedContext(
       },
       async delete(userKey: string): Promise<void> {
         await iii.trigger({
-          function_id: 'workflow::state-delete',
+          function_id: 'nworkflow::state-delete',
           payload: {
             run_id: workflow.run_id,
             key: userKey,
@@ -237,7 +237,7 @@ function createWorkflowScopedContext(
       },
       async list<T = unknown>(): Promise<Array<{ key: string, value: T }>> {
         const result = await iii.trigger({
-          function_id: 'workflow::state-list',
+          function_id: 'nworkflow::state-list',
           payload: { run_id: workflow.run_id },
           timeoutMs: 10_000,
         })
@@ -297,7 +297,7 @@ function createWorkflowScopedContext(
       },
       async publish(streamName: string, data: any) {
         await iii.trigger({
-          function_id: 'workflow::stream-publish',
+          function_id: 'nworkflow::stream-publish',
           payload: {
             run_id: workflow.run_id,
             stream: streamName,
@@ -311,7 +311,7 @@ function createWorkflowScopedContext(
       // Keep legacy send for compatibility, but map it to publish if possible
       async send(type: string, data: Record<string, unknown> = {}) {
         await iii.trigger({
-          function_id: 'workflow::stream-publish',
+          function_id: 'nworkflow::stream-publish',
           payload: {
             run_id: workflow.run_id,
             stream: type,
@@ -350,7 +350,7 @@ async function emitWorkflowTraceEvent(
 
   try {
     await iii.trigger({
-      function_id: 'workflow::trace-write',
+          function_id: 'nworkflow::trace-write',
       payload: {
         run_id: workflow.run_id,
         id: makeRecordId('trace'),
@@ -394,7 +394,7 @@ function createContextLogger(iii: IiiClient, functionId: string, context: { run_
 
     const write = (context.run_id
       ? iii.trigger({
-          function_id: 'workflow::log-write',
+          function_id: 'nworkflow::log-write',
           payload: {
             run_id: context.run_id,
             id: makeRecordId('log'),
@@ -446,7 +446,7 @@ function createContextLogger(iii: IiiClient, functionId: string, context: { run_
  * Registers all Node.js (TypeScript) functions and their triggers with the iii client.
  * Each trigger is registered independently with the function ID as the target.
  * 
- * Auto-wraps handlers to emit workflow::node-completed events when _workflow metadata
+ * Auto-wraps handlers to emit nworkflow::node-completed events when _workflow metadata
  * is present in the input (workflow orchestration).
  */
 export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): Promise<void> {
@@ -529,7 +529,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
           try {
             // Emit completion event to wake the orchestrator
             await iii.trigger({
-              function_id: 'workflow::node-completed',
+              function_id: 'nworkflow::node-completed',
               payload: {
                 run_id: workflow.run_id,
                 node_uid: workflow.node_uid,
@@ -554,7 +554,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
 
           // Emit completion event (fast-path tick wake)
           await iii.trigger({
-            function_id: 'workflow::node-completed',
+            function_id: 'nworkflow::node-completed',
             payload: {
               run_id: workflow.run_id,
               node_uid: workflow.node_uid,

@@ -36,7 +36,7 @@ pub async fn handle(deps: &Deps, req: StateDeleteRequest) -> Result<(), Workflow
                 id: format!("tr_{}_{}", deps.now_ms(), crate::ids::new_trace_id()),
                 run_id: req.run_id,
                 node_uid: req.node_uid,
-                function_id: Some("workflow::state-delete".to_string()),
+                function_id: Some("nworkflow::state-delete".to_string()),
                 runtime: None,
                 event_name: "workflow.state.delete".to_string(),
                 ts_unix_ms: deps.now_ms(),

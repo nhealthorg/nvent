@@ -1,5 +1,5 @@
 iii: v1
-name: workflow
+name: nworkflow
 language: rust
 deploy: binary
 manifest: Cargo.toml

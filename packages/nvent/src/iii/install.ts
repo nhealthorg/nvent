@@ -5,7 +5,7 @@
  * platform/arch and makes it executable. Called at module setup time.
  */
 
-import { existsSync, mkdirSync, chmodSync, createWriteStream, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, chmodSync, createWriteStream, unlinkSync, readFileSync, writeFileSync } from 'node:fs'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
@@ -17,10 +17,82 @@ const logger = consola.withTag('nvent:iii-install')
 
 const GITHUB_RELEASE_BASE = 'https://github.com/iii-hq/iii/releases/download'
 export const MIN_SUPPORTED_III_VERSION = '0.23.0'
+const INSTALL_MANIFEST_FILE = 'iii-install-manifest.json'
+
+interface InstallManifestEntry {
+  requestedVersion: string
+  resolvedSemver: string
+  binaryPath: string
+}
+
+interface InstallManifest {
+  schemaVersion: 1
+  platform: NodeJS.Platform
+  arch: string
+  updatedAt: string
+  engine?: InstallManifestEntry
+  worker?: InstallManifestEntry
+}
 
 interface PlatformAsset {
   url: string
   ext: 'tar.gz' | 'zip'
+}
+
+function getInstallManifestPath(binDir: string): string {
+  return join(binDir, INSTALL_MANIFEST_FILE)
+}
+
+function readInstallManifest(binDir: string): InstallManifest | null {
+  const path = getInstallManifestPath(binDir)
+  if (!existsSync(path)) return null
+
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as Partial<InstallManifest>
+    if (raw?.schemaVersion !== 1) return null
+    if (raw.platform !== process.platform || raw.arch !== process.arch) return null
+    return raw as InstallManifest
+  }
+  catch {
+    return null
+  }
+}
+
+function writeInstallManifest(binDir: string, next: Partial<InstallManifest>): void {
+  if (!existsSync(binDir)) {
+    mkdirSync(binDir, { recursive: true })
+  }
+
+  const current = readInstallManifest(binDir)
+  const merged: InstallManifest = {
+    schemaVersion: 1,
+    platform: process.platform,
+    arch: process.arch,
+    updatedAt: new Date().toISOString(),
+    ...(current ?? {}),
+    ...next,
+  }
+
+  writeFileSync(getInstallManifestPath(binDir), JSON.stringify(merged, null, 2), 'utf-8')
+}
+
+function hasMatchingManifestEntry(
+  entry: InstallManifestEntry | undefined,
+  requestedVersion: string,
+  wantedSemver: string,
+  expectedBinaryPath: string,
+): boolean {
+  if (!entry) return false
+  if (!existsSync(expectedBinaryPath)) return false
+  return (
+    entry.requestedVersion === requestedVersion
+    && entry.resolvedSemver === wantedSemver
+    && entry.binaryPath === expectedBinaryPath
+  )
+}
+
+export function getInstalledIiiManifest(binDir: string): InstallManifest | null {
+  return readInstallManifest(binDir)
 }
 
 function getPlatformAsset(version: string): PlatformAsset {
@@ -220,12 +292,27 @@ export async function ensureIiiEngine(options: InstallOptions): Promise<string> 
     }
   }
 
+  const wantedSemver = semverFromTag(version)
+  const manifest = readInstallManifest(binDir)
+  if (hasMatchingManifestEntry(manifest?.engine, options.version, wantedSemver, binaryPath)) {
+    if (logLevel === 'info') {
+      logger.info(`iii engine v${wantedSemver} already installed (manifest) at ${binaryPath}`)
+    }
+    return binaryPath
+  }
+
   // Check if binary already exists at the right version
   if (existsSync(binaryPath)) {
     const currentVersion = await getCurrentVersion(binaryPath)
-    const wantedSemver = semverFromTag(version)
     if (currentVersion === wantedSemver) {
       if (logLevel === 'info') logger.info(`iii engine v${wantedSemver} already installed at ${binaryPath}`)
+      writeInstallManifest(binDir, {
+        engine: {
+          requestedVersion: options.version,
+          resolvedSemver: wantedSemver,
+          binaryPath,
+        },
+      })
       return binaryPath
     }
     if (logLevel === 'info') logger.info(`iii engine version mismatch (have v${currentVersion}, want v${wantedSemver}), reinstalling...`)
@@ -363,6 +450,14 @@ export async function ensureIiiEngine(options: InstallOptions): Promise<string> 
   const installedVersion = await getCurrentVersion(binaryPath)
   if (logLevel === 'info') logger.info(`iii engine v${installedVersion} installed at ${binaryPath}`)
 
+  writeInstallManifest(binDir, {
+    engine: {
+      requestedVersion: options.version,
+      resolvedSemver: wantedSemver,
+      binaryPath,
+    },
+  })
+
   return binaryPath
 }
 
@@ -382,11 +477,26 @@ export async function ensureIiiWorker(options: InstallOptions): Promise<string> 
     version = await fetchLatestVersion()
   }
 
+  const wantedSemver = semverFromTag(version)
+  const manifest = readInstallManifest(binDir)
+  if (hasMatchingManifestEntry(manifest?.worker, options.version, wantedSemver, binaryPath)) {
+    if (logLevel === 'info') {
+      logger.info(`iii-worker v${wantedSemver} already installed (manifest) at ${binaryPath}`)
+    }
+    return binaryPath
+  }
+
   if (existsSync(binaryPath)) {
     const currentVersion = await getCurrentVersion(binaryPath)
-    const wantedSemver = semverFromTag(version)
     if (currentVersion === wantedSemver) {
       if (logLevel === 'info') logger.info(`iii-worker v${wantedSemver} already installed at ${binaryPath}`)
+      writeInstallManifest(binDir, {
+        worker: {
+          requestedVersion: options.version,
+          resolvedSemver: wantedSemver,
+          binaryPath,
+        },
+      })
       return binaryPath
     }
   }
@@ -407,5 +517,14 @@ export async function ensureIiiWorker(options: InstallOptions): Promise<string> 
   }
 
   if (logLevel === 'info') logger.info(`iii-worker ${version} installed at ${binaryPath}`)
+
+  writeInstallManifest(binDir, {
+    worker: {
+      requestedVersion: options.version,
+      resolvedSemver: wantedSemver,
+      binaryPath,
+    },
+  })
+
   return binaryPath
 }

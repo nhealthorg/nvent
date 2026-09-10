@@ -1,5 +1,5 @@
-//! Per-run in-process serialization. `workflow::tick`, `reconcile`, the sweep,
-//! and `workflow::stop` all run off the queue and write the same run record;
+//! Per-run in-process serialization. `nworkflow::tick`, `reconcile`, the sweep,
+//! and `nworkflow::stop` all run off the queue and write the same run record;
 //! guarding them with one per-run lock closes the read-modify-write race within
 //! a single process.
 //!
@@ -7,7 +7,7 @@
 //! an engine-level compare-and-set on the run record (which iii-state does NOT
 //! provide); the fail-safe is the deterministic child-session id and internal
 //! node-result key, which keeps duplicate deliveries idempotent.
-//! For multi-instance HA, shard `workflow::tick` by `run_id` so one owning
+//! For multi-instance HA, shard `nworkflow::tick` by `run_id` so one owning
 //! instance handles all writes for a given run — no new code required.
 
 use std::collections::HashMap;

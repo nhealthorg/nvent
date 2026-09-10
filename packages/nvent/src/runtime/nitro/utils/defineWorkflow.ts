@@ -556,7 +556,7 @@ export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends 
   output?: Parseable<TOutput>
   /**
    * Input transport policy for the workflow invocation payload sent to
-   * workflow::start (run input only).
+  * nworkflow::start (run input only).
    *
    * This does not set or override per-node inputPolicy values.
    */
@@ -614,7 +614,7 @@ function normalizeWorkflowHook(spec: WorkflowHookSpec | undefined, defaultNamesp
  * 
  * Workflows are registered as standard iii functions. When triggered, the 
  * handler compiles the local JS workflow definition into a static DAG plan 
- * and sends it to the workflow-worker via `workflow::start`.
+ * and sends it to the workflow-worker via `nworkflow::start`.
  */
 export function defineWorkflow<
   TInSchema extends Parseable<any> | undefined = undefined,
@@ -663,7 +663,7 @@ export function defineWorkflow<
       const iii = useIii()
       try {
         return await iii.trigger({
-          function_id: 'workflow::start',
+          function_id: 'nworkflow::start',
           payload: {
             definition,
             input,
@@ -671,7 +671,7 @@ export function defineWorkflow<
           }
         })
       } catch (error) {
-        console.error('[nvent/workflow] workflow::start invocation failed; definition shape summary:', {
+        console.error('[nvent/workflow] nworkflow::start invocation failed; definition shape summary:', {
           workflowName: options.name,
           outputFrom: (definition as any)?.output?.from,
           nodes: summarizeWorkflowDefinitionShape(definition as any),
@@ -893,7 +893,7 @@ export function defineWorkflow<
           const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(key))
           return ctx.node(nodeId, {
             label: options?.label ?? `var:${key}`,
-            function: 'workflow::internal-var-set',
+            function: 'nworkflow::internal-var-set',
             input: {
               key,
               value,
