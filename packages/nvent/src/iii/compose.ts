@@ -32,7 +32,7 @@ export interface ComposeGenerationOptions {
   includePubsub: boolean
   includeHttp: boolean
   includeStream: boolean
-  includeConsole: boolean
+  includeAde: boolean
   startupTimeout?: string
   stopTimeout?: string
   engineWorkerOverrides?: ComposeEngineWorkerOverrides
@@ -42,10 +42,10 @@ export interface ComposeGenerationOptions {
     cron?: string
     pubsub?: string
     http?: string
-    console?: string
+    ade?: string
   }
-  consoleVersion?: string
-  consoleConfig?: Record<string, unknown>
+  adeVersion?: string
+  adeConfig?: Record<string, unknown>
   workflowWorker?: ComposeWorkflowWorkerOptions
 }
 
@@ -114,20 +114,20 @@ function resolveContainerVersion(input: string | undefined): string | undefined 
   return normalizePackageVersion(raw, '')
 }
 
-function createConsoleContainer(options: ComposeGenerationOptions) {
-  if (!options.includeConsole) return null
+function createAdeContainer(options: ComposeGenerationOptions) {
+  if (!options.includeAde) return null
   const entry: Record<string, unknown> = {
-    worker: 'package://api.workers.iii.dev/console',
+    worker: 'package://api.workers.iii.dev/ade',
     version: 'latest',
-    config_name: 'console',
+    config_name: 'ade',
   }
-  const explicitVersion = resolveContainerVersion(options.consoleVersion ?? options.packageVersions?.console)
+  const explicitVersion = resolveContainerVersion(options.adeVersion ?? options.packageVersions?.ade)
   if (explicitVersion) entry.version = explicitVersion
-  if (options.consoleConfig && Object.keys(options.consoleConfig).length > 0) {
-    entry.config_override = options.consoleConfig
+  if (options.adeConfig && Object.keys(options.adeConfig).length > 0) {
+    entry.config_override = options.adeConfig
   }
   return {
-    containerName: 'console',
+    containerName: 'ade',
     entry,
   }
 }
@@ -208,7 +208,7 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
   const projectNamespace = normalizeNamespace(options.projectNamespace, daemonNamespace)
 
   const workflowContainer = createWorkflowContainer(options.workflowWorker)
-  const consoleContainer = createConsoleContainer(options)
+  const adeContainer = createAdeContainer(options)
   const defaultServiceContainers = createDefaultServiceContainers(options)
 
   const engineWorkers: Record<string, Record<string, unknown>> = {
@@ -263,8 +263,8 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
     [workflowContainer.containerName]: workflowContainer.entry as Record<string, unknown>,
   }
 
-  if (consoleContainer) {
-    containers[consoleContainer.containerName] = consoleContainer.entry as Record<string, unknown>
+  if (adeContainer) {
+    containers[adeContainer.containerName] = adeContainer.entry as Record<string, unknown>
   }
 
   const composeDoc = {

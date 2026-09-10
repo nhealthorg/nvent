@@ -11,6 +11,7 @@ import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { consola } from 'consola'
+import { type NventLogLevel, shouldLogLine } from '../runtime/nitro/utils/logLevel'
 
 const execAsync = promisify(exec)
 const logger = consola.withTag('nvent:iii-install')
@@ -226,10 +227,10 @@ async function getCurrentVersion(binaryPath: string): Promise<string | null> {
   }
 }
 
-async function downloadAndExtract(assetUrl: string, ext: 'tar.gz' | 'zip', binDir: string, logLevel: string = 'warn'): Promise<void> {
+async function downloadAndExtract(assetUrl: string, ext: 'tar.gz' | 'zip', binDir: string, logLevel: NventLogLevel = 'warn'): Promise<void> {
   const archivePath = join(binDir, ext === 'zip' ? 'iii.zip' : 'iii.tar.gz')
 
-  if (logLevel === 'info') logger.info(`Downloading iii engine from ${assetUrl}`)
+  if (shouldLogLine(logLevel, 'info')) logger.info(`Downloading iii engine from ${assetUrl}`)
 
   const res = await fetch(assetUrl)
   if (!res.ok) throw new Error(`Failed to download iii engine: ${res.status} ${res.statusText}`)
@@ -239,7 +240,7 @@ async function downloadAndExtract(assetUrl: string, ext: 'tar.gz' | 'zip', binDi
   const fileStream = createWriteStream(archivePath)
   await pipeline(res.body as any, fileStream)
 
-  if (logLevel === 'info') logger.info('Extracting archive...')
+  if (shouldLogLine(logLevel, 'info')) logger.info('Extracting archive...')
 
   if (ext === 'tar.gz') {
     await execAsync(`tar -xzf "${archivePath}" -C "${binDir}"`)
@@ -258,7 +259,7 @@ export interface InstallOptions {
   /** Desired version, e.g. '0.8.0'. Use 'latest' to auto-resolve. */
   version: string
   /** Minimum log level for install output. Default: 'warn' */
-  logLevel?: 'none' | 'error' | 'warn' | 'info'
+  logLevel?: NventLogLevel
 }
 
 /**

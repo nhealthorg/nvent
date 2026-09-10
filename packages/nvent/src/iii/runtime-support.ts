@@ -3,18 +3,20 @@ import { copyFileSync, chmodSync, existsSync, mkdirSync, statSync, utimesSync } 
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { resolveWorkflowBinaryFromPackageRoot } from '../runtime/nitro/utils/workers/workflow'
+import { type NventLogLevel, shouldLogLine } from '../runtime/nitro/utils/logLevel'
 
-export type NventLogLevel = 'none' | 'error' | 'warn' | 'info'
+export type { NventLogLevel }
+export { shouldLogLine }
 
 export interface ResolveRuntimePortsOptions {
   configuredWsPort?: number
   configuredHttpPort?: number
   configuredStreamPort?: number
-  configuredConsolePort?: number
+  configuredAdePort?: number
   defaultWsPort?: number
   defaultHttpPort?: number
   defaultStreamPort?: number
-  defaultConsolePort?: number
+  defaultAdePort?: number
   host?: string
 }
 
@@ -22,7 +24,7 @@ export interface ResolvedRuntimePorts {
   wsPort: number
   httpPort: number
   streamPort: number
-  consolePort: number
+  adePort: number
 }
 
 export interface CleanupLingeringEngineOptions {
@@ -200,7 +202,7 @@ export async function resolveRuntimePorts(options: ResolveRuntimePortsOptions): 
   const defaultWsPort = options.defaultWsPort ?? 49134
   const defaultHttpPort = options.defaultHttpPort ?? 3111
   const defaultStreamPort = options.defaultStreamPort ?? 3112
-  const defaultConsolePort = options.defaultConsolePort ?? 3113
+  const defaultAdePort = options.defaultAdePort ?? 3113
 
   const reservedPorts = new Map<number, string>()
 
@@ -243,11 +245,11 @@ export async function resolveRuntimePorts(options: ResolveRuntimePortsOptions): 
     reservePort(streamPort, 'iii.streamPort')
   }
 
-  const consolePort = options.configuredConsolePort != null
-    ? reservePort(options.configuredConsolePort, 'iii.console.port')
-    : await nextFreePort(defaultConsolePort, 'iii.console.port')
+  const adePort = options.configuredAdePort != null
+    ? reservePort(options.configuredAdePort, 'iii.ade.port')
+    : await nextFreePort(defaultAdePort, 'iii.ade.port')
 
-  return { wsPort, httpPort, streamPort, consolePort }
+  return { wsPort, httpPort, streamPort, adePort }
 }
 
 export function pickFirstExistingPath(candidates: string[]): string {

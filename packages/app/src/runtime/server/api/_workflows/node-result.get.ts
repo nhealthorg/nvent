@@ -23,7 +23,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const response = await iii.trigger({
-      function_id: 'workflow::node-result',
+      function_id: 'nworkflow::node-result',
       payload: {
         run_id: runId,
         node_uid: nodeUid,

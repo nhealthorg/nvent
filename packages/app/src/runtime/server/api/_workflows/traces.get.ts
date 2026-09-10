@@ -97,7 +97,7 @@ export default defineEventHandler(async (event) => {
   try {
     if (type === 'traces') {
       const traceResult = await iii.trigger({
-        function_id: 'workflow::trace-read',
+        function_id: 'nworkflow::trace-read',
         payload: {
           run_id: runId,
           node_uids: nodeUids,
@@ -135,7 +135,7 @@ export default defineEventHandler(async (event) => {
 
     if (type === 'logs') {
       const logResult = await iii.trigger({
-        function_id: 'workflow::log-read',
+        function_id: 'nworkflow::log-read',
         payload: {
           run_id: runId,
           node_uids: nodeUids,
@@ -182,7 +182,7 @@ export default defineEventHandler(async (event) => {
 
     if (type === 'states') {
       const traceResult = await iii.trigger({
-        function_id: 'workflow::trace-read',
+        function_id: 'nworkflow::trace-read',
         payload: {
           run_id: runId,
           node_uids: nodeUids,
@@ -223,7 +223,7 @@ export default defineEventHandler(async (event) => {
 
     if (type === 'vars') {
       const traceResult = await iii.trigger({
-        function_id: 'workflow::trace-read',
+        function_id: 'nworkflow::trace-read',
         payload: {
           run_id: runId,
           node_uids: nodeUids,
@@ -264,7 +264,7 @@ export default defineEventHandler(async (event) => {
     }
 
     const traceResult = await iii.trigger({
-      function_id: 'workflow::trace-read',
+      function_id: 'nworkflow::trace-read',
       payload: {
         run_id: runId,
         node_uids: nodeUids,

@@ -50,7 +50,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const result = await useIii().trigger({
-      function_id: 'workflow::state-list',
+      function_id: 'nworkflow::state-list',
       payload: {
         run_id: runId,
         limit,

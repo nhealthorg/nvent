@@ -1,4 +1,4 @@
-import { ref, watch, onUnmounted, type Ref } from 'vue'
+import { computed, ref, watch, onUnmounted, type Ref } from 'vue'
 import { useIiiStream } from './useIiiStream'
 
 export interface WorkflowStreamSubscription {
@@ -9,11 +9,14 @@ export interface WorkflowStreamSubscription {
 export interface WorkflowStreamEvent<T = unknown> {
   type: string
   data: T
+  runId?: string
+  nodeUid?: string
+  tsUnixMs?: number
 }
 
 function toSubscription(subOrRunId: string | WorkflowStreamSubscription): WorkflowStreamSubscription {
   if (typeof subOrRunId === 'string') {
-    return { streamName: 'workflow', groupId: subOrRunId }
+    return { streamName: 'nworkflow', groupId: subOrRunId }
   }
   return subOrRunId
 }
@@ -27,70 +30,95 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
   const events = ref<WorkflowStreamEvent[]>([])
   const current = ref<WorkflowStreamSubscription | null>(sub ?? null)
 
-  type ChannelState = {
-    data: Ref<unknown[]>
-    stream: ReturnType<typeof useIiiStream<unknown>>
-    processed: number
-  }
+  const stream = useIiiStream<unknown>()
+  let processed = 0
 
-  const channels = new Map<string, ChannelState>()
-
-  function ensureChannel(type: string): ChannelState {
-    const existing = channels.get(type)
-    if (existing) return existing
-
-    const stream = useIiiStream<unknown>()
-    const data = ref<unknown[]>([])
-    const channel: ChannelState = {
-      data,
-      stream,
-      processed: 0,
-    }
-
-    watch(stream.messages, (all) => {
-      while (channel.processed < all.length) {
-        const payload = all[channel.processed]
-        channel.data.value = [...channel.data.value, payload]
-        events.value = [...events.value, { type, data: payload }]
-        channel.processed++
+  function normalizeEvent(payload: unknown): WorkflowStreamEvent {
+    if (payload && typeof payload === 'object') {
+      const obj = payload as Record<string, unknown>
+      if (typeof obj.type === 'string' && 'data' in obj) {
+        return {
+          type: obj.type,
+          data: obj.data,
+          runId: typeof obj.run_id === 'string' ? obj.run_id : undefined,
+          nodeUid: typeof obj.node_uid === 'string' ? obj.node_uid : undefined,
+          tsUnixMs: typeof obj.ts_unix_ms === 'number' ? obj.ts_unix_ms : undefined,
+        }
       }
-    }, { immediate: true })
-
-    watch(stream.status, (s) => {
-      status.value = s
-    }, { immediate: true })
-
-    if (current.value?.groupId) {
-      // nworkflow::stream-publish uses stream=<type>, group_id=<run_id>
-      stream.subscribe(type, current.value.groupId)
     }
 
-    channels.set(type, channel)
-    return channel
+    return {
+      type: 'message',
+      data: payload,
+    }
   }
+
+  watch(stream.messages, (all) => {
+    while (processed < all.length) {
+      const payload = all[processed]
+      events.value = [...events.value, normalizeEvent(payload)]
+      processed++
+    }
+  }, { immediate: true })
+
+  watch(stream.status, (s) => {
+    status.value = s
+  }, { immediate: true })
 
   function subscribe(subOrRun: string | WorkflowStreamSubscription) {
     current.value = toSubscription(subOrRun)
     events.value = []
-    for (const [type, channel] of channels.entries()) {
-      channel.processed = 0
-      channel.data.value = []
-      if (current.value?.groupId) {
-        channel.stream.subscribe(type, current.value.groupId)
-      }
+    processed = 0
+    if (current.value) {
+      stream.subscribe(current.value.streamName, current.value.groupId)
     }
+  }
+
+  function matchesPattern(type: string, pattern: string): boolean {
+    const p = pattern.trim()
+    if (!p) return false
+    if (p.endsWith('.*')) {
+      const prefix = p.slice(0, -2)
+      return type === prefix || type.startsWith(`${prefix}.`)
+    }
+    return type === p
   }
 
   /**
    * Listen to events from ctx.workflow.stream.send(type, data).
    *
-   * Example:
-   * const chunks = stream.listen<string>('chat-update')
-   * // chunks.value contains all payloads for that event type
+   * Pattern support:
+   * - Exact type:   listen('phase')
+   * - Prefix group: listen('agents.*')
    */
   function listen<T = unknown>(type: string): Ref<T[]> {
-    const channel = ensureChannel(type)
-    return channel.data as Ref<T[]>
+    return computed(() => {
+      return events.value
+        .filter((event) => matchesPattern(event.type, type))
+        .map((event) => event.data as T)
+    })
+  }
+
+  /**
+   * Listen to full normalized event objects by exact type or prefix pattern.
+   *
+   * Example:
+   * - listenEvents('agents.*')
+   * - listenEvents('phase')
+   */
+  function listenEvents<T = unknown>(pattern: string): Ref<WorkflowStreamEvent<T>[]> {
+    return computed(() => {
+      return events.value
+        .filter((event) => matchesPattern(event.type, pattern)) as WorkflowStreamEvent<T>[]
+    })
+  }
+
+  /**
+   * Compatibility alias for grouped subscriptions.
+   * Prefer listen('agents.*') for new code.
+   */
+  function listenPart<T = unknown>(part: string): Ref<WorkflowStreamEvent<T>[]> {
+    return listenEvents<T>(`${part.trim()}.*`)
   }
 
   if (sub) {
@@ -98,11 +126,8 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
   }
 
   function close() {
-    for (const channel of channels.values()) {
-      channel.stream.close()
-      channel.processed = 0
-      channel.data.value = []
-    }
+    stream.close()
+    processed = 0
     events.value = []
     current.value = null
     status.value = 'closed'
@@ -114,6 +139,8 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
 
   return {
     listen,
+    listenEvents,
+    listenPart,
     subscribe,
     status,
     close,

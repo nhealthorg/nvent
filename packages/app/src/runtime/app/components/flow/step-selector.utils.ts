@@ -65,7 +65,7 @@ export function getAwaitPositionLabel(key: string): string {
 }
 
 export function isVarStep(step: any): boolean {
-  return step?.functionId === 'workflow::internal-var-set'
+  return step?.functionId === 'nworkflow::internal-var-set'
 }
 
 export function getVarStepKey(step: any): string | null {

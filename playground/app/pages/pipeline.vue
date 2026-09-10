@@ -6,7 +6,7 @@
           Workflow Stream Demo
         </h1>
         <p class="text-gray-400 text-sm">
-          Start a workflow run and subscribe to developer-defined stream events sent from workflow nodes.
+          Start a workflow run and subscribe to nworkflow live events sent from workflow nodes.
         </p>
       </div>
 
@@ -141,8 +141,24 @@
         </ul>
       </div>
 
+      <div v-if="agentEvents.length" class="space-y-2">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+          Agent Part (namespaced)
+        </h2>
+        <ul class="space-y-1">
+          <li
+            v-for="(item, idx) in agentEvents"
+            :key="`agent-${idx}`"
+            class="bg-gray-900 rounded-lg px-4 py-2 text-sm"
+          >
+            <span class="text-teal-300 font-mono text-xs">{{ item.type }}</span>
+            <span class="text-gray-300"> · {{ timelineLabel(item.data) }}</span>
+          </li>
+        </ul>
+      </div>
+
       <div class="bg-gray-900 border border-gray-700 rounded-lg p-4 text-xs text-gray-300">
-        This demo starts workflow <span class="font-mono">test-wf</span>. The workflow itself remains poll-based for status/results; this page only subscribes to explicit events sent via <span class="font-mono">ctx.workflow.stream.send(type, data)</span>.
+        This demo starts workflow <span class="font-mono">test-wf</span>. Live status is delivered from the canonical nworkflow stream via <span class="font-mono">ctx.workflow.stream.send(type, data)</span>; UI sections can subscribe by event type or namespaced part.
       </div>
 
       <!-- Error -->
@@ -190,6 +206,7 @@ const phaseEvents = stream.listen<PhaseEvent>('phase')
 const progressEvents = stream.listen<ProgressEvent>('progress')
 const countEvents = stream.listen<CountEvent>('count')
 const summaryEvents = stream.listen<SummaryEvent>('summary')
+const agentEvents = stream.listenPart<Record<string, unknown>>('agents')
 const timeline = computed(() => stream.events.value)
 
 async function startRun() {

@@ -23,7 +23,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const result = await iii.trigger({
-      function_id: 'workflow::var-list',
+      function_id: 'nworkflow::var-list',
       payload: {
         run_id: runId,
         key,

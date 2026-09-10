@@ -17,7 +17,7 @@ export default defineEventHandler(async (event) => {
 
   const iii = useIii()
   const result = await iii.trigger({
-    function_id: 'workflow::stop',
+    function_id: 'nworkflow::stop',
     payload: { run_id: runId },
   })
 

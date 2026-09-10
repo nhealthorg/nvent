@@ -660,6 +660,7 @@ export function defineWorkflow<
       }
       const definition = serializeWorkflowDefinitionOrThrow(definitionCandidate)
 
+      const workflowsNamespace = resolveWorkflowHookNamespaceDefault()
       const iii = useIii()
       try {
         return await iii.trigger({
@@ -668,7 +669,8 @@ export function defineWorkflow<
             definition,
             input,
             ...(workflowInputPolicy ? { inputPolicy: workflowInputPolicy } : {}),
-          }
+          },
+          ...(workflowsNamespace ? { namespace: workflowsNamespace } : {}),
         })
       } catch (error) {
         console.error('[nvent/workflow] nworkflow::start invocation failed; definition shape summary:', {

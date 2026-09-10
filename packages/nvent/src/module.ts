@@ -11,7 +11,7 @@
  * 4. Scans server/functions/ and generates #nvent/iii-registry template
  * 5. Registers the Nitro worker plugin (connects, registers functions/triggers)
  * 6. Adds server auto-imports (useIii, defineFunction, logger, enqueue, stateManager)
- * 7. Adds nhealth console API routes
+ * 7. Adds nhealth ADE API routes
  * 8. Watches function files for changes (dev HMR)
  */
 
@@ -100,12 +100,12 @@ export default defineNuxtModule<NventIiiOptions>({
     const rawPythonPath = opts.functions?.python?.devPath ?? '.venv/bin/python3'
     const pythonBin = isAbsolute(rawPythonPath) ? rawPythonPath : join(nuxt.options.rootDir, rawPythonPath)
     const skipPython = opts.functions?.python?.skip ?? false
-    const consoleCfg = typeof iiiOpts.console === 'object' ? iiiOpts.console : {}
+    const adeCfg = typeof iiiOpts.ade === 'object' ? iiiOpts.ade : {}
 
     const configuredWsPort = iiiOpts.wsPort
     const configuredHttpPort = iiiOpts.httpPort
     const configuredStreamPort = iiiOpts.streamPort
-    const configuredConsolePort = consoleCfg.port
+    const configuredAdePort = adeCfg.port
 
     const composeOpts = iiiOpts.compose ?? {}
     const composeEngineAdvanced = resolveComposeEngineAdvanced(composeOpts.engine)
@@ -125,7 +125,8 @@ export default defineNuxtModule<NventIiiOptions>({
     // Compose is the only runtime path in iii 0.23+.
     const managed = composeOpts.managed ?? true
     const composeUpOnStart = composeOpts.upOnStart ?? true
-    const composeLogLevel = composeOpts.logLevel ?? 'info'
+    // Prefer explicit compose log level; fall back to global iii.logLevel when set.
+    const composeLogLevel = composeOpts.logLevel ?? iiiOpts.logLevel ?? 'info'
     const composeCompactLogs = composeOpts.compactLogs ?? true
     const composeWaitForUp = composeOpts.waitForUp ?? true
     const composeUpTimeoutMs = composeOpts.upTimeoutMs ?? 120_000
@@ -152,15 +153,15 @@ export default defineNuxtModule<NventIiiOptions>({
       })
     }
 
-    const { wsPort: resolvedWsPort, httpPort: resolvedHttpPort, streamPort: resolvedStreamPort, consolePort: resolvedConsolePort } = await resolveRuntimePorts({
+    const { wsPort: resolvedWsPort, httpPort: resolvedHttpPort, streamPort: resolvedStreamPort, adePort: resolvedAdePort } = await resolveRuntimePorts({
       configuredWsPort,
       configuredHttpPort,
       configuredStreamPort,
-      configuredConsolePort,
+      configuredAdePort,
       defaultWsPort: 49134,
       defaultHttpPort: 3111,
       defaultStreamPort: 3112,
-      defaultConsolePort: 3113,
+      defaultAdePort: 3113,
     })
     const wsUrl = iiiOpts.wsUrl ?? `ws://localhost:${resolvedWsPort}`
     const packageRootDir = workflowPackageRoot
@@ -216,12 +217,15 @@ export default defineNuxtModule<NventIiiOptions>({
     }, mergedQueues.queueConfigs)
     // Compose source-of-truth for iii 0.23+ runtime orchestration.
     mkdirSync(nventDir, { recursive: true })
-    // Remove legacy layout artifacts from old engine-first paths.
+    // Remove legacy layout artifacts from old engine-first paths and stale dev configs.
     rmSync(join(nventDir, 'compose'), { recursive: true, force: true })
     rmSync(join(nventDir, 'config.yaml'), { force: true, recursive: false })
     rmSync(join(nventDir, 'iii-config.yaml'), { force: true, recursive: false })
+    if (nuxt.options.dev) {
+      rmSync(join(nventDir, 'config'), { recursive: true, force: true })
+    }
 
-    const buildComposeYaml = (includeConsole: boolean) => generateWorkerComposeYaml({
+    const buildComposeYaml = (includeAde: boolean) => generateWorkerComposeYaml({
       nventVersion: meta.version,
       iiiVersion: version,
       daemonNamespace: composeDaemonNamespace,
@@ -242,13 +246,13 @@ export default defineNuxtModule<NventIiiOptions>({
       includePubsub: engineCfg.modules.pubsub === true,
       includeHttp: engineCfg.modules.httpFunctions === true,
       includeStream: engineCfg.modules.stream !== false,
-      includeConsole,
+      includeAde,
       startupTimeout: composeEngineAdvanced.startupTimeout,
       stopTimeout: composeEngineAdvanced.stopTimeout,
       engineWorkerOverrides: composeEngineAdvanced.workers,
       packageVersions: composeOpts.packageVersions,
-      consoleVersion: consoleCfg.version,
-      consoleConfig: iiiOpts.console ? { http_port: resolvedConsolePort } : undefined,
+      adeVersion: adeCfg.version,
+      adeConfig: iiiOpts.ade ? { http_port: resolvedAdePort } : undefined,
       workflowWorker: {
         source: composeWorkflowWorkerSource,
         containerName: composeOpts.workflowWorkerContainerName,
@@ -258,8 +262,8 @@ export default defineNuxtModule<NventIiiOptions>({
       },
     })
 
-    let composeConsoleEnabled = !!iiiOpts.console
-    let composeYaml = buildComposeYaml(composeConsoleEnabled)
+    let composeAdeEnabled = !!iiiOpts.ade
+    let composeYaml = buildComposeYaml(composeAdeEnabled)
     const composeFilePath = join(nventDir, composeFileName)
     writeFileSync(composeFilePath, composeYaml, 'utf-8')
 
@@ -289,6 +293,9 @@ export default defineNuxtModule<NventIiiOptions>({
         version,
         modules: engineCfg.modules,
         logLevel,
+        queue: {
+          queueConfigs: mergedQueues.queueConfigs,
+        },
         namespace: {
           mode: namespaceMode,
           default: namespaceDefault,
@@ -329,12 +336,12 @@ export default defineNuxtModule<NventIiiOptions>({
           return join('libs', basename(p))
         }),
       },
-      console: {
-        enabled: !!iiiOpts.console,
-        version: consoleCfg.version ?? '',
-        port: resolvedConsolePort,
-        host: consoleCfg.host ?? 'localhost',
-        flow: consoleCfg.flow ?? true,
+      ade: {
+        enabled: !!iiiOpts.ade,
+        version: adeCfg.version ?? '',
+        port: resolvedAdePort,
+        host: adeCfg.host ?? 'localhost',
+        flow: adeCfg.flow ?? true,
       },
     }
 
@@ -556,8 +563,8 @@ export default defineNuxtModule<NventIiiOptions>({
           httpPort: resolvedHttpPort,
           httpHost: iiiOpts.httpHost ?? 'localhost',
           streamPort: resolvedStreamPort,
-          consolePort: resolvedConsolePort,
-          consoleEnabled: !!iiiOpts.console,
+          adePort: resolvedAdePort,
+          adeEnabled: !!iiiOpts.ade,
           composeNamespace: composeDaemonNamespace,
           composeFilePath,
         })
@@ -627,21 +634,21 @@ export default defineNuxtModule<NventIiiOptions>({
             let err = caughtErr
             let recovered = false
 
-            // In dev, console is optional. Retry once without console when package
+            // In dev, ADE UI is optional. Retry once without it when package
             // resolution fails so runtime startup does not depend on that package.
             if (
               err instanceof ComposeStartupError
               && err.code === 'PACKAGE_NOT_RESOLVED'
-              && composeConsoleEnabled
+              && composeAdeEnabled
             ) {
               try {
-                console.warn('[nvent] compose package resolution failed; retrying once without console container.')
-                composeConsoleEnabled = false
+                console.warn('[nvent] compose package resolution failed; retrying once without ade container.')
+                composeAdeEnabled = false
                 composeYaml = buildComposeYaml(false)
                 writeFileSync(composeFilePath, composeYaml, 'utf-8')
                 await startManagedCompose()
                 recovered = true
-                console.warn('[nvent] compose started without console container after package resolution fallback.')
+                console.warn('[nvent] compose started without ade container after package resolution fallback.')
               }
               catch (retryErr: any) {
                 err = retryErr
@@ -665,16 +672,16 @@ export default defineNuxtModule<NventIiiOptions>({
             }
           }
 
-          // Console is started via compose container when enabled.
-          if (iiiOpts.console && composeConsoleEnabled) {
-            const consolePort = resolvedConsolePort
+          // ADE UI is started via compose container when enabled.
+          if (iiiOpts.ade && composeAdeEnabled) {
+            const adePort = resolvedAdePort
             addCustomTab({
-              name: 'nvent-console',
+              name: 'nvent-ade',
               title: 'nvent',
               icon: 'carbon:flow',
               view: {
                 type: 'iframe',
-                src: `http://localhost:${consolePort}`,
+                src: `http://localhost:${adePort}`,
               },
             })
           }

@@ -123,6 +123,7 @@ export interface StateModuleConfig {
 
 export interface QueueModuleConfig {
   adapter?: QueueAdapter
+  queues?: Record<string, NamedQueueConfig>
   queue_configs?: Record<string, NamedQueueConfig>
 }
 
@@ -391,8 +392,9 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
   if (cfg.modules.queue !== false) {
     const adapter = cfg.queue?.adapter ?? defaultQueueAdapter()
     const queueModCfg: Record<string, unknown> = { adapter }
-    const queueConfigs = cfg.queue?.queue_configs
+    const queueConfigs = cfg.queue?.queues ?? cfg.queue?.queue_configs
     if (queueConfigs && Object.keys(queueConfigs).length > 0) {
+      queueModCfg.queues = queueConfigs
       queueModCfg.queue_configs = queueConfigs
     }
     workers.push({ name: 'queue', config: queueModCfg })
@@ -533,9 +535,8 @@ export function buildEngineConfig(
     streamPort: iiiOpts.streamPort ?? 3112,
     modules: { state: true, queue: true, cron: true, observability: true, stream: true, pubsub: false, httpFunctions: false, exec: false, telemetry: false, ...iiiOpts.modules },
     state: iiiOpts.state ? { adapter: mapStateAdapter(iiiOpts.state) } : undefined,
-    queue: (queueModuleEnabled && (iiiOpts.queue || hasQueueConfigs)) ? {
-      adapter: mapQueueAdapter(iiiOpts.queue?.adapter),
-      queue_configs: hasQueueConfigs
+    queue: (queueModuleEnabled && (iiiOpts.queue || hasQueueConfigs)) ? (() => {
+      const formattedConfigs = hasQueueConfigs
         ? Object.fromEntries(
             Object.entries(normalizedQueueConfigs).map(([name, cfg]) => [
               name,
@@ -552,8 +553,13 @@ export function buildEngineConfig(
               },
             ]),
           )
-        : undefined,
-    } : undefined,
+        : undefined
+      return {
+        adapter: mapQueueAdapter(iiiOpts.queue?.adapter),
+        queues: formattedConfigs,
+        queue_configs: formattedConfigs,
+      }
+    })() : undefined,
     cron: iiiOpts.cron ? { adapter: mapCronAdapter(iiiOpts.cron) } : undefined,
     stream: iiiOpts.stream ? {
       host: iiiOpts.stream.host,

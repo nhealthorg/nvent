@@ -1,5 +1,6 @@
 import { TriggerAction, type registerWorker } from 'iii-sdk'
 import { trace } from '@opentelemetry/api'
+import { useRuntimeConfig } from '#imports'
 import type { FunctionDef, FunctionContext, WorkflowFunctionOptions } from '../defineFunction'
 
 type IiiClient = ReturnType<typeof registerWorker>
@@ -144,6 +145,47 @@ async function registerTriggerWithRetry(
   }
 }
 
+async function ensureQueueDefined(
+  iii: IiiClient,
+  queue: string,
+): Promise<void> {
+  try {
+    let cfg: Record<string, any> | undefined
+    try {
+      const runtimeConfig = useRuntimeConfig() as any
+      const userQueueConfigs = runtimeConfig?.nvent?.iii?.queue?.queueConfigs ?? {}
+      cfg = userQueueConfigs[queue] ?? userQueueConfigs.default
+    }
+    catch {
+      // Best-effort if useRuntimeConfig is not available
+    }
+
+    const payloadConfig: Record<string, unknown> = {
+      concurrency: cfg?.concurrency ?? 4,
+    }
+    if (cfg?.type) payloadConfig.type = cfg.type
+    if (cfg?.maxRetries ?? cfg?.retries != null) payloadConfig.max_retries = cfg?.maxRetries ?? cfg?.retries
+    if (cfg?.backoffMs ?? cfg?.backoff != null) payloadConfig.backoff_ms = cfg?.backoffMs ?? cfg?.backoff
+    if (cfg?.visibilityTimeoutMs != null) payloadConfig.visibility_timeout_ms = cfg.visibilityTimeoutMs
+    if (cfg?.leaseTimeoutMs != null) payloadConfig.lease_timeout_ms = cfg.leaseTimeoutMs
+    if (cfg?.deadLetterQueue != null) payloadConfig.dead_letter_queue = cfg.deadLetterQueue
+    if (cfg?.fallbackQueue != null) payloadConfig.fallback_queue = cfg.fallbackQueue
+    if (cfg?.messageGroupField != null) payloadConfig.message_group_field = cfg.messageGroupField
+
+    await iii.trigger({
+      function_id: 'queue::define',
+      payload: {
+        queue,
+        config: payloadConfig,
+      },
+      timeoutMs: 10_000,
+    })
+  }
+  catch (err) {
+    // Best-effort attempt to define named queue dynamically if missing
+  }
+}
+
 async function registerWorkflowQueueSubscriber(
   iii: IiiClient,
   functionId: string,
@@ -151,6 +193,8 @@ async function registerWorkflowQueueSubscriber(
 ): Promise<void> {
   const maxAttempts = 40
   const initialDelayMs = 250
+
+  await ensureQueueDefined(iii, queue)
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {

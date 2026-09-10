@@ -26,12 +26,22 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
         node_uid,
     } = req;
     let data_preview = truncate_value(&data);
-    let stream_name = stream.clone();
+    let event_type = stream;
+    let stream_name = state::STREAM_NAME_WORKFLOW.to_string();
     let run_id_ref = run_id.clone();
+    let ts_unix_ms = deps.now_ms();
 
-    // 1. Channel mapping label: [RUN_ID]_[stream]
+    // 1. Channel mapping label: [RUN_ID]_[stream_name]
     let channel = state::run_scoped_key(&run_id_ref, &stream_name);
-    let item_id = format!("st_{}_{}", deps.now_ms(), crate::ids::new_trace_id());
+    let item_id = format!("st_{}_{}", ts_unix_ms, crate::ids::new_trace_id());
+
+    let payload = json!({
+        "type": event_type,
+        "data": data,
+        "run_id": run_id,
+        "node_uid": node_uid,
+        "ts_unix_ms": ts_unix_ms,
+    });
 
     // 2. Update Registry in workflow_run record
     {
@@ -53,10 +63,10 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
         .trigger(TriggerRequest {
             function_id: "stream::set".into(),
             payload: json!({
-                "stream_name": stream,
+                "stream_name": stream_name,
                 "group_id": run_id,
                 "item_id": item_id,
-                "data": data,
+                "data": payload,
             }),
             action: None,
             timeout_ms: Some(30_000),
@@ -75,13 +85,14 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
                 function_id: Some("nworkflow::stream-publish".to_string()),
                 runtime: None,
                 event_name: "workflow.stream.publish".to_string(),
-                ts_unix_ms: deps.now_ms(),
+                ts_unix_ms,
                 attributes: Some(json!({
                     "workflow.stream.name": stream_name,
+                    "workflow.stream.event_type": event_type,
                     "workflow.stream.group_id": run_id,
                     "workflow.stream.item_id": item_id,
                     "workflow.stream.preview": data_preview,
-                    "workflow.stream.payload": data,
+                    "workflow.stream.payload": payload,
                 })),
                 trace_id: None,
                 span_id: None,

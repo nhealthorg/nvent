@@ -1,7 +1,7 @@
 # Specification: Workflow Streams in nvent
 
 Dieses Dokument beschreibt explizite Echtzeit-Streams innerhalb eines Workflow-Runs.
-Wichtig: Workflow-Status und Ergebnis bleiben poll-basiert. Streams sind nur für vom Entwickler aktiv gesendete Events gedacht.
+Workflow-Status ist standardmaessig stream-basiert; Polling bleibt als Fallback fuer Recovery/Snapshot.
 
 ## 1. Zielbild
 
@@ -43,7 +43,7 @@ const started = await workflow.run('test-wf', { text: 'hello' })
 // started:
 // {
 //   run_id: string,
-//   stream: { streamName: 'workflow', groupId: run_id },
+//   stream: { streamName: 'nworkflow', groupId: run_id },
 //   raw: unknown
 // }
 ```
@@ -55,6 +55,7 @@ const stream = useWorkflowStream(started.stream)
 
 const progress = stream.listen<{ message: string }>('progress')
 const count = stream.listen<{ message: string; count: number }>('count')
+const agentEvents = stream.listenEvents('agents.*')
 
 // optional: später auf anderen Run wechseln
 // stream.subscribe(otherStarted.stream)
@@ -66,25 +67,32 @@ const count = stream.listen<{ message: string; count: number }>('count')
 - Sammelt alle Payloads für den angegebenen Event-Typ.
 - Typen sind pro Event-Typ vom Entwickler festlegbar.
 
+### Verhalten von listenEvents(pattern)
+
+- Gibt Ref<WorkflowStreamEvent<T>[]> zurueck.
+- Unterstuetzt exact type (`phase`) und Prefix-Pattern (`agents.*`).
+- Liefert Event-Metadaten (`type`, `run_id`, `node_uid`, `ts_unix_ms`) fuer UI-Projektionen.
+
 ## 4. Transport und Mapping
 
-- Stream-Name: workflow
+- Stream-Name: nworkflow (kanonisch)
 - Group-ID: run_id
-- Event-Form: { type, data }
-- Triggerpfad: ctx.workflow.stream.send(...) -> workflow::stream-publish -> iii stream module -> WebSocket (/_iii/stream/{stream}/{group}).
+- Event-Form: { type, data, run_id, node_uid?, ts_unix_ms }
+- Triggerpfad: ctx.workflow.stream.send(...) -> nworkflow::stream-publish -> iii stream module -> WebSocket (/_iii/stream/{stream}/{group}).
 
 ## 5. Security
 
 - Streams sind run-spezifisch über group_id = run_id getrennt.
 - Zugriff erfolgt über bestehende Browser-Auth/RBAC-Regeln des nvent/iii-Setups.
 - Wer keinen Zugriff auf den Run-Kontext hat, soll auch keine Run-Streams konsumieren können.
+- Stream-Proxy erzwingt Join-Guard: nur kanonischer Stream (`nworkflow`) und gueltiges run_id-Format.
 
 ## 6. DX-Prinzipien
 
 - Eine Standard-Startfunktion (useWorkflow.run).
 - Ein Standard-Subscriber (useWorkflowStream).
-- Event-Kanäle sind nur typisierte listen(type)-Aufrufe.
-- Polling für Status bleibt unabhängig und optional.
+- Event-Kanaele sind typisierte listen(type)-Aufrufe plus listenEvents(prefix) fuer Bereichsprojektionen.
+- Run-Overview ist stream-first; Polling fuer Status ist Fallback.
 
 ## 7. Implementierungsstatus
 

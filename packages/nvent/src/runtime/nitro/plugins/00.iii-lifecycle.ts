@@ -37,7 +37,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   if (!composeCfg.managed) return
 
-  // In dev, module.ts manages engine + console in the Nuxt parent process.
+  // In dev, module.ts manages engine + ADE UI in the Nuxt parent process.
   if (process.env.NODE_ENV === 'development') return
 
   const logLevel = ((composeCfg.logLevel ?? 'info') as 'none' | 'error' | 'warn' | 'info')
@@ -86,8 +86,8 @@ export default defineNitroPlugin(async (nitroApp) => {
     httpPort: iiiCfg.httpPort ?? 3111,
     httpHost: iiiCfg.httpHost ?? 'localhost',
     streamPort: iiiCfg.streamPort ?? 3112,
-    consolePort: iiiCfg.console?.port,
-    consoleEnabled: !!iiiCfg.console,
+    adePort: iiiCfg.ade?.port,
+    adeEnabled: !!iiiCfg.ade,
     composeNamespace: composeCfg.daemonNamespace ?? iiiCfg.namespace?.default ?? 'default',
     projectNamespace: iiiCfg.namespace?.map?.compose ?? iiiCfg.namespace?.default ?? composeCfg.daemonNamespace ?? 'default',
     namespaceMode: iiiCfg.namespace?.mode ?? 'single',

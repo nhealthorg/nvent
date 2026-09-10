@@ -36,9 +36,10 @@ export default defineNuxtConfig({
       failOnInstallFailure: true,
       compose: {
         managed: true,
+        logLevel: 'trace',
       },
-      console: true,
-      logLevel: 'warn',
+      ade: true,
+      logLevel: 'info',
       observability: {
         level: 'warn',
         logsEnabled: true,

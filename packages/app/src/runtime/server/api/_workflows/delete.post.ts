@@ -17,7 +17,7 @@ export default defineEventHandler(async (event) => {
 
   const iii = useIii()
   const result = await iii.trigger({
-    function_id: 'workflow::run-delete',
+    function_id: 'nworkflow::run-delete',
     payload: { run_id: runId },
   })
 

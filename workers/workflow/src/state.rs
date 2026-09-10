@@ -167,7 +167,7 @@ pub fn delete_all_node_results_memory(run_id: &str) -> Result<(), WorkflowError>
 
 pub const SCOPE_RUN: &str = "workflow_run";
 pub const SCOPE_RUN_STATE: &str = "workflow_run_state";
-pub const STREAM_NAME_WORKFLOW: &str = "workflow";
+pub const STREAM_NAME_WORKFLOW: &str = "nworkflow";
 pub const RUN_SCOPED_KEY_SEPARATOR: &str = "_";
 pub const STATE_REGISTRY_KEY_PREFIX: &str = "k_";
 
@@ -1165,7 +1165,7 @@ mod tests {
     fn parse_record_list_normalizes_numeric_keyed_sequence_objects() {
         let mut rec = minimal_record_json();
         rec["stream_ids"] = json!({
-            "0": "workflow",
+            "0": "nworkflow",
             "1": "timeline"
         });
         rec["fanout_src"] = json!({
@@ -1174,7 +1174,7 @@ mod tests {
 
         let list = parse_record_list(&json!([rec]));
         assert_eq!(list.len(), 1, "numeric-keyed sequence object should parse");
-        assert_eq!(list[0].stream_ids, vec!["workflow", "timeline"]);
+        assert_eq!(list[0].stream_ids, vec!["nworkflow", "timeline"]);
         assert_eq!(
             list[0].fanout_src.get("classify").copied(),
             Some(2)

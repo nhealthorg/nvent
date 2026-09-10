@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { delimiter, dirname } from 'node:path'
+import { type NventLogLevel, shouldLogLine } from './logLevel'
 
 export type ComposeStartupErrorCode =
   | 'PROJECT_DID_NOT_START'
@@ -42,7 +43,7 @@ export interface ComposeManagerOptions {
   /** Remove namespace project state before compose --up. Keeps package cache. */
   resetNamespaceStateOnStart?: boolean
   /** Minimum log level for daemon output. */
-  logLevel?: 'none' | 'error' | 'warn' | 'info'
+  logLevel?: NventLogLevel
   /** Wait for compose --up completion before resolving start(). Default: true */
   waitForUp?: boolean
   /** Max time to wait for compose --up completion markers. Default: 120000 */
@@ -51,7 +52,7 @@ export interface ComposeManagerOptions {
   compactLogs?: boolean
 }
 
-type LogLevel = 'none' | 'error' | 'warn' | 'info'
+type LogLevel = NventLogLevel
 
 interface UpProgress {
   completed: boolean
@@ -69,11 +70,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-function shouldLog(level: LogLevel, stream: 'stdout' | 'stderr'): boolean {
-  if (level === 'none') return false
-  if (level === 'error') return stream === 'stderr'
-  if (level === 'warn') return stream === 'stderr'
-  return true
+function parseLineLogLevel(line: string): NventLogLevel {
+  const upper = line.toUpperCase()
+  if (upper.includes('[TRACE]') || upper.includes('TRACE:')) return 'trace'
+  if (upper.includes('[DEBUG]') || upper.includes('DEBUG:')) return 'debug'
+  if (upper.includes('[WARN]') || upper.includes('[WARNING]') || upper.includes('WARN:')) return 'warn'
+  if (upper.includes('[ERROR]') || upper.includes('[FATAL]') || upper.includes('ERROR:')) return 'error'
+  if (upper.includes('[INFO]') || upper.includes('INFO:')) return 'info'
+  return 'info'
 }
 
 function isComposeErrorLine(line: string): boolean {
@@ -207,8 +211,8 @@ export class ComposeManager {
       args.push('--up', '--file', composeFilePath)
     }
 
-    if (shouldLog(logLevel, 'stdout')) {
-      if (compactLogs) {
+    if (shouldLogLine(logLevel, 'info')) {
+      if (compactLogs && logLevel === 'info') {
         console.log(`[nvent][compose] starting daemon (namespace=${daemonNamespace})`)
       }
       else {
@@ -232,18 +236,24 @@ export class ComposeManager {
           }
         }
 
-        if (!shouldLog(logLevel, stream)) continue
+        const lineLevel = parseLineLogLevel(normalizedLine)
+        if (!shouldLogLine(logLevel, lineLevel)) continue
 
-        if (isComposeErrorLine(normalizedLine)) {
+        if (isComposeErrorLine(normalizedLine) || lineLevel === 'error') {
           console.error(`[nvent][compose] ${normalizedLine}`)
           continue
         }
 
-        if (logLevel === 'info') {
-          if (!compactLogs || isComposeLifecycleLine(normalizedLine)) {
-            console.log(`[nvent][compose] ${normalizedLine}`)
-          }
+        if (lineLevel === 'warn') {
+          console.warn(`[nvent][compose] ${normalizedLine}`)
+          continue
         }
+
+        if (logLevel === 'info' && compactLogs && !isComposeLifecycleLine(normalizedLine)) {
+          continue
+        }
+
+        console.log(`[nvent][compose] ${normalizedLine}`)
       }
     }
 
@@ -255,6 +265,8 @@ export class ComposeManager {
         ...process.env,
         PATH: `${dirname(binaryPath)}${delimiter}${process.env.PATH ?? ''}`,
         ...(composeStateDir ? { III_COMPOSE_STATE_DIR: composeStateDir } : {}),
+        III_LOG_LEVEL: logLevel,
+        RUST_LOG: logLevel,
       },
     })
 
@@ -267,7 +279,7 @@ export class ComposeManager {
     })
 
     this.process.on('exit', (code, signal) => {
-      if (logLevel === 'info') {
+      if (shouldLogLine(logLevel, 'info')) {
         console.info(`[nvent] compose daemon exited (code=${code}, signal=${signal})`)
       }
       this.process = null

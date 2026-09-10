@@ -122,7 +122,7 @@ export default defineEventHandler(async (event) => {
     const iii = useIii()
 
     const result = await iii.trigger({
-      function_id: 'workflow::stream-list',
+      function_id: 'nworkflow::stream-list',
       payload: {
         run_id: runId,
       },

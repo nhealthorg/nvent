@@ -1,4 +1,12 @@
+// @ts-expect-error '#imports' is resolved by Nuxt/Nitro in consuming apps.
 import { useRuntimeConfig, defineWebSocketHandler } from '#imports'
+
+const CANONICAL_STREAM_NAME = 'nworkflow'
+const RUN_ID_PATTERN = /^r_[0-9a-f]{32}$/
+
+function isAllowedSubscription(streamName: string, groupId: string): boolean {
+  return streamName === CANONICAL_STREAM_NAME && RUN_ID_PATTERN.test(groupId)
+}
 
 /**
  * WebSocket proxy for the iii Stream module.
@@ -16,10 +24,10 @@ import { useRuntimeConfig, defineWebSocketHandler } from '#imports'
  * or the join protocol.
  */
 export default defineWebSocketHandler({
-  open(peer) {
+  open(peer: any) {
     const { nvent } = useRuntimeConfig()
-    const host = nvent.iii.httpHost as string
-    const port = nvent.iii.streamPort as number
+    const host = (nvent as any).iii.httpHost as string
+    const port = (nvent as any).iii.streamPort as number
 
     // Extract streamName and groupId from the request path.
     // Expected path: /_iii/stream/{streamName}/{groupId}[/]
@@ -28,6 +36,11 @@ export default defineWebSocketHandler({
     const parts = pathname.replace(/^\/_iii\/stream\//, '').replace(/\/$/, '').split('/')
     const streamName = parts[0] ?? ''
     const groupId = parts[1] ?? ''
+
+    if (!isAllowedSubscription(streamName, groupId)) {
+      peer.close(1008, '[nvent] Stream subscription rejected: invalid stream or run scope')
+      return
+    }
 
     // The iii stream module only accepts connections at the root path.
     const upstreamUrl = `ws://${host}:${port}/`
@@ -57,7 +70,7 @@ export default defineWebSocketHandler({
     })
   },
 
-  message(peer, message) {
+  message(peer: any, message: any) {
     // Forward any client messages (e.g. leave) to upstream.
     const upstream = peer.context._upstream as WebSocket | undefined
     if (upstream?.readyState === WebSocket.OPEN) {
@@ -65,7 +78,7 @@ export default defineWebSocketHandler({
     }
   },
 
-  close(peer) {
+  close(peer: any) {
     const upstream = peer.context._upstream as WebSocket | undefined
     if (upstream && upstream.readyState < WebSocket.CLOSING) {
       upstream.close()

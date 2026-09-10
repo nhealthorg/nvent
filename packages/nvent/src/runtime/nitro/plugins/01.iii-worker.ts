@@ -152,10 +152,13 @@ export default defineNitroPlugin(async (nitroApp) => {
     // Best effort: SDK has reconnection; we just reduce noisy startup races.
   })
 
-  console.log(`[nvent] iii-worker: connecting to ${wsUrl} — ${fnCount} function(s), ${triggerCount} trigger(s)`)
+  const appNamespace = cfg.namespace?.map?.app ?? cfg.namespace?.default ?? 'default'
+
+  console.log(`[nvent] iii-worker: connecting to ${wsUrl} (namespace: ${appNamespace}) — ${fnCount} function(s), ${triggerCount} trigger(s)`)
 
   const iii = registerWorker(wsUrl, {
     workerName,
+    namespace: appNamespace,
     otel: {
       enabled: true,
       serviceName: 'nvent',
@@ -177,6 +180,32 @@ export default defineNitroPlugin(async (nitroApp) => {
   nitroApp.$iii = iii
 
   console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
+
+  // Define configured queues from Nuxt options with their concurrency & settings
+  const userQueueConfigs = (cfg.queue?.queueConfigs ?? {}) as Record<string, any>
+  const allQueueNames = new Set<string>(['default', ...Object.keys(userQueueConfigs)])
+  for (const qName of allQueueNames) {
+    const qCfg = userQueueConfigs[qName]
+    const payloadConfig: Record<string, unknown> = {
+      concurrency: qCfg?.concurrency ?? 4,
+    }
+    if (qCfg?.type) payloadConfig.type = qCfg.type
+    if (qCfg?.maxRetries ?? qCfg?.retries != null) payloadConfig.max_retries = qCfg?.maxRetries ?? qCfg?.retries
+    if (qCfg?.backoffMs ?? qCfg?.backoff != null) payloadConfig.backoff_ms = qCfg?.backoffMs ?? qCfg?.backoff
+    if (qCfg?.visibilityTimeoutMs != null) payloadConfig.visibility_timeout_ms = qCfg.visibilityTimeoutMs
+    if (qCfg?.leaseTimeoutMs != null) payloadConfig.lease_timeout_ms = qCfg.leaseTimeoutMs
+    if (qCfg?.deadLetterQueue != null) payloadConfig.dead_letter_queue = qCfg.deadLetterQueue
+    if (qCfg?.fallbackQueue != null) payloadConfig.fallback_queue = qCfg.fallbackQueue
+    if (qCfg?.messageGroupField != null) payloadConfig.message_group_field = qCfg.messageGroupField
+
+    iii.trigger({
+      function_id: 'queue::define',
+      payload: {
+        queue: qName,
+        config: payloadConfig,
+      },
+    }).catch(() => {})
+  }
 
   // Register all Node.js functions and triggers with the iii engine
   const nodeFunctions = ((registry.functions ?? []).filter(f => f.runtime === 'nodejs') as any[])

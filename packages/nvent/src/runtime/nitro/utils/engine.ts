@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { delimiter, dirname } from 'node:path'
 import { consola } from 'consola'
+import { type NventLogLevel, shouldLogLine } from './logLevel'
 
 const logger = consola.withTag('nvent:iii-engine')
 
@@ -53,7 +54,7 @@ export interface EngineManagerOptions {
   /** Working directory for the engine process. Defaults to process.cwd() */
   workingDir?: string
   /** Minimum log level for engine output. Default: 'warn' */
-  logLevel?: 'none' | 'error' | 'warn' | 'info'
+  logLevel?: NventLogLevel
   /**
    * When true and the child exits early but the expected ports are already open,
    * assume another compatible iii engine is running and reuse it.
@@ -62,13 +63,16 @@ export interface EngineManagerOptions {
   allowPortReuse?: boolean
 }
 
-type LogLevel = 'info' | 'warn' | 'error'
+type LogLevel = NventLogLevel
 
 /** Parse the level tag from an iii engine log line. Returns null for continuation lines. */
 function parseEngineLineLevel(line: string): LogLevel | null {
-  if (line.includes('[ERROR]')) return 'error'
-  if (line.includes('[WARN]')) return 'warn'
-  if (line.includes('[INFO]')) return 'info'
+  const upper = line.toUpperCase()
+  if (upper.includes('[ERROR]') || upper.includes('[FATAL]')) return 'error'
+  if (upper.includes('[WARN]') || upper.includes('[WARNING]')) return 'warn'
+  if (upper.includes('[INFO]')) return 'info'
+  if (upper.includes('[DEBUG]')) return 'debug'
+  if (upper.includes('[TRACE]')) return 'trace'
   return null // continuation line (└, ├, indented)
 }
 
@@ -80,7 +84,7 @@ function parseEngineLineLevel(line: string): LogLevel | null {
 function cleanEngineLine(line: string): string {
   return line
     .replace(/\[\d{1,2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*[AP]M)?\]\s*/gi, '')
-    .replace(/\[(ERROR|WARN|INFO)\]\s*/g, '')
+    .replace(/\[(ERROR|WARN|INFO|DEBUG|TRACE|FATAL)\]\s*/gi, '')
     .trim()
 }
 
@@ -117,26 +121,25 @@ export class EngineManager {
 
   private handleGroup(level: LogLevel, lines: string[]): void {
     const { logLevel } = this.opts
-    if (logLevel === 'none') return
+    if (!shouldLogLine(logLevel, level)) {
+      const bucket = this.startupComplete ? this.runtimeCounts : this.startupCounts
+      bucket[level] = (bucket[level] ?? 0) + 1
+      return
+    }
 
     const text = lines.join('\n  ')
 
-    // Errors always surface immediately regardless of mode.
     if (level === 'error') {
       logger.error(`[iii] ${text}`)
       return
     }
 
-    // In verbose mode stream everything cleaned.
-    if (logLevel === 'info') {
-      if (level === 'warn') logger.warn(`[iii] ${text}`)
-      else logger.info(`[iii] ${text}`)
+    if (level === 'warn') {
+      logger.warn(`[iii] ${text}`)
       return
     }
 
-    // Silent mode: just count.
-    const bucket = this.startupComplete ? this.runtimeCounts : this.startupCounts
-    bucket[level] = (bucket[level] ?? 0) + 1
+    logger.info(`[iii] ${text}`)
   }
 
   private flushPendingGroup(): void {

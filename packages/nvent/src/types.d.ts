@@ -48,7 +48,7 @@ export interface NventComposeOptions {
   /** Run compose up automatically on startup in managed mode. Default: true */
   upOnStart?: boolean
   /** Log level for iii compose daemon output. Default: 'info' */
-  logLevel?: 'none' | 'error' | 'warn' | 'info'
+  logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'none'
   /** Print only key compose lifecycle lines at startup. Default: true */
   compactLogs?: boolean
   /** Wait for compose up completion before continuing startup. Default: true */
@@ -65,7 +65,8 @@ export interface NventComposeOptions {
     cron?: string
     pubsub?: string
     http?: string
-    console?: string
+    /** Package version for iii ADE UI container. */
+    ade?: string
   }
   /** Workflow worker source type in compose. Default: 'path' */
   workflowWorkerSource?: 'path' | 'package'
@@ -196,7 +197,7 @@ export interface NventIiiOptions {
       serviceNamespace?: string
       /**
        * Trace export destination.
-       * 'memory' = queryable via iii API / console (default).
+       * 'memory' = queryable via iii API / ADE UI (default).
        * 'otlp'   = external collector (set endpoint too).
        * 'both'   = memory + otlp.
        */
@@ -241,9 +242,9 @@ export interface NventIiiOptions {
     /**
      * Minimum log level for iii engine output.
      * 'none' silences all output, 'error' shows only errors, 'warn' shows warnings + errors,
-     * 'info' shows everything. Default: 'warn'
+     * 'info' / 'debug' / 'trace' shows verbose output. Default: 'warn'
      */
-    logLevel?: 'none' | 'error' | 'warn' | 'info'
+    logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'none'
     /**
      * Workflow worker runtime config passed to the Rust worker at startup.
      * These values override the worker's fetched config on boot.
@@ -284,15 +285,15 @@ export interface NventIiiOptions {
       }
     }
     /**
-     * Enable the iii-console web UI (separate binary, http://localhost:3113).
+     * Enable the iii ADE web UI container (http://localhost:3113).
      * Pass `true` for defaults or an object to customise.
      */
-    console?: boolean | {
-      /** Version to install. Default: same as iii engine version */
+    ade?: boolean | {
+      /** Package version to use. Default: same as iii engine version */
       version?: string
-      /** Port for the console web UI. Default: 3113 */
+      /** Port for the ADE web UI. Default: 3113 */
       port?: number
-      /** Host for the console web UI. Default: 'localhost' */
+      /** Host for the ADE web UI. Default: 'localhost' */
       host?: string
       /** Enable the Flow visualization page */
       flow?: boolean

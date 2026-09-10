@@ -14,24 +14,25 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createConnection } from 'node:net'
 import { consola } from 'consola'
+import { type NventLogLevel, shouldLogLine } from '../logLevel'
 
 const logger = consola.withTag('nvent:python')
 
-type LogLevel = 'info' | 'warn' | 'error'
+type LogLevel = NventLogLevel
 
 /** Parse log level from a Python logging line: "[INFO] ...", "[WARNING] ...", "[ERROR] ..." */
 function parsePythonLineLevel(line: string): LogLevel | null {
-  if (line.startsWith('[ERROR]') || line.startsWith('[CRITICAL]')) return 'error'
-  if (line.startsWith('[WARNING]') || line.startsWith('[WARN]')) return 'warn'
-  if (line.startsWith('[INFO]')) return 'info'
-  if (line.startsWith('[DEBUG]')) return 'info'
+  const upper = line.toUpperCase()
+  if (upper.startsWith('[ERROR]') || upper.startsWith('[CRITICAL]')) return 'error'
+  if (upper.startsWith('[WARNING]') || upper.startsWith('[WARN]')) return 'warn'
+  if (upper.startsWith('[INFO]')) return 'info'
+  if (upper.startsWith('[DEBUG]')) return 'debug'
+  if (upper.startsWith('[TRACE]')) return 'trace'
   return null
 }
 
-const LOG_LEVEL_RANK: Record<string, number> = { none: 0, error: 1, warn: 2, info: 3 }
-
 function shouldShow(lineLevel: LogLevel, minLevel: string): boolean {
-  return (LOG_LEVEL_RANK[lineLevel] ?? 0) <= (LOG_LEVEL_RANK[minLevel] ?? 0)
+  return shouldLogLine(minLevel, lineLevel)
 }
 
 function isLocalBridgeHost(hostname: string): boolean {

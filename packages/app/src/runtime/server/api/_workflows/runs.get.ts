@@ -11,7 +11,7 @@ export default defineEventHandler(async (event) => {
 
   // Fetch runs from the central workflow worker
   const result = await iii.trigger({ 
-    function_id: 'workflow::list-runs', 
+    function_id: 'nworkflow::list-runs', 
     payload: { 
       status: statusFilter,
       workflow: workflowFilter,

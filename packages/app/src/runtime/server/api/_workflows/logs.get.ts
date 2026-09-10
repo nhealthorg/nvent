@@ -53,7 +53,7 @@ export default defineEventHandler(async (event) => {
   
   try {
     const response = await iii.trigger({
-      function_id: 'workflow::log-read',
+      function_id: 'nworkflow::log-read',
       payload: {
         run_id: runId,
         node_uids: nodeUids,
