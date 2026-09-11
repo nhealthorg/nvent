@@ -57,7 +57,7 @@ export default defineEventHandler(async (event) => {
   const response: any = runId
     ? {
         stream: {
-          streamName: 'workflow',
+          streamName: 'nworkflow',
           groupId: runId,
         },
       }

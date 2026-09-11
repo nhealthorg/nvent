@@ -1,7 +1,7 @@
 import { computed, ref } from '#imports'
 
 export interface WorkflowStreamSubscription {
-  streamName: 'workflow'
+  streamName: 'nworkflow'
   groupId: string
 }
 
@@ -10,9 +10,9 @@ function normalizeSubscription(value: unknown, runId?: string): WorkflowStreamSu
   const v = value as Record<string, unknown>
   const streamName = String(v.streamName || '')
   const groupId = String(v.groupId || '')
-  if (streamName !== 'workflow' || !groupId) return null
+  if (streamName !== 'nworkflow' || !groupId) return null
   if (runId && groupId !== runId) return null
-  return { streamName: 'workflow', groupId }
+  return { streamName: 'nworkflow', groupId }
 }
 
 export function useWorkflowStreamAccess() {

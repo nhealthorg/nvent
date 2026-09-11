@@ -7,11 +7,32 @@ export interface WorkflowStreamSubscription {
 }
 
 export interface WorkflowStreamEvent<T = unknown> {
+  id?: string
   type: string
   data: T
   runId?: string
   nodeUid?: string
+  functionId?: string
   tsUnixMs?: number
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function unwrapWorkflowEvent(payload: unknown): { event: Record<string, unknown>, envelope: Record<string, unknown> } | null {
+  const envelope = asRecord(payload)
+  if (!envelope) return null
+
+  const protocolEvent = asRecord(envelope.event)
+  if (protocolEvent?.type === 'event') {
+    const event = asRecord(protocolEvent.event)
+    if (event) return { event, envelope }
+  }
+
+  return { event: envelope, envelope }
 }
 
 function toSubscription(subOrRunId: string | WorkflowStreamSubscription): WorkflowStreamSubscription {
@@ -32,17 +53,28 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
 
   const stream = useIiiStream<unknown>()
   let processed = 0
+  const seenEventKeys = new Set<string>()
 
   function normalizeEvent(payload: unknown): WorkflowStreamEvent {
-    if (payload && typeof payload === 'object') {
-      const obj = payload as Record<string, unknown>
-      if (typeof obj.type === 'string' && 'data' in obj) {
+    const normalized = unwrapWorkflowEvent(payload)
+    if (normalized) {
+      const { event, envelope } = normalized
+      const type = typeof event.type === 'string'
+        ? event.type
+        : (typeof event.event_name === 'string' ? event.event_name : 'message')
+      if ('data' in event || type !== 'message') {
         return {
-          type: obj.type,
-          data: obj.data,
-          runId: typeof obj.run_id === 'string' ? obj.run_id : undefined,
-          nodeUid: typeof obj.node_uid === 'string' ? obj.node_uid : undefined,
-          tsUnixMs: typeof obj.ts_unix_ms === 'number' ? obj.ts_unix_ms : undefined,
+          id: typeof envelope.id === 'string'
+            ? envelope.id
+            : (typeof event.id === 'string' ? event.id : undefined),
+          type,
+          data: 'data' in event ? event.data : event,
+          runId: typeof event.run_id === 'string' ? event.run_id : undefined,
+          nodeUid: typeof event.node_uid === 'string' ? event.node_uid : undefined,
+          functionId: typeof event.function_id === 'string' ? event.function_id : undefined,
+          tsUnixMs: typeof event.ts_unix_ms === 'number'
+            ? event.ts_unix_ms
+            : (typeof envelope.timestamp === 'number' ? envelope.timestamp : undefined),
         }
       }
     }
@@ -53,10 +85,20 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
     }
   }
 
+  function eventKey(event: WorkflowStreamEvent): string {
+    if (event.id) return `id:${event.id}`
+    return JSON.stringify([event.type, event.runId, event.nodeUid, event.functionId, event.tsUnixMs, event.data])
+  }
+
   watch(stream.messages, (all) => {
     while (processed < all.length) {
       const payload = all[processed]
-      events.value = [...events.value, normalizeEvent(payload)]
+      const event = normalizeEvent(payload)
+      const key = eventKey(event)
+      if (!seenEventKeys.has(key)) {
+        seenEventKeys.add(key)
+        events.value = [...events.value, event]
+      }
       processed++
     }
   }, { immediate: true })
@@ -68,6 +110,7 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
   function subscribe(subOrRun: string | WorkflowStreamSubscription) {
     current.value = toSubscription(subOrRun)
     events.value = []
+    seenEventKeys.clear()
     processed = 0
     if (current.value) {
       stream.subscribe(current.value.streamName, current.value.groupId)
@@ -128,6 +171,7 @@ export function useWorkflowStream(subOrRunId?: string | WorkflowStreamSubscripti
   function close() {
     stream.close()
     processed = 0
+    seenEventKeys.clear()
     events.value = []
     current.value = null
     status.value = 'closed'

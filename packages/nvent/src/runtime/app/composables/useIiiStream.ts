@@ -29,7 +29,7 @@
  * ```
  */
 
-import { ref, onUnmounted } from 'vue'
+import { ref, shallowRef, onUnmounted } from 'vue'
 
 export type IiiStreamStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
 
@@ -49,7 +49,7 @@ export function useIiiStream<TMessage = unknown>(options: IiiStreamOptions = {})
     maxDelayMs = 30_000,
   } = options
 
-  const messages = ref<TMessage[]>([])
+  const messages = shallowRef<TMessage[]>([])
   const status = ref<IiiStreamStatus>('idle')
 
   let ws: WebSocket | null = null
@@ -58,6 +58,7 @@ export function useIiiStream<TMessage = unknown>(options: IiiStreamOptions = {})
   let retryCount = 0
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let intentionalClose = false
+  let connectionGeneration = 0
 
   function buildUrl(streamName: string, groupId: string): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -76,16 +77,19 @@ export function useIiiStream<TMessage = unknown>(options: IiiStreamOptions = {})
     if (typeof window === 'undefined') return
 
     status.value = 'connecting'
+    const generation = connectionGeneration
 
     const socket = new WebSocket(buildUrl(streamName, groupId))
     ws = socket
 
     socket.onopen = () => {
+      if (generation !== connectionGeneration || socket !== ws) return
       retryCount = 0
       status.value = 'connected'
     }
 
     socket.onmessage = (e: MessageEvent) => {
+      if (generation !== connectionGeneration || socket !== ws) return
       try {
         const envelope = JSON.parse(e.data)
         // Unwrap the iii stream protocol envelope.
@@ -120,6 +124,7 @@ export function useIiiStream<TMessage = unknown>(options: IiiStreamOptions = {})
     }
 
     socket.onclose = (event) => {
+      if (generation !== connectionGeneration || socket !== ws) return
       ws = null
       if (intentionalClose) {
         status.value = 'closed'
@@ -159,7 +164,7 @@ export function useIiiStream<TMessage = unknown>(options: IiiStreamOptions = {})
     }
 
     // Close any existing connection first.
-    close()
+    close(false)
 
     intentionalClose = false
     retryCount = 0
@@ -170,14 +175,16 @@ export function useIiiStream<TMessage = unknown>(options: IiiStreamOptions = {})
     connect(streamName, groupId)
   }
 
-  function close() {
+  function close(markClosed = true) {
+    connectionGeneration++
     intentionalClose = true
     clearRetryTimer()
-    if (ws) {
-      ws.close()
-      ws = null
+    const socket = ws
+    ws = null
+    if (socket) {
+      socket.close()
     }
-    if (status.value !== 'idle') {
+    if (markClosed && status.value !== 'idle') {
       status.value = 'closed'
     }
     currentStreamName = null

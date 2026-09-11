@@ -47,7 +47,7 @@ export default defineWorkflow({
       model: 'google/Gemma3-4B/gemma-3-4b-it-Q8_0.gguf',
       maxTurns: 5,
       stream: {
-        enabled: false
+        enabled: true
       },
       systemPromptStrategy: 'override',
       systemPrompt: 'You are an expert business analyst specializing in operational reporting. Please provide a detailed analysis of the report text, highlighting the core problem, key metrics, and overall sentiment. Return as json with the following structure: { "coreProblem": string, "keyMetrics": Record<string, any>, "sentiment": string }',
@@ -75,7 +75,7 @@ export default defineWorkflow({
       model: 'google/Gemma3-4B/gemma-3-4b-it-Q8_0.gguf',
       maxTurns: 5,
       stream: {
-        enabled: false
+        enabled: true
       },
       systemPromptStrategy: 'override',
       systemPrompt: 'You are a pragmatic project manager creating clear, actionable mitigation steps. Return as json with the following structure: type ActionPlan = { "description": string, "owner": string, "dueDate": string } { "steps": ActionPlan[] }',

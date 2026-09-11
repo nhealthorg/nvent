@@ -146,6 +146,21 @@ const { nodes, edges } = useFlowLayout(props)
 const internalNodes = ref<VFNode[]>([])
 const internalEdges = ref<VFEdge[]>([])
 
+const topologySignature = computed(() => JSON.stringify({
+  nodes: nodes.value.map(node => ({
+    id: node.id,
+    type: node.type,
+    position: node.position,
+    sourcePosition: node.sourcePosition,
+    targetPosition: node.targetPosition,
+  })),
+  edges: edges.value.map(edge => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+  })),
+}))
+
 function storageKey(flowId?: string) {
   return flowId ? `flow-layout:${flowId}` : 'flow-layout:unknown'
 }
@@ -181,8 +196,10 @@ function savePositionsDebounced(flowId?: string) {
   }
 }
 
-// Rebuild internal state when flow changes
-watch(() => props.flow, (f) => {
+// Rebuild only when node/edge topology changes. Polling replaces the flow
+// object, but must not reset the user's viewport or node interaction state.
+watch(topologySignature, () => {
+  const f = props.flow
   if (!f) {
     internalNodes.value = []
     internalEdges.value = []
@@ -208,7 +225,7 @@ watch(() => props.flow, (f) => {
       vueFlowRef.value.fitView({ padding: 0.2, duration: 200 })
     }
   }, 100)
-}, { immediate: true, deep: false })
+}, { immediate: true })
 
 // Update node data when stepStates change (for live status updates)
 watch([() => props.stepStates, () => props.flowStatus], () => {
@@ -217,30 +234,29 @@ watch([() => props.stepStates, () => props.flowStatus], () => {
   // Get latest computed nodes with updated status
   const latestNodes = nodes.value
 
-  // Preserve positions from current internal nodes
-  const positionMap = new Map(internalNodes.value.map(n => [n.id, n.position]))
+  const latestById = new Map(latestNodes.map(node => [node.id, node]))
+  for (const node of internalNodes.value) {
+    const latest = latestById.get(node.id)
+    if (!latest) continue
+    Object.assign(node.data, latest.data)
+    node.style = latest.style
+  }
 
-  // Build completely new nodes array with updated data and preserved positions
-  const updatedNodes: VFNode[] = latestNodes.map(n => ({
-    id: n.id,
-    position: positionMap.get(n.id) || { ...n.position },
-    data: { ...n.data }, // Create new data object reference
-    type: n.type,
-    style: n.style,
-    sourcePosition: (n as any).sourcePosition,
-    targetPosition: (n as any).targetPosition
-  }))
-
-  // Replace entire array to trigger Vue Flow reactivity
-  internalNodes.value = updatedNodes
-
-  // Update edges for animation
-  const builtEdges: VFEdge[] = edges.value.map(e => ({ id: e.id, source: e.source, target: e.target, label: e.label, animated: e.animated }))
-  internalEdges.value = builtEdges
+  const latestEdgesById = new Map(edges.value.map(edge => [edge.id, edge]))
+  for (const edge of internalEdges.value) {
+    const latest = latestEdgesById.get(edge.id)
+    if (!latest) continue
+    edge.animated = latest.animated
+    edge.label = latest.label
+  }
 }, { deep: true })
 
-// Persist on any node movement
-watch(internalNodes, () => savePositionsDebounced(props.flow?.id), { deep: true })
+// Persist only position changes, not every status/data update.
+watch(
+  () => internalNodes.value.map(node => [node.id, node.position.x, node.position.y]),
+  () => savePositionsDebounced(props.flow?.id),
+  { deep: true },
+)
 
 function onNodeClick(evt: any) {
   const id = evt?.node?.id || evt?.id

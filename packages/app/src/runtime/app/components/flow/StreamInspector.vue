@@ -1,161 +1,112 @@
 <template>
-  <div class="flex flex-col h-full min-h-0">
-    <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 shrink-0 space-y-3">
+  <div class="flex h-full min-h-0 flex-col bg-white dark:bg-zinc-950">
+    <header class="shrink-0 border-b border-zinc-200 bg-zinc-50 px-5 py-4 dark:border-zinc-800 dark:bg-zinc-900/50">
       <div class="flex items-start justify-between gap-4">
-        <div class="space-y-1 min-w-0">
+        <div class="min-w-0">
           <div class="flex items-center gap-2">
-            <UIcon
-              name="i-lucide-waves"
-              class="w-4 h-4 text-gray-400"
-            />
-            <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              Workflow Streams
-            </span>
-            <span
-              v-if="isLive"
-              class="flex items-center gap-1.5 ml-2"
-            >
-              <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span class="text-xs text-gray-500 dark:text-gray-400">Live</span>
+            <UIcon name="i-lucide-waves" class="size-4 text-cyan-600 dark:text-cyan-400" />
+            <h2 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Run stream</h2>
+            <span class="inline-flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <span :class="statusDotClass" class="size-1.5 rounded-full" />
+              {{ statusLabel }}
             </span>
           </div>
-          <p class="text-xs text-gray-500 dark:text-gray-400">
-            <span v-if="isLoading">Loading streams...</span>
-            <span v-else-if="errorMessage">Unable to load streams</span>
-            <span v-else>{{ streamEntries.length }} stream group(s), {{ totalMessageCount }} message(s)</span>
-          </p>
+          <div class="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span class="shrink-0">nworkflow /</span>
+            <span class="truncate" :title="runId">{{ runId }}</span>
+          </div>
         </div>
+        <UBadge :label="`${events.length} events`" color="neutral" variant="soft" size="xs" />
       </div>
 
-      <div class="flex items-center gap-2">
-        <div class="flex-1 relative">
-          <UIcon
-            name="i-lucide-search"
-            class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"
-          />
-          <input
-            v-model="filterText"
-            type="text"
-            placeholder="Filter by stream name, node or payload..."
-            class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
-          />
-        </div>
+      <div class="relative mt-3">
+        <UIcon name="i-lucide-search" class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-400" />
+        <input
+          v-model="filterText"
+          type="search"
+          placeholder="Filter type, node or payload"
+          class="w-full rounded-md border border-zinc-200 bg-white py-2 pl-9 pr-3 text-sm text-zinc-900 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+        />
+      </div>
+
+      <div v-if="eventTypes.length > 1" class="mt-3 flex gap-1.5 overflow-x-auto pb-0.5">
+        <button type="button" class="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium" :class="selectedType === null ? activeFilterClass : inactiveFilterClass" @click="selectedType = null">
+          All
+        </button>
+        <button
+          v-for="type in eventTypes"
+          :key="type"
+          type="button"
+          class="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium"
+          :class="selectedType === type ? activeFilterClass : inactiveFilterClass"
+          @click="selectedType = selectedType === type ? null : type"
+        >
+          {{ type }}
+        </button>
+      </div>
+    </header>
+
+    <div v-if="status === 'error' && events.length === 0" class="flex flex-1 items-center justify-center px-6 text-center">
+      <div>
+        <UIcon name="i-lucide-wifi-off" class="mx-auto size-9 text-red-500" />
+        <p class="mt-3 text-sm font-medium text-zinc-900 dark:text-zinc-100">Stream connection failed</p>
+        <UButton class="mt-3" size="xs" color="neutral" variant="outline" label="Reconnect" @click="reconnect" />
       </div>
     </div>
 
-    <div class="flex-1 overflow-hidden flex flex-col">
-      <div v-if="isLoading" class="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500">
-        <div class="text-center space-y-3">
-          <div class="w-10 h-10 border-4 border-gray-200 border-t-gray-800 rounded-full animate-spin mx-auto" />
-          <span class="text-sm">Loading stream events...</span>
-        </div>
+    <div v-else-if="filteredEvents.length === 0" class="flex flex-1 items-center justify-center px-6 text-center">
+      <div>
+        <UIcon :name="events.length ? 'i-lucide-search-x' : 'i-lucide-radio'" class="mx-auto size-9 text-zinc-400" />
+        <p class="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+          {{ events.length ? 'No events match the current filters.' : emptyStateLabel }}
+        </p>
       </div>
+    </div>
 
-      <div v-else-if="errorMessage" class="flex-1 flex items-center justify-center text-red-500 dark:text-red-400 px-6 text-center">
-        <div class="space-y-2">
-          <UIcon name="i-lucide-alert-triangle" class="w-10 h-10 mx-auto opacity-70" />
-          <p class="text-sm font-medium">{{ errorMessage }}</p>
-          <p class="text-xs text-gray-500 dark:text-gray-400">No readable stream traces available for this run.</p>
-        </div>
-      </div>
+    <div v-else class="flex-1 overflow-y-auto">
+      <ol class="divide-y divide-zinc-100 dark:divide-zinc-800/80">
+        <li v-for="event in filteredEvents" :key="event.key" class="px-4 py-3">
+          <button type="button" class="flex w-full items-start gap-3 text-left" @click="toggleExpanded(event.key)">
+            <span class="mt-1 flex size-6 shrink-0 items-center justify-center rounded-md bg-cyan-50 text-cyan-700 dark:bg-cyan-950/50 dark:text-cyan-300">
+              <UIcon name="i-lucide-radio-tower" class="size-3.5" />
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="flex items-start justify-between gap-3">
+                <span class="min-w-0 truncate font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">{{ event.type }}</span>
+                <span class="shrink-0 text-[10px] tabular-nums text-zinc-400" :title="event.fullTime">{{ event.time }}</span>
+              </span>
+              <span class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                <span v-if="event.nodeUid" class="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{{ event.nodeUid }}</span>
+                <span v-if="event.functionId" class="max-w-full truncate rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">{{ event.functionId }}</span>
+                <span v-if="!event.nodeUid && !event.functionId" class="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ event.preview }}</span>
+              </span>
+            </span>
+            <UIcon :name="isExpanded(event.key) ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+          </button>
 
-      <div v-else-if="filteredStreams.length === 0" class="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500">
-        <div class="text-center">
-          <UIcon name="i-lucide-inbox" class="w-12 h-12 mb-3 opacity-50 mx-auto" />
-          <span class="text-sm">{{ filterText ? 'No matching streams' : 'No stream data for this run' }}</span>
-        </div>
-      </div>
-
-      <div v-else class="overflow-y-auto overflow-x-hidden flex-1 bg-gradient-to-b from-white to-gray-50/70 dark:from-zinc-950 dark:to-zinc-900/30">
-        <div class="px-4 py-4 space-y-3">
-          <div
-            v-for="(stream, idx) in filteredStreams"
-            :key="stream.streamName"
-            class="group rounded-xl border border-gray-200/80 dark:border-gray-800 bg-white/90 dark:bg-zinc-900/40 shadow-sm overflow-hidden"
-          >
-            <div
-              class="px-4 py-3 cursor-pointer flex items-center gap-3"
-              @click="toggleExpanded(idx)"
-            >
-              <div class="w-4 flex items-center justify-center shrink-0">
-                <UIcon
-                  :name="isExpanded(idx) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
-                  class="w-4 h-4 text-gray-400 transition-transform"
-                />
-              </div>
-
-              <div class="min-w-0 flex-1 space-y-1">
-                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate tracking-tight">
-                  {{ stream.streamName }}
-                </div>
-                <div class="text-xs text-gray-500 dark:text-gray-400 truncate">
-                  {{ stream.items.length }} message(s)
-                </div>
-              </div>
-
-            </div>
-
-            <div
-              v-if="isExpanded(idx)"
-              class="px-4 py-3 bg-gray-50/70 dark:bg-zinc-900/60 border-t border-gray-200 dark:border-gray-800 space-y-3"
-            >
-              <div
-                v-for="message in stream.items"
-                :key="message.id"
-                class="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-zinc-950/80"
-              >
-                <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-3">
-                  <div class="flex items-center gap-2 min-w-0 flex-wrap">
-                    <span class="text-[11px] font-mono text-gray-900 dark:text-gray-100 truncate max-w-[220px]">
-                      {{ message.item_id || message.id }}
-                    </span>
-                    <span
-                      v-if="message.node_uid"
-                      class="rounded-md bg-gray-100 dark:bg-zinc-800 px-2 py-0.5 text-[10px] font-mono text-gray-600 dark:text-gray-300"
-                    >
-                      node {{ message.node_uid }}
-                    </span>
-                    <span
-                      v-if="message.function_id"
-                      class="rounded-md bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-[10px] font-mono text-blue-700 dark:text-blue-300"
-                    >
-                      {{ message.function_id }}
-                    </span>
-                  </div>
-                </div>
-                <div class="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words max-h-64 overflow-auto leading-5">
-                  {{ prettyMessage(message.data) }}
-                </div>
-              </div>
-            </div>
+          <div v-if="isExpanded(event.key)" class="ml-9 mt-3 overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
+            <div v-if="event.id" class="border-b border-zinc-200 px-3 py-1.5 font-mono text-[10px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">{{ event.id }}</div>
+            <pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words p-3 text-xs leading-5 text-zinc-700 dark:text-zinc-200">{{ event.payload }}</pre>
           </div>
-        </div>
-      </div>
+        </li>
+      </ol>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, useFetch, onMounted, onUnmounted, watch } from '#imports'
+import { computed, ref, useWorkflowStream, watch } from '#imports'
+import type { Ref } from 'vue'
 
-type StreamMessage = {
-  id: string
-  item_id?: string
-  run_id?: string
-  node_uid?: string
-  function_id?: string
-  ts_unix_ms?: number
-  event_name?: string
-  data?: unknown
-}
+type StreamStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
 
-type StreamGroup = {
-  streamName: string
-  items: StreamMessage[]
-}
-
-interface WorkflowStreamsResponse {
-  streams?: StreamGroup[]
+interface StreamInspectorEvent {
+  id?: string
+  type: string
+  data: unknown
+  nodeUid?: string
+  functionId?: string
+  tsUnixMs?: number
 }
 
 const props = defineProps<{
@@ -164,89 +115,17 @@ const props = defineProps<{
 }>()
 
 const filterText = ref('')
-const expanded = ref<Set<number>>(new Set())
-const refreshTick = ref(0)
-
-const {
-  data: streamsData,
-  pending: streamsPending,
-  error: streamsFetchError,
-  execute: executeStreamsFetch,
-} = useFetch<WorkflowStreamsResponse>('/api/_workflows/streams', {
-  query: computed(() => ({
-    run_id: props.runId,
-    _t: refreshTick.value,
-  })),
-  immediate: false,
-  server: false,
-  watch: false,
-})
-
-const isLoading = computed(() => streamsPending.value)
-const errorMessage = computed(() => {
-  if (!streamsFetchError.value) return null
-  return 'Stream references could not be loaded'
-})
-
-async function refreshStreams() {
-  expanded.value.clear()
-  refreshTick.value += 1
-  await executeStreamsFetch()
+const selectedType = ref<string | null>(null)
+const expanded = ref<Set<string>>(new Set())
+const workflowStream = useWorkflowStream(props.runId) as {
+  events: Ref<StreamInspectorEvent[]>
+  status: Ref<StreamStatus>
+  subscribe: (runId: string) => void
 }
+const { events, status, subscribe } = workflowStream
 
-const streamEntries = computed(() => {
-  const groups = Array.isArray(streamsData.value?.streams) ? streamsData.value.streams : []
-  return groups
-    .map((stream) => ({
-      streamName: stream.streamName || '',
-      items: Array.isArray(stream.items)
-        ? [...stream.items].sort((a, b) => Number(b.ts_unix_ms || 0) - Number(a.ts_unix_ms || 0))
-        : [],
-    }))
-    .filter(entry => Boolean(entry.streamName))
-    .sort((a, b) => Number(b.items[0]?.ts_unix_ms || 0) - Number(a.items[0]?.ts_unix_ms || 0))
-})
-
-const totalMessageCount = computed(() => {
-  return streamEntries.value.reduce((sum, stream) => sum + stream.items.length, 0)
-})
-
-const filteredStreams = computed(() => {
-  if (!filterText.value) return streamEntries.value
-  const query = filterText.value.toLowerCase()
-
-  return streamEntries.value
-    .map((stream) => {
-      const matchesGroup = stream.streamName.toLowerCase().includes(query)
-      if (matchesGroup) return stream
-
-      const items = stream.items.filter((item) => {
-        const payload = prettyMessage(item.data).toLowerCase()
-        const node = String(item.node_uid || '').toLowerCase()
-        const functionId = String(item.function_id || '').toLowerCase()
-        return payload.includes(query) || node.includes(query) || functionId.includes(query)
-      })
-
-      return {
-        streamName: stream.streamName,
-        items,
-      }
-    })
-    .filter(stream => stream.items.length > 0 || stream.streamName.toLowerCase().includes(query))
-})
-
-function toggleExpanded(idx: number) {
-  if (expanded.value.has(idx)) {
-    expanded.value.delete(idx)
-  }
-  else {
-    expanded.value.add(idx)
-  }
-}
-
-function isExpanded(idx: number): boolean {
-  return expanded.value.has(idx)
-}
+const activeFilterClass = 'border-cyan-600 bg-cyan-600 text-white dark:border-cyan-500 dark:bg-cyan-500 dark:text-zinc-950'
+const inactiveFilterClass = 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300'
 
 function prettyMessage(value: unknown): string {
   try {
@@ -258,22 +137,80 @@ function prettyMessage(value: unknown): string {
   }
 }
 
-let refreshInterval: ReturnType<typeof setInterval> | null = null
+function formatTime(timestamp?: number): { short: string, full: string } {
+  if (!timestamp) return { short: '--:--:--', full: 'Timestamp unavailable' }
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return { short: '--:--:--', full: String(timestamp) }
+  return {
+    short: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    full: date.toLocaleString(),
+  }
+}
 
-onMounted(() => {
-  void refreshStreams()
-  refreshInterval = setInterval(() => {
-    if (props.isLive) {
-      void refreshStreams()
-    }
-  }, 3000)
+const displayEvents = computed(() => events.value.map((event, index) => {
+  const payload = prettyMessage(event.data)
+  const time = formatTime(event.tsUnixMs)
+  return {
+    ...event,
+    key: event.id || `${event.type}:${event.tsUnixMs || 0}:${event.nodeUid || ''}:${index}`,
+    payload,
+    preview: payload.replace(/\s+/g, ' ').slice(0, 120),
+    time: time.short,
+    fullTime: time.full,
+  }
+}).sort((left, right) => Number(right.tsUnixMs || 0) - Number(left.tsUnixMs || 0)))
+
+const eventTypes = computed(() => [...new Set(displayEvents.value.map(event => event.type))].sort())
+
+const filteredEvents = computed(() => {
+  const query = filterText.value.trim().toLowerCase()
+  return displayEvents.value.filter((event) => {
+    if (selectedType.value && event.type !== selectedType.value) return false
+    if (!query) return true
+    return [event.type, event.nodeUid, event.functionId, event.payload]
+      .some(value => String(value || '').toLowerCase().includes(query))
+  })
 })
 
-onUnmounted(() => {
-  if (refreshInterval) clearInterval(refreshInterval)
+const statusLabel = computed(() => {
+  if (status.value === 'connected') return props.isLive ? 'Live' : 'Connected'
+  if (status.value === 'connecting') return 'Connecting'
+  if (status.value === 'error') return 'Connection failed'
+  if (status.value === 'closed') return 'Closed'
+  return 'Idle'
 })
 
-watch(() => props.runId, () => {
-  void refreshStreams()
+const statusDotClass = computed(() => ({
+  connected: 'bg-emerald-500',
+  connecting: 'bg-amber-500 animate-pulse',
+  error: 'bg-red-500',
+  closed: 'bg-zinc-400',
+  idle: 'bg-zinc-400',
+}[status.value]))
+
+const emptyStateLabel = computed(() => status.value === 'connecting'
+  ? 'Connecting to the run stream...'
+  : 'No events have been published for this run.')
+
+function toggleExpanded(key: string) {
+  const next = new Set(expanded.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expanded.value = next
+}
+
+function isExpanded(key: string): boolean {
+  return expanded.value.has(key)
+}
+
+function reconnect() {
+  subscribe(props.runId)
+}
+
+watch(() => props.runId, (runId) => {
+  expanded.value = new Set()
+  selectedType.value = null
+  filterText.value = ''
+  subscribe(runId)
 })
 </script>
