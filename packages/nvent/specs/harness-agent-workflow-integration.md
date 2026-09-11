@@ -31,11 +31,11 @@ Der Kern ist:
 4. Agent-Resultate werden an das aufrufende Workflow zurückgegeben, sobald der Agent terminierbar ist.
 5. Der Workflow-Chat-Kontext bleibt stabil; der Agent wird als Sub-Session im selben Kontextbaum gestartet.
 6. Agent-Nachrichten und Zwischenstände werden über die Workflow-Stream-Session des aktuellen runs publiziert.
-7. Entwickler können MCP-Server, Agent-Profile, Skills, Tools, Files, Model-Optionen und andere iii-native Konfigurationen einfach übergeben.
+7. Entwickler können Agent-Profile, Skills, Functions, Modell/Provider und einen Arbeitsordner einfach übergeben.
 8. Der Agent-Lauf ist durable, rekonstruktionsfähig und kompatibel mit nworkflow's Run/Lifecycle-Modell.
 9. Agenten müssen in der UI als eigene Workflow-Bausteine sichtbar sein (Flow View + Run Overview).
 10. Der Agent-Fortschritt muss live in der Run-Overview sichtbar sein.
-11. Relevante Agent-Konfiguration (Model, Tools, MCP, Limits, Session/Stream-Bindung) muss in der UI transparent einsehbar sein.
+11. Relevante Agent-Konfiguration (Modell, Provider, Functions, Arbeitsordner und Limits) muss in der UI transparent einsehbar sein.
 12. Ergebnisaufbewahrung für Agent-Steps folgt derselben Return-Policy wie Workflow-Functions: `memory` oder `store`, mit Default `memory`.
 13. nworkflow Runtime-Abhängigkeiten (insb. `harness`) müssen als deklarierte Dependencies geführt und bei `iii compose` automatisch mit installiert/provisioniert werden.
 14. Live-Status für Runs soll primär stream-basiert sein (kein permanentes Polling erforderlich).
@@ -93,12 +93,6 @@ export default defineWorkflow({
       functions: {
         allow: ['*']
       },
-      mcpServers: [
-        { name: 'github', url: 'https://.../mcp' }
-      ],
-      files: [
-        { path: './docs/brief.md', content: '...' }
-      ],
       stream: { enabled: true }
     })
 
@@ -112,8 +106,8 @@ export default defineWorkflow({
 `ctx.agent(...)` soll immer die gleiche Menge an Intention ausdrücken, egal ob:
 
 - ein einfacher Prompt ohne weitere Tools,
-- ein Agent mit MCP-Servern,
-- ein Agent mit Dateien/Context-Context,
+- ein Agent mit freigegebenen iii-Functions,
+- ein Agent mit einem Arbeitsordner,
 - ein Agent mit vorgegebenem System-Prompt.
 
 Die erste Parametergruppe ist die fachliche Agent-Definition, die zweite Parametergruppe ist die Lauf-/Runtime-Konfiguration.
@@ -159,47 +153,23 @@ interface AgentInvocationSpec {
 interface AgentRuntimeOptions {
   model?: string
   provider?: string
-  temperature?: number
+  folder?: string
   maxTurns?: number
   timeoutMs?: number
 
   functions?: {
     allow?: string[]
     deny?: string[]
-    approval?: boolean
   }
 
   skills?: string[]
-  mcpServers?: Array<{
-    name: string
-    url?: string
-    command?: string
-    args?: string[]
-    env?: Record<string, string>
-  }>
-
-  files?: Array<{
-    path: string
-    content?: string
-    mode?: 'read' | 'write' | 'append'
-  }>
 
   systemPrompt?: string
   systemPromptStrategy?: 'enrich' | 'override'
 
   stream?: {
     enabled?: boolean
-    name?: string
-    scope?: 'workflow' | 'session' | 'custom'
   }
-
-  session?: {
-    reuse?: boolean
-    parentSessionId?: string
-    allowNewSession?: boolean
-  }
-
-  orchestrator?: boolean
 
   // Ergebnisaufbewahrung wie bei normalen Workflow-Functions.
   result?: {
@@ -209,7 +179,167 @@ interface AgentRuntimeOptions {
 }
 ```
 
-### 5.4 Ergebnisaufbewahrung für Agent-Steps
+### 5.2.1 Implementierungsstatus
+
+Die TypeScript-Oberfläche ist breiter als der derzeit wirksame Runtime-Vertrag. Ein Feld ist erst dann als umgesetzt markiert, wenn es vom Workflow-Compiler serialisiert, vom nworkflow-Worker ausgewertet oder korrekt an Harness übergeben und von Harness konsumiert wird.
+
+Status:
+
+- **Umgesetzt**: Das Feld hat die unten beschriebene Wirkung.
+- **Teilweise**: Nur ein Teil der deklarierten Semantik ist wirksam.
+
+| Option | Status | Effektive Wirkung |
+|---|---|---|
+| `model` | Umgesetzt | Modell für den Harness-Turn; kann auf Folgeturns geerbt werden. |
+| `provider` | Umgesetzt | Wird als Harness-Top-Level-Feld bei `spawn` und `send` übertragen. |
+| `folder` | Umgesetzt | Setzt beim ersten Agent-Step den absoluten Harness-`filesystem_root`. |
+| `maxTurns` | Umgesetzt | Wird als `max_turns` an Harness übergeben. |
+| `timeoutMs` | Teilweise | Begrenzt nur den unmittelbaren `spawn`-/`send`-Dispatch, nicht die gesamte Laufzeit des Agenten. |
+| `functions.allow` | Umgesetzt | Positivliste erlaubter Function-IDs/Glob-Muster. |
+| `functions.deny` | Umgesetzt | Negativliste; Deny gewinnt gegen Allow. |
+| `skills` | Umgesetzt | Filtert die für den Agenten sichtbaren Skill-IDs. |
+| `systemPrompt` | Umgesetzt | Wird ohne benanntes Agent-Profil an Harness übergeben. |
+| `systemPromptStrategy` | Umgesetzt | `enrich` oder `override`; nur ohne benanntes Agent-Profil wirksam. |
+| `stream.enabled` | Umgesetzt | Schaltet hochfrequente Agent-Message-Events im Workflow-Run-Stream ein oder aus. |
+| `result.returnType` | Umgesetzt | Wählt In-Memory- oder persistente Ergebnisablage. |
+| `result.onMemoryFail` | Umgesetzt | `store` persistiert vorsorglich; `error` lässt einen Memory-Fehler den Step fehlschlagen. |
+
+### 5.2.2 Modell, Provider und Arbeitsordner
+
+#### `model?: string`
+
+Bestimmt das Modell des Harness-Turns. Die effektive Auflösung erfolgt in dieser Reihenfolge:
+
+1. Modell des benannten Directory-Agent-Profils; dieses ist innerhalb von Harness autoritativ
+2. `options.model`, wenn kein profilgebundenes Modell greift
+3. `spec.agent.model`
+4. bei späteren Turns: das in der gemeinsamen Session bereits gespeicherte Modell
+
+Ein neuer Agent-Run benötigt ein Modell, sofern das benannte Agent-Profil keines bereitstellt. Modellnamen dürfen eine providerqualifizierte Harness-Kennung verwenden, zum Beispiel `openai-codex::codex/gpt-5.6-sol`.
+
+#### `provider?: string`
+
+Wählt den registrierten Harness-Provider. nworkflow überträgt den Wert bei `harness::spawn` und `harness::send` als Top-Level-Feld. Ohne Angabe löst Harness den Provider anhand des Modells und seiner Registrierung auf.
+
+#### `folder?: string`
+
+Legt den Arbeitsordner des Agenten fest. nworkflow überträgt ihn beim ersten Agent-Step eines Runs als Harness-`filesystem_root`.
+
+Der Pfad muss absolut und aus Sicht des Harness-Workers erreichbar sein, zum Beispiel `/workspace/project`. Da alle Agent-Steps eines Runs dieselbe Harness-Session verwenden, kann `folder` nur beim ersten Agent-Step gesetzt werden. Folgeschritte erben den Arbeitsordner; ein erneut gesetzter Wert führt zu einem klaren Konfigurationsfehler.
+
+`folder` stellt keine einzelnen Dateiinhalte bereit. Inhalte außerhalb eines gemeinsamen Dateisystems werden weiterhin über `spec.input` oder eine freigegebene iii-Function übergeben.
+
+### 5.2.3 Turn- und Zeitlimits
+
+#### `maxTurns?: number`
+
+Maximale Anzahl der Generate-Schritte innerhalb des Agent-Turns. Das Feld wird als `max_turns` an Harness übertragen. Ohne Angabe gilt der konfigurierte Harness-Default, typischerweise `16`.
+
+Ein kleiner Wert kann einen Agenten beenden, bevor alle Tool-Aufrufe und Folgegenerierungen abgeschlossen sind. Das Limit ist kein Retry-Limit des Workflow-Nodes.
+
+#### `timeoutMs?: number`
+
+Begrenzt den RPC-Dispatch für den unmittelbaren Aufruf von `harness::spawn` oder `harness::send`. Da beide Funktionen normalerweise sofort Session- und Turn-ID zurückgeben, ist dies **kein End-to-End-Laufzeitlimit** für die Modellgenerierung.
+
+Ohne Angabe verwendet nworkflow seinen konfigurierten `dispatch_timeout_ms`. Das weitere Agent-Lifecycle-Tracking erfolgt asynchron über Events und Statusabfragen.
+
+### 5.2.4 Functions und Freigaben
+
+#### `functions.allow?: string[]`
+
+Liste erlaubter Function-IDs oder Glob-Muster, zum Beispiel `['state::*', 'web::fetch']`. Harness arbeitet fail-closed: Die effektive Policy entscheidet, welche Funktionen der Agent entdecken und aufrufen darf.
+
+#### `functions.deny?: string[]`
+
+Liste explizit verbotener Function-IDs oder Glob-Muster. `deny` hat Vorrang vor einem passenden `allow`. Workflow-Agenten laufen als Harness-Leaf-Agents und erhalten zusätzlich dessen Control-Plane-Beschränkungen.
+
+Wenn `functions` vollständig fehlt, übergibt nworkflow keine eigene Policy. Für den parentlosen Spawn gilt dann die konfigurierte Harness-Default-Policy. Das ist keine automatisch aus dem Workflow abgeleitete Function-Policy.
+
+### 5.2.5 Skills
+
+#### `skills?: string[]`
+
+Filtert den Harness-Skill-Katalog auf exakte Skill-IDs. Bei einer neuen Session bedeuten ein fehlendes Feld und eine leere Liste jeweils „alle verfügbaren Skills“. In einer bestehenden Session erbt ein fehlendes Feld den bisherigen Filter; eine explizit leere Liste setzt ihn auf „alle“ zurück.
+
+nworkflow führt Agent-Steps eines Runs sequenziell in derselben Harness-Session aus. Ein expliziter Filterwechsel ist nur zulässig, wenn dort kein Turn aktiv ist.
+
+### 5.2.6 System-Prompt
+
+#### `systemPrompt?: string`
+
+Zusätzliche beziehungsweise ersetzende Agent-Instruktion. Ohne `systemPromptStrategy` verwendet Harness standardmäßig `enrich` und hängt den Text an seine Built-in-Identität an.
+
+Wenn `spec.agent` ein benanntes Directory-Profil auswählt, liefert dieses Profil die vollständige Identität. nworkflow übergibt dann keinen eigenen System-Prompt und protokolliert bei einer konkurrierenden Angabe eine Warnung.
+
+#### `systemPromptStrategy?: 'enrich' | 'override'`
+
+- `enrich`: Built-in-System-Prompt plus `systemPrompt`.
+- `override`: ausschließlich `systemPrompt`.
+
+Die Strategy ist nur ohne benanntes Agent-Profil relevant. Auf späteren Turns wird ein nicht erneut gesetzter Prompt von der gemeinsamen Harness-Session geerbt.
+
+### 5.2.7 Workflow-Streaming
+
+#### `stream.enabled?: boolean`
+
+Steuert das Spiegeln der hochfrequenten Session-Manager-Ereignisse in den kanonischen Workflow-Stream:
+
+- `true` oder nicht gesetzt: `agents.message.added` und `agents.message.updated` werden publiziert.
+- `false`: Text-, Thinking- und Tool-Revisionen werden nicht gespiegelt.
+
+Lifecycle-Ereignisse wie `agents.started`, `agents.completed`, `agents.failed` sowie das finale Node-Ergebnis bleiben in beiden Modi erhalten. Default ist aus Rückwärtskompatibilitätsgründen `true`.
+
+### 5.2.8 Session-Verhalten
+
+Das Session-Verhalten ist bewusst nicht pro Agent-Step konfigurierbar:
+
+- Der erste Agent-Step eines Runs erzeugt eine Harness-Child-Session.
+- Die Session wird in `WorkflowRunRecord.agent_session_id` gespeichert.
+- Alle späteren Agent-Steps desselben Runs verwenden diese Session über `harness::send` weiter.
+- Der Parent für die UI-Navigation stammt aus der aufrufenden Workflow-Session; ohne Aufrufer dient der `run_id` als Workflow-Session-ID.
+
+### 5.2.9 Ergebnisaufbewahrung
+
+#### `result.returnType?: 'memory' | 'store'`
+
+- `memory` (Default): Ergebnis wird im In-Memory-Handoff des nworkflow-Workers gehalten.
+- `store`: Ergebnis wird im konfigurierten internen State-Backend persistiert und über eine Referenz aufgelöst.
+
+#### `result.onMemoryFail?: 'store' | 'error'`
+
+- `store`: nworkflow wählt für diesen Step vorsorglich die persistente Ablage; es wartet nicht erst auf einen konkreten Memory-Fehler.
+- `error`: Die In-Memory-Ablage bleibt aktiv und ein Speicherfehler lässt den Step fehlschlagen.
+
+Diese Retention-Optionen werden nicht an Harness übertragen. Sie gelten in der allgemeinen nworkflow-Node-Completion-Pipeline und sind daher für Agent- und Function-Steps konsistent.
+
+### 5.2.10 Vollständiges Beispiel
+
+```ts
+const result = await ctx.agent({
+  prompt: 'Analysiere den Bericht und liefere eine priorisierte Zusammenfassung.',
+  input: report
+}, {
+  model: 'openai-codex::codex/gpt-5.6-sol',
+  provider: 'openai-codex',
+  folder: '/workspace/project',
+  maxTurns: 8,
+  timeoutMs: 30_000,
+  functions: {
+    allow: ['state::get', 'web::fetch'],
+    deny: ['web::fetch-private']
+  },
+  skills: ['report-analysis'],
+  systemPrompt: 'Antworte auf Deutsch und kennzeichne Unsicherheiten.',
+  systemPromptStrategy: 'enrich',
+  stream: { enabled: false },
+  result: {
+    returnType: 'store',
+    onMemoryFail: 'store'
+  }
+})
+```
+
+### 5.3 Ergebnisaufbewahrung für Agent-Steps
 
 Die Retention-Semantik für Agent-Ergebnisse ist identisch zu bestehenden Workflow-Function-Ergebnissen:
 
@@ -224,7 +354,7 @@ Konsequenz:
 
 - Agent-Tasks sind keine Sonderbehandlung bei Result-Retention, sondern nutzen denselben Mechanismus wie andere Workflow-Steps.
 
-### 5.3 AgentResult
+### 5.4 AgentResult
 
 ```ts
 interface AgentResult {
@@ -317,12 +447,16 @@ Innerhalb eines Workflows gilt:
 
 - `ctx` referenziert immer den aktuellen Workflow-Run-Kontext.
 - Ein Agent-Aufruf darf den Chat-Kontext eines Workflows nicht in einen völlig neuen top-level chat kippen.
-- Agent-Läufe sind child sessions im gleichen Session-Baum, nicht neue unabhängige Haupt-Sessions.
+- Der erste Agent-Lauf erzeugt eine Child-Session im Session-Baum; weitere Agent-Schritte desselben Runs erzeugen Turns in genau dieser Session.
 
 Daher gilt die Regel:
 
 - `parent_session_id = workflow_session_id`
-- `agent_session_id` wird als child session erzeugt, die dem Workflow untergeordnet ist.
+- `agent_session_id` wird beim ersten Agent-Schritt als Child-Session erzeugt und danach für alle Agent-Schritte des Runs wiederverwendet.
+- Der erste Agent-Schritt verwendet `harness::spawn`, jeder folgende `harness::send` mit der bestehenden `agent_session_id`.
+- Jeder Schritt speichert zusätzlich seine eigene `turn_id`, damit verspätete Events früherer Turns keinen späteren Node abschließen.
+- `WorkflowRunRecord.agent_session_id` ist die kanonische Quelle für die gemeinsame Agent-Session. Das Feld wird über den konfigurierten Internal-State-Adapter identisch in File oder Redis persistiert; die Session darf nicht durch Scannen einzelner Task-Records rekonstruiert werden.
+- Agent-Task-Records verwenden eine global eindeutige `task_id` und speichern `node_uid` separat, damit gleiche Node-IDs aus unterschiedlichen Runs weder File- noch Redis-Schlüssel überschreiben.
 - `session_tree` bleibt konsistent.
 
 Damit bleiben:
@@ -387,6 +521,8 @@ Beispiele für `type`:
 - `summary`
 - `agents.started`
 - `agents.message`
+- `agents.message.added`
+- `agents.message.updated`
 - `agents.tool-call`
 - `agents.completed`
 
@@ -415,6 +551,8 @@ nworkflow hört auf die folgenden iii-native Events:
 - `harness::turn-started`
 - `harness::turn-completed`
 - `harness::message-queued`
+- `session::message-added` für Assistant- und Function-Result-Einträge
+- `session::message-updated` für gestreamte Assistant-Revisionen
 - `harness::ready`
 - optional: `harness::triggers-changed`, falls später für Agent-Status-Discovery gebraucht wird
 
@@ -424,6 +562,8 @@ Zur Vereinheitlichung der DX werden Harness-Liveevents auf nworkflow-Stream in f
 
 - `agents.started`
 - `agents.message`
+- `agents.message.added`
+- `agents.message.updated`
 - `agents.tool-call`
 - `agents.tool-result`
 - `agents.progress`
@@ -436,6 +576,9 @@ Regeln:
 - Eventnamen sind lower-case, dot-separated und prefix-basiert (`agents.*`).
 - UI-Bereiche abonnieren Gruppen ueber Prefix-Pattern (z.B. `listenEvents('agents.*')`).
 - Neue Agent-Eventtypen sollen unter dem Prefix `agents.` eingefuehrt werden, um Abwaertskompatibilitaet der UI-Filter zu erhalten.
+- `agents.message.updated` enthält immer den vollständigen aktuellen Message-Snapshot sowie `entry_id` und die monotone `revision`. Consumer behalten pro `entry_id` ausschließlich die höchste Revision.
+- Die typisierten `message.content`-Blöcke (`text`, `thinking`, `function_call`, `function_result`) werden unverändert transportiert. Ob `thinking` vorhanden ist, hängt vom Modell und Provider ab.
+- Session-Manager-Events werden über `session_id` und `origin.turn_id` dem aktiven Agent-Task zugeordnet; verspätete Events älterer Turns werden verworfen.
 
 ### 8.2 Bindungsmodell
 
@@ -522,21 +665,22 @@ await iii.trigger({
   function_id: 'harness::spawn',
   payload: {
     agent: 'worker-builder',
-    message: 'Analyse this input',
+    task: 'Analyse this input',
+    model: 'claude-sonnet-4',
+    provider: 'anthropic',
+    filesystem_root: '/workspace/project',
     options: {
-      model: 'claude-sonnet-4',
       functions: { allow: ['*'] },
-      mcp_servers: [...],
-      files: [...],
-      stream: {
-        session_id: workflowStreamSessionId,
-        name: workflowStreamName
-      }
+      max_turns: 8
     },
     parent_session_id: workflowSessionId
   }
 })
 ```
+
+Die erfolgreiche Spawn-Antwort liefert `child_session_id` und `child_turn_id`.
+nworkflow MUSS beide Werte für Event-Korrelation und Statusabfragen übernehmen und
+darf fehlende IDs nicht durch synthetische Werte ersetzen.
 
 nworkflow darf die Zugriffe in einen adapterisierten, kontrollierten Wrapper verpacken. Das Workflow selbst bleibt auf der einfachen `ctx.agent(...)` Oberfläche.
 
@@ -553,16 +697,22 @@ Die Entwickleroberfläche soll so einfach sein, dass ein Workflow-Author nur noc
 `ctx.agent(...)` soll defaults bieten:
 
 - `agent` default: `null` → standard built-in harness identity
-- `stream` default: workflow stream session
+- `provider` default: Harness löst den Provider anhand des Modells auf
+- `folder` default: kein expliziter `filesystem_root`
+- `stream.enabled` default: `true`; Streamname und Scope sind fest `nworkflow`/`run_id`
 - `session` default: inherit current workflow session tree
-- `functions.allow` default: current workflow default policy
+- `functions` default: konfigurierte Harness-Default-Policy
 - `timeout` default: workflow timeout or worker default
 - `maxTurns` default: reasonable harness default (z.B. 16)
-- `mcpServers` default: empty
-- `files` default: empty
 - `ui` default: agent block sichtbar, kompakte Konfig-Zusammenfassung sichtbar
 - `result.returnType` default: `memory`
-- `stream.name` default: `nworkflow` (kanonischer Run-Stream)
+
+`stream.enabled` steuert ausschließlich den hochfrequenten Message-Feed des Agenten:
+
+- `true`: `agents.message.added` und `agents.message.updated` spiegeln Text-, Thinking- und Tool-Blöcke live in den Run-Stream.
+- `false`: Diese Zwischenstände werden nicht in den Run-Stream geschrieben. Lifecycle-Events, terminaler Status und Endergebnis bleiben verfügbar.
+
+Für UIs, die nur das Endergebnis anzeigen, sollte `stream.enabled: false` verwendet werden. Dadurch entfallen die Stream- und Trace-Schreibvorgänge pro Message-Revision. Da Session-Manager vollständige Message-Snapshots mit monotonen Revisionen liefert, kann aktiviertes Live-Streaming bei langen Antworten wesentlich mehr Bytes als das finale Ergebnis erzeugen. Der nworkflow-Worker hält diese Snapshots nicht dauerhaft im Arbeitsspeicher; seine Speichernutzung wächst daher nicht proportional zur Transkriptlänge.
 
 ### 10.3 Beispiel: Einfachster Agent
 
@@ -574,39 +724,52 @@ const result = await ctx.agent({
 })
 ```
 
-### 10.4 Beispiel: Tool-enabled Agent mit MCP
+### 10.4 Agent nur mit Endergebnis
 
 ```ts
 const result = await ctx.agent({
-  prompt: 'Research the repo and propose a fix.',
+  prompt: 'Extract the invoice fields.',
+  input: document
+}, {
+  stream: { enabled: false },
+  result: { returnType: 'memory' }
+})
+```
+
+### 10.5 Beispiel: Agent mit freigegebenen iii-Functions
+
+```ts
+const result = await ctx.agent({
+  prompt: 'Research the available sources and propose a fix.',
   input: { repo: 'nvent' }
 }, {
   model: 'claude-sonnet-4',
-  mcpServers: [{ name: 'github' }, { name: 'filesystem' }],
+  folder: '/workspace/nvent',
   functions: {
-    allow: ['directory::skills::get', 'directory::system-prompts::get', 'github::*']
+    allow: ['directory::skills::get', 'directory::system-prompts::get', 'web::fetch']
   }
 })
 ```
 
-### 10.5 Beispiel: Agent mit Datei-Context
+### 10.6 Beispiel: Agent mit Dateiinhalt im Input
 
 ```ts
 const result = await ctx.agent({
   prompt: 'Review the implementation against the spec.',
+  input: {
+    implementation,
+    specification
+  },
   task: {
     title: 'Code review',
     description: 'Check the patch for correctness and regressions.'
   }
 }, {
-  files: [
-    { path: './specs/harness-agent-workflow-integration.md' }
-  ],
   systemPrompt: 'You are a careful reviewer.'
 })
 ```
 
-### 10.6 Beispiel: Agent mit UI-Metadaten
+### 10.7 Beispiel: Agent mit UI-Metadaten
 
 ```ts
 const result = await ctx.agent({
@@ -768,8 +931,7 @@ Pflichtprojektionen:
 - Pro Agent muss eine kompakte Konfig-Zusammenfassung sichtbar sein:
   - Model/Provider
   - Tool-Policy (`allow`/`deny`)
-  - MCP-Server (Namen)
-  - Files-Kontext (Anzahl/Quellen)
+  - Arbeitsordner
   - Result-Retention (`memory` oder `store`)
   - Session/Stream-Bindung (`parent_session_id`, stream name/scope)
   - Limits (`maxTurns`, `timeoutMs`)
@@ -799,7 +961,7 @@ interface AgentUiProjection {
   configSummary: {
     model?: string
     provider?: string
-    mcpServers?: string[]
+    folder?: string
     functionAllowCount?: number
     functionDenyCount?: number
     maxTurns?: number

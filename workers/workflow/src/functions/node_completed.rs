@@ -56,11 +56,16 @@ fn should_persist_result(
     return_type: NodeResultReturnType,
     on_memory_fail: Option<NodeMemoryFailPolicy>,
 ) -> bool {
-    matches!(return_type, NodeResultReturnType::Store | NodeResultReturnType::Stream)
-        || matches!(
-            (return_type, on_memory_fail),
-            (NodeResultReturnType::Memory, Some(NodeMemoryFailPolicy::Store))
+    matches!(
+        return_type,
+        NodeResultReturnType::Store | NodeResultReturnType::Stream
+    ) || matches!(
+        (return_type, on_memory_fail),
+        (
+            NodeResultReturnType::Memory,
+            Some(NodeMemoryFailPolicy::Store)
         )
+    )
 }
 
 /// Wake the workflow tick when a function signals completion.
@@ -130,7 +135,11 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
         };
 
         let ts = deps.now_ms();
-        let base_node_id = event.node_uid.split('#').next().unwrap_or(event.node_uid.as_str());
+        let base_node_id = event
+            .node_uid
+            .split('#')
+            .next()
+            .unwrap_or(event.node_uid.as_str());
         let result_policy = crate::state::get_def(&deps.iii, &record.def_ref)
             .await?
             .and_then(|def| def.nodes.get(base_node_id).cloned())
@@ -140,7 +149,9 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
             .as_ref()
             .map(|result| result.return_type)
             .unwrap_or(NodeResultReturnType::Memory);
-        let on_memory_fail = result_policy.as_ref().and_then(|result| result.on_memory_fail);
+        let on_memory_fail = result_policy
+            .as_ref()
+            .and_then(|result| result.on_memory_fail);
 
         if should_persist_result(return_type, on_memory_fail) {
             let _ = crate::state::delete_node_result_memory(&event.run_id, &event.node_uid);
@@ -166,7 +177,9 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
             event_name
         };
 
-        let payload_size = serde_json::to_vec(&value).map(|blob| blob.len()).unwrap_or(0);
+        let payload_size = serde_json::to_vec(&value)
+            .map(|blob| blob.len())
+            .unwrap_or(0);
 
         crate::observability::adapter()
             .write_trace(

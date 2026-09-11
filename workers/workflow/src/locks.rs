@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use tokio::sync::OwnedMutexGuard;
 
@@ -21,9 +22,8 @@ pub struct WorkflowLocks {
 }
 
 impl WorkflowLocks {
-    /// Acquire the lock for `run_id`, creating it on first use.
-    pub async fn guard(&self, run_id: &str) -> OwnedMutexGuard<()> {
-        let lock = {
+    fn lock_for(&self, run_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        {
             let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
             // Reuse the live lock while any guard is still outstanding; once all
             // guards drop, the Weak lapses and we mint a fresh one. Storing Weak
@@ -41,7 +41,40 @@ impl WorkflowLocks {
                     lock
                 }
             }
-        };
+        }
+    }
+
+    /// Acquire the lock for `run_id`, creating it on first use.
+    pub async fn guard(&self, run_id: &str) -> OwnedMutexGuard<()> {
+        let lock = self.lock_for(run_id);
         lock.lock_owned().await
+    }
+
+    /// Acquire the lock within a bounded interval.
+    pub async fn guard_bounded(
+        &self,
+        run_id: &str,
+        timeout_ms: u64,
+    ) -> Option<OwnedMutexGuard<()>> {
+        let lock = self.lock_for(run_id);
+        tokio::time::timeout(Duration::from_millis(timeout_ms.max(1)), lock.lock_owned())
+            .await
+            .ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkflowLocks;
+
+    #[tokio::test]
+    async fn bounded_guard_times_out_and_can_be_reacquired_after_release() {
+        let locks = WorkflowLocks::default();
+        let held = locks.guard("run-1").await;
+
+        assert!(locks.guard_bounded("run-1", 5).await.is_none());
+
+        drop(held);
+        assert!(locks.guard_bounded("run-1", 50).await.is_some());
     }
 }

@@ -6,7 +6,9 @@ use serde_json::Value;
 use crate::config::WorkerConfig;
 use crate::error::WorkflowError;
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
-use crate::types::{QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord};
+use crate::types::{
+    AgentTaskRecord, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+};
 
 pub mod file;
 pub mod redis;
@@ -145,6 +147,23 @@ pub trait WorkflowInternalStateStore: Send + Sync {
         value: &Value,
     ) -> Result<(), WorkflowError>;
     async fn delete_node_result(&self, run_id: &str, node_uid: &str) -> Result<(), WorkflowError>;
+
+    // ---------------------------------------------------------------------
+    // Agent tasks
+    // ---------------------------------------------------------------------
+
+    async fn put_agent_task(&self, task: &AgentTaskRecord) -> Result<(), WorkflowError>;
+    async fn get_agent_task(&self, task_id: &str)
+        -> Result<Option<AgentTaskRecord>, WorkflowError>;
+    async fn get_agent_task_by_session(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<Option<AgentTaskRecord>, WorkflowError>;
+    async fn list_agent_tasks_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AgentTaskRecord>, WorkflowError>;
+    async fn delete_agent_tasks_for_run(&self, run_id: &str) -> Result<(), WorkflowError>;
 
     // ---------------------------------------------------------------------
     // Logs / traces

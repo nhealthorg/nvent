@@ -11,7 +11,7 @@ use crate::error::WorkflowError;
 use crate::ids::now_ms;
 use crate::internal_state::WorkflowInternalStateStore;
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
-use crate::types::{QueueReceiptRecord, WorkflowDef, WorkflowRunRecord};
+use crate::types::{AgentTaskRecord, QueueReceiptRecord, WorkflowDef, WorkflowRunRecord};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredRun {
@@ -80,6 +80,24 @@ impl FileWorkflowInternalStateStore {
 
     fn idempotency_dir(&self) -> PathBuf {
         self.base_dir.join("idempotency")
+    }
+
+    fn agent_tasks_dir(&self) -> PathBuf {
+        self.base_dir.join("agent-tasks")
+    }
+
+    fn agent_session_index_dir(&self) -> PathBuf {
+        self.base_dir.join("agent-session-index")
+    }
+
+    fn agent_task_path(&self, task_id: &str) -> PathBuf {
+        self.agent_tasks_dir()
+            .join(format!("{}.json", sanitize_segment(task_id)))
+    }
+
+    fn agent_session_index_path(&self, session_id: &str) -> PathBuf {
+        self.agent_session_index_dir()
+            .join(format!("{}.json", sanitize_segment(session_id)))
     }
 
     fn run_path(&self, run_id: &str) -> PathBuf {
@@ -306,6 +324,77 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
 
     async fn delete_node_result(&self, run_id: &str, node_uid: &str) -> Result<(), WorkflowError> {
         remove_if_exists(&self.result_path(run_id, node_uid)).await
+    }
+
+    async fn put_agent_task(&self, task: &AgentTaskRecord) -> Result<(), WorkflowError> {
+        write_json_atomic(&self.agent_task_path(&task.task_id), task).await?;
+        write_json_atomic(
+            &self.agent_session_index_path(&task.agent_session_id),
+            &task.task_id,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn get_agent_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<AgentTaskRecord>, WorkflowError> {
+        read_json_opt::<AgentTaskRecord>(&self.agent_task_path(task_id)).await
+    }
+
+    async fn get_agent_task_by_session(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<Option<AgentTaskRecord>, WorkflowError> {
+        if let Some(task_id) =
+            read_json_opt::<String>(&self.agent_session_index_path(agent_session_id)).await?
+        {
+            self.get_agent_task(&task_id).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn list_agent_tasks_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AgentTaskRecord>, WorkflowError> {
+        let mut out = Vec::new();
+        let mut entries = match fs::read_dir(self.agent_tasks_dir()).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(err) => {
+                return Err(WorkflowError::State(format!(
+                    "list_agent_tasks read_dir failed: {err}"
+                )))
+            }
+        };
+
+        while let Some(entry) = entries.next_entry().await.map_err(|err| {
+            WorkflowError::State(format!("list_agent_tasks read_dir entry failed: {err}"))
+        })? {
+            let path = entry.path();
+            if !is_json_file(&path) {
+                continue;
+            }
+            if let Some(task) = read_json_opt::<AgentTaskRecord>(&path).await? {
+                if task.run_id == run_id {
+                    out.push(task);
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
+    async fn delete_agent_tasks_for_run(&self, run_id: &str) -> Result<(), WorkflowError> {
+        let tasks = self.list_agent_tasks_for_run(run_id).await?;
+        for task in tasks {
+            let _ = remove_if_exists(&self.agent_task_path(&task.task_id)).await;
+            let _ = remove_if_exists(&self.agent_session_index_path(&task.agent_session_id)).await;
+        }
+        Ok(())
     }
 
     async fn put_run_log(

@@ -10,15 +10,14 @@ use crate::{
     observability::ObservabilityAdapter,
     state,
     types::{
-        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
-        NodeInputReturnType, NodeResultReturnType, NodeState, QueueReceiptRecord, RunStatus,
-        WorkflowDef,
-        WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
+        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeInputReturnType,
+        NodeMemoryFailPolicy, NodeResultReturnType, NodeState, QueueReceiptRecord, RunStatus,
+        WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
         WorkflowVarVersionRecord,
     },
 };
 
-use super::Deps;
+use super::{stream_publish, Deps};
 
 // ---------------------------------------------------------------------------
 // TickDecision
@@ -77,7 +76,10 @@ fn dispatch_queue_for(function: &FunctionSpec) -> String {
 }
 
 fn is_terminal_node_state(state: NodeState) -> bool {
-    matches!(state, NodeState::Done | NodeState::Failed | NodeState::Cancelled)
+    matches!(
+        state,
+        NodeState::Done | NodeState::Failed | NodeState::Cancelled
+    )
 }
 
 fn node_group_terminal(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -> bool {
@@ -151,13 +153,13 @@ fn node_input_on_memory_fail(def: &WorkflowDef, node_uid: &str) -> Option<NodeMe
         .and_then(|input| input.on_memory_fail)
 }
 
-    fn fanout_item_mode(def: &WorkflowDef, node_id: &str) -> NodeInputReturnType {
-        def.nodes
+fn fanout_item_mode(def: &WorkflowDef, node_id: &str) -> NodeInputReturnType {
+    def.nodes
         .get(node_id)
         .and_then(|node| node.fanout.as_ref())
         .and_then(|fanout| fanout.item_return_type)
         .unwrap_or(NodeInputReturnType::Memory)
-    }
+}
 
 async fn load_run_input_for_node(
     deps: &Deps,
@@ -272,7 +274,10 @@ fn collect_prunable_memory_result_uids(
 
         // `onMemoryFail: store` keeps the payload durable instead of pruning.
         // This is the robust fallback mode for memory-heavy/stuck workflows.
-        if matches!(node_on_memory_fail(def, uid), Some(NodeMemoryFailPolicy::Store)) {
+        if matches!(
+            node_on_memory_fail(def, uid),
+            Some(NodeMemoryFailPolicy::Store)
+        ) {
             continue;
         }
 
@@ -851,6 +856,7 @@ pub(crate) async fn fire_node(
     def: &WorkflowDef,
     node_uid: &str,
     results: &BTreeMap<String, Value>,
+    pending_stream_events: &mut Vec<stream_publish::StreamPublishRequest>,
 ) -> Result<(), WorkflowError> {
     // Abort guard: covers both the tick Fire branch and the sweep refire path.
     // `decide` already returns Finalize(Cancelled) first when abort=true (so the
@@ -931,10 +937,8 @@ pub(crate) async fn fire_node(
             NodeInputReturnType::Store => {
                 state::get_fanout_item(&deps.iii, &record.run_id, base_id, idx).await?
             }
-            NodeInputReturnType::Memory => {
-                state::get_fanout_items_memory(&record.run_id, base_id)?
-                    .and_then(|items| items.get(idx).cloned())
-            }
+            NodeInputReturnType::Memory => state::get_fanout_items_memory(&record.run_id, base_id)?
+                .and_then(|items| items.get(idx).cloned()),
         }
     } else {
         None
@@ -953,7 +957,9 @@ pub(crate) async fn fire_node(
         results,
     );
 
-    if node.function.id == "nworkflow::internal-var-set" {
+    let function = node.effective_function();
+
+    if function.id == "nworkflow::internal-var-set" {
         execute_internal_var_set(deps, record, node_uid, &input_val).await?;
         record.updated_at = deps.now_ms();
         state::put_run(&deps.iii, record).await?;
@@ -967,16 +973,83 @@ pub(crate) async fn fire_node(
 
     let dispatch_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
 
-    // Fire the function asynchronously via queue (non-blocking)
-    let function = &node.function;
+    // Fire the function or agent asynchronously via queue / harness (non-blocking)
     let node_pending_timeout_ms =
         effective_pending_timeout_ms(prior_timeout, function.timeout_ms, dispatch_timeout_ms);
-    let max_retries = node
-        .function
+    let max_retries = function
         .engine_retry
         .as_ref()
         .and_then(|r| r.max_attempts)
         .unwrap_or(deps.cfg().await.max_node_retries);
+
+    if let Some(agent_spec) = &node.agent {
+        let mut spec = agent_spec.clone();
+        if !input_val.is_null() {
+            spec.input = Some(input_val);
+        }
+
+        let start_req = crate::functions::agent::AgentStartRequest {
+            run_id: record.run_id.clone(),
+            node_uid: node_uid.to_string(),
+            spec,
+            options: node.agent_options.clone(),
+        };
+
+        // Persist run record (including completions of previous steps & this node's Running state) BEFORE harness::spawn RPC
+        record.nodes.insert(
+            node_uid.to_string(),
+            NodeCheckpoint {
+                state: NodeState::Running,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                pending_at: Some(deps.now_ms()),
+                pending_timeout_ms: node_pending_timeout_ms,
+                retries: attempt,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+        record.updated_at = deps.now_ms();
+        state::put_run(&deps.iii, record).await?;
+
+        match crate::functions::agent::start_agent_task(deps, start_req).await {
+            Ok(start_res) => {
+                let agent_session_id = start_res.agent_session_id;
+                record.agent_session_id = Some(agent_session_id.clone());
+                if let Some(cp) = record.nodes.get_mut(node_uid) {
+                    cp.session_id = Some(agent_session_id.clone());
+                    cp.turn_id = start_res.turn_id;
+                }
+                record.updated_at = deps.now_ms();
+                state::put_run(&deps.iii, record).await?;
+                pending_stream_events.push(crate::functions::agent::started_event(
+                    &record.run_id,
+                    node_uid,
+                    &start_res.task_id,
+                    &agent_session_id,
+                ));
+                return Ok(());
+            }
+            Err(e) => {
+                let err_msg = format!("failed to start agent node: {e}");
+                if let Some(cp) = record.nodes.get_mut(node_uid) {
+                    cp.state = NodeState::Failed;
+                    cp.result_error = Some(err_msg.clone());
+                    cp.completed_at = Some(deps.now_ms());
+                }
+                record.updated_at = deps.now_ms();
+                state::put_run(&deps.iii, record).await?;
+                pending_stream_events.push(crate::functions::agent::failed_event(
+                    &record.run_id,
+                    node_uid,
+                    &err_msg,
+                ));
+                return Ok(());
+            }
+        }
+    }
 
     // Discovery check: if the function is not in the registry, fail immediately
     // instead of enqueuing into a black hole.
@@ -1043,7 +1116,7 @@ pub(crate) async fn fire_node(
         return Ok(());
     }
 
-    let queue = dispatch_queue_for(function);
+    let queue = dispatch_queue_for(&function);
 
     // Wrap input with workflow metadata so functions can emit completion events
     let wrapped_input = json!({
@@ -1361,7 +1434,17 @@ pub async fn handle(
     req: super::TickRequest,
 ) -> Result<super::TickResponse, WorkflowError> {
     // 1. Acquire per-run lock.
-    let _g = deps.locks.guard(&req.run_id).await;
+    let lock_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    let _guard = deps
+        .locks
+        .guard_bounded(&req.run_id, lock_timeout_ms)
+        .await
+        .ok_or_else(|| {
+            WorkflowError::State(format!(
+                "timed out acquiring run lock for tick after {lock_timeout_ms}ms: {}",
+                req.run_id
+            ))
+        })?;
 
     // 2. Load the run record (None → skipped).
     let Some(mut record) = state::get_run(&deps.iii, &req.run_id).await? else {
@@ -1385,8 +1468,10 @@ pub async fn handle(
         .ok_or_else(|| WorkflowError::State("def missing".into()))?;
 
     // 5. Reconcile running nodes.
+    let mut pending_stream_events = Vec::new();
     crate::reconcile::reconcile_run(deps, &mut record).await?;
-    crate::reconcile::reconcile_function_nodes(deps, &def, &mut record).await?;
+    crate::reconcile::reconcile_function_nodes(deps, &def, &mut record, &mut pending_stream_events)
+        .await?;
 
     // 6. Load done results.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
@@ -1412,7 +1497,10 @@ pub async fn handle(
         };
 
         if let Ok(items) = dag::resolve_over_path(&fanout.over, &results) {
-            match fanout.item_return_type.unwrap_or(NodeInputReturnType::Memory) {
+            match fanout
+                .item_return_type
+                .unwrap_or(NodeInputReturnType::Memory)
+            {
                 NodeInputReturnType::Store => {
                     let _ = state::delete_fanout_items_memory(&record.run_id, &node_id);
                     state::put_fanout_items(&deps.iii, &record.run_id, &node_id, &items).await?;
@@ -1438,7 +1526,7 @@ pub async fn handle(
         "tick decision made"
     );
 
-    match decision {
+    let response = match decision {
         TickDecision::Finalize(status) => {
             tracing::info!(
                 run_id = %req.run_id,
@@ -1471,8 +1559,20 @@ pub async fn handle(
                 nodes = ?uids,
                 "firing ready nodes"
             );
+            // Save reconciled completions (e.g. previous steps marked Done) BEFORE firing next nodes
+            record.updated_at = deps.now_ms();
+            state::put_run(&deps.iii, &record).await?;
+
             for uid in &uids {
-                fire_node(deps, &mut record, &def, uid, &results).await?;
+                fire_node(
+                    deps,
+                    &mut record,
+                    &def,
+                    uid,
+                    &results,
+                    &mut pending_stream_events,
+                )
+                .await?;
             }
             record.status = RunStatus::AwaitingNodes;
             record.updated_at = deps.now_ms();
@@ -1504,7 +1604,8 @@ pub async fn handle(
                 state::put_run(&deps.iii, &record).await?;
 
                 for uid in &detached_result_uids {
-                    if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
+                    if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await
+                    {
                         tracing::warn!(
                             run_id = %record.run_id,
                             node_uid = %uid,
@@ -1517,30 +1618,35 @@ pub async fn handle(
                 let _ = state::delete_run_input_memory(&record.run_id);
                 let _ = state::delete_all_fanout_items_memory(&record.run_id);
                 let _ = state::delete_all_node_results_memory(&record.run_id);
-                return Ok(super::TickResponse { skipped: false });
-            }
+                Ok(super::TickResponse { skipped: false })
+            } else {
+                tracing::debug!(
+                    run_id = %req.run_id,
+                    "parking - no ready nodes"
+                );
+                record.status = RunStatus::AwaitingNodes;
+                record.updated_at = deps.now_ms();
+                state::put_run(&deps.iii, &record).await?;
 
-            tracing::debug!(
-                run_id = %req.run_id,
-                "parking - no ready nodes"
-            );
-            record.status = RunStatus::AwaitingNodes;
-            record.updated_at = deps.now_ms();
-            state::put_run(&deps.iii, &record).await?;
-
-            for uid in &detached_result_uids {
-                if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
-                    tracing::warn!(
-                        run_id = %record.run_id,
-                        node_uid = %uid,
-                        error = %e,
-                        "failed to delete detached node result payload"
-                    );
+                for uid in &detached_result_uids {
+                    if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await
+                    {
+                        tracing::warn!(
+                            run_id = %record.run_id,
+                            node_uid = %uid,
+                            error = %e,
+                            "failed to delete detached node result payload"
+                        );
+                    }
                 }
+                Ok(super::TickResponse { skipped: false })
             }
-            Ok(super::TickResponse { skipped: false })
         }
-    }
+    };
+
+    drop(_guard);
+    stream_publish::publish_best_effort(deps, pending_stream_events).await;
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -1552,8 +1658,7 @@ mod tests {
     use super::*;
     use crate::types::{
         FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
-        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, WorkflowDef,
-        WorkflowRunRecord,
+        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, WorkflowDef, WorkflowRunRecord,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -1569,13 +1674,15 @@ mod tests {
             "plan".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "plan_function".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1592,13 +1699,15 @@ mod tests {
             "read".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "read_function".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -1620,13 +1729,15 @@ mod tests {
             "synthesize".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "synthesize_function".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: None,
@@ -1657,6 +1768,7 @@ mod tests {
             workflow_trace_id: Some("trace_test".to_string()),
             state_scope_id: Some("run_test".to_string()),
             stream_scope_id: Some("run_test".to_string()),
+            agent_session_id: None,
             step: 0,
             status: RunStatus::Running,
             abort: false,
@@ -1700,13 +1812,15 @@ mod tests {
             "plan".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "plan_function".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2015,13 +2129,15 @@ mod tests {
             "load".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "load-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2042,13 +2158,15 @@ mod tests {
             "middle".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "middle-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "node:load".into(),
                     template: None,
@@ -2065,13 +2183,15 @@ mod tests {
             "consume".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "consume-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2433,9 +2553,7 @@ mod tests {
         }
 
         let mut record = fresh_record();
-        record
-            .fanout_src
-            .insert("synthesize".to_string(), 2);
+        record.fanout_src.insert("synthesize".to_string(), 2);
 
         let mut results: BTreeMap<String, Value> = BTreeMap::new();
         results.insert("read#0".to_string(), json!({ "summary": "A" }));
@@ -2463,9 +2581,7 @@ mod tests {
     fn resolve_node_input_falls_back_when_dep_is_not_fanout() {
         let def = three_node_def();
         let mut record = fresh_record();
-        record
-            .fanout_src
-            .insert("read".to_string(), 1);
+        record.fanout_src.insert("read".to_string(), 1);
 
         let mut results: BTreeMap<String, Value> = BTreeMap::new();
         results.insert("plan".to_string(), json!({ "docs": ["x"] }));

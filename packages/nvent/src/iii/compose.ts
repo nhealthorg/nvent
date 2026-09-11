@@ -1,4 +1,4 @@
-import { stringifyYAML } from 'confbox'
+import { parseYAML, stringifyYAML } from 'confbox'
 import type { ComposeEngineWorkerOverrides } from './compose-advanced'
 
 export type WorkflowWorkerSource = 'path' | 'package'
@@ -33,6 +33,7 @@ export interface ComposeGenerationOptions {
   includeHttp: boolean
   includeStream: boolean
   includeAde: boolean
+  includeHarness?: boolean
   startupTimeout?: string
   stopTimeout?: string
   engineWorkerOverrides?: ComposeEngineWorkerOverrides
@@ -43,10 +44,20 @@ export interface ComposeGenerationOptions {
     pubsub?: string
     http?: string
     ade?: string
+    harness?: string
+    llmRouter?: string
+    contextManager?: string
+    sessionManager?: string
+    iiiDirectory?: string
+    shell?: string
   }
   adeVersion?: string
   adeConfig?: Record<string, unknown>
+  harnessVersion?: string
+  harnessConfig?: Record<string, unknown>
   workflowWorker?: ComposeWorkflowWorkerOptions
+  customWorkers?: Record<string, Record<string, unknown>>
+  existingYamlContent?: string
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -200,6 +211,56 @@ function createDefaultServiceContainers(options: ComposeGenerationOptions): Reco
     containers.http = entry
   }
 
+  if (options.includeHarness !== false) {
+    const llmRouterVersion = resolveContainerVersion(options.packageVersions?.llmRouter)
+    containers['llm-router'] = {
+      worker: 'package://api.workers.iii.dev/llm-router',
+      version: llmRouterVersion ?? 'latest',
+      ...(options.includeState ? { start_after: ['state'] } : {}),
+    }
+
+    const contextManagerVersion = resolveContainerVersion(options.packageVersions?.contextManager)
+    containers['context-manager'] = {
+      worker: 'package://api.workers.iii.dev/context-manager',
+      version: contextManagerVersion ?? 'latest',
+      start_after: ['llm-router'],
+    }
+
+    const sessionManagerVersion = resolveContainerVersion(options.packageVersions?.sessionManager)
+    containers['session-manager'] = {
+      worker: 'package://api.workers.iii.dev/session-manager',
+      version: sessionManagerVersion ?? 'latest',
+    }
+
+    const iiiDirectoryVersion = resolveContainerVersion(options.packageVersions?.iiiDirectory)
+    containers['iii-directory'] = {
+      worker: 'package://api.workers.iii.dev/iii-directory',
+      version: iiiDirectoryVersion ?? 'latest',
+    }
+
+    const shellVersion = resolveContainerVersion(options.packageVersions?.shell)
+    containers.shell = {
+      worker: 'package://api.workers.iii.dev/ide',
+      version: shellVersion ?? 'latest',
+    }
+
+    const harnessEntry: Record<string, unknown> = {
+      worker: 'package://api.workers.iii.dev/harness',
+      version: resolveContainerVersion(options.packageVersions?.harness ?? options.harnessVersion) ?? 'latest',
+      start_after: [
+        'llm-router',
+        'context-manager',
+        'session-manager',
+        'iii-directory',
+        'shell',
+      ],
+    }
+    if (options.harnessConfig && Object.keys(options.harnessConfig).length > 0) {
+      harnessEntry.config_override = options.harnessConfig
+    }
+    containers.harness = harnessEntry
+  }
+
   return containers
 }
 
@@ -210,6 +271,21 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
   const workflowContainer = createWorkflowContainer(options.workflowWorker)
   const adeContainer = createAdeContainer(options)
   const defaultServiceContainers = createDefaultServiceContainers(options)
+
+  let existingDoc: Record<string, unknown> = {}
+  if (options.existingYamlContent && options.existingYamlContent.trim().length > 0) {
+    try {
+      const parsed = parseYAML(options.existingYamlContent)
+      if (isObjectRecord(parsed)) {
+        existingDoc = parsed
+      }
+    } catch {
+      // If existing file is invalid/corrupt, proceed with clean generation
+    }
+  }
+
+  const existingEngine = isObjectRecord(existingDoc.engine) ? existingDoc.engine : {}
+  const existingEngineWorkers = isObjectRecord(existingEngine.workers) ? existingEngine.workers : {}
 
   const engineWorkers: Record<string, Record<string, unknown>> = {
     configuration: {
@@ -229,18 +305,20 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
     'iii-sandbox': {
       auto_install: true,
     },
+    ...existingEngineWorkers,
   }
 
   if (options.browserPort) {
-    engineWorkers['iii-worker-manager#rbac'] = {
-      host: '127.0.0.1',
-      port: options.browserPort,
-    }
+    engineWorkers['iii-worker-manager#rbac'] = deepMergeRecord(
+      isObjectRecord(engineWorkers['iii-worker-manager#rbac']) ? engineWorkers['iii-worker-manager#rbac'] : {},
+      { host: '127.0.0.1', port: options.browserPort },
+    )
   }
 
   if (options.includeStream) {
     const streamCfg: Record<string, unknown> = {
       ...(options.streamConfig ?? {}),
+      ...(isObjectRecord(engineWorkers['iii-stream']) ? engineWorkers['iii-stream'] : {}),
     }
     if (streamCfg.port == null) {
       streamCfg.port = options.streamPort
@@ -258,19 +336,57 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
     }
   }
 
-  const containers: Record<string, Record<string, unknown>> = {
-    ...defaultServiceContainers,
-    [workflowContainer.containerName]: workflowContainer.entry as Record<string, unknown>,
+  const existingContainers = isObjectRecord(existingDoc.containers)
+    ? (existingDoc.containers as Record<string, unknown>)
+    : {}
+
+  // 1. Start with existing containers to preserve any runtime-added containers (e.g. compose::add)
+  const containers: Record<string, Record<string, unknown>> = {}
+  for (const [k, v] of Object.entries(existingContainers)) {
+    if (isObjectRecord(v)) {
+      containers[k] = { ...v }
+    }
   }
 
+  // 2. Merge default nvent service containers
+  for (const [name, defaultEntry] of Object.entries(defaultServiceContainers)) {
+    const existingEntry = isObjectRecord(containers[name]) ? containers[name]! : {}
+    containers[name] = deepMergeRecord(existingEntry, defaultEntry)
+  }
+
+  // 3. Merge workflow worker container
+  const existingWorkflow = isObjectRecord(containers[workflowContainer.containerName])
+    ? containers[workflowContainer.containerName]!
+    : {}
+  containers[workflowContainer.containerName] = deepMergeRecord(
+    existingWorkflow,
+    workflowContainer.entry as Record<string, unknown>,
+  )
+
+  // 4. Merge ADE UI container if enabled
   if (adeContainer) {
-    containers[adeContainer.containerName] = adeContainer.entry as Record<string, unknown>
+    const existingAde = isObjectRecord(containers[adeContainer.containerName])
+      ? containers[adeContainer.containerName]!
+      : {}
+    containers[adeContainer.containerName] = deepMergeRecord(
+      existingAde,
+      adeContainer.entry as Record<string, unknown>,
+    )
+  }
+
+  // 5. Merge custom workers declared in Nuxt config
+  if (options.customWorkers) {
+    for (const [name, customEntry] of Object.entries(options.customWorkers)) {
+      if (!customEntry || typeof customEntry !== 'object') continue
+      const existing = isObjectRecord(containers[name]) ? containers[name] : {}
+      containers[name] = deepMergeRecord(existing, customEntry as Record<string, unknown>)
+    }
   }
 
   const composeDoc = {
     namespace: projectNamespace,
-    startup_timeout: options.startupTimeout ?? '60s',
-    stop_timeout: options.stopTimeout ?? '10s',
+    startup_timeout: (existingDoc.startup_timeout as string) ?? options.startupTimeout ?? '60s',
+    stop_timeout: (existingDoc.stop_timeout as string) ?? options.stopTimeout ?? '10s',
     engine: {
       url: options.engineUrl,
       workers: engineWorkers,

@@ -232,6 +232,10 @@ class IWorkflowContext:
     state: IWorkflowState
     stream: IWorkflowStream
 
+    async def agent(self, spec: dict, options: dict = None) -> dict:
+        """Spawn an agent task using the iii harness loop."""
+        ...
+
 
 class Logger:
     """Structured logger — backed by iii-sdk's Logger in worker context.
@@ -313,6 +317,10 @@ class WorkflowContext:
                 "data": {"orderId": "123"},
             })
         """
+        ...
+
+    async def agent(self, spec: dict, options: dict = None) -> dict:
+        """Spawn an agent task using the iii harness loop."""
         ...
 
     async def match(self, handlers: dict[str, Any]) -> Any:

@@ -1,5 +1,27 @@
+import { spawn } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { classifyComposeStartupError, ComposeStartupError } from '../../packages/nvent/src/runtime/nitro/utils/compose'
+import { classifyComposeStartupError, ComposeManager, ComposeStartupError } from '../../packages/nvent/src/runtime/nitro/utils/compose'
+
+function isProcessRunning(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  }
+  catch {
+    return false
+  }
+}
+
+async function waitForFile(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!existsSync(path) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  if (!existsSync(path)) throw new Error(`timed out waiting for ${path}`)
+}
 
 describe('compose startup error mapping', () => {
   it('maps invalid namespace errors', () => {
@@ -47,5 +69,125 @@ describe('compose startup error mapping', () => {
     expect(err.message).toContain('[STARTUP_TIMEOUT]')
     expect(err.message).toContain('hint: Increase timeout.')
     expect(err.message).toContain('detail: compose up timeout')
+  })
+
+  it.skipIf(process.platform === 'win32')('sends Ctrl+C to the complete compose process group', async () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'nvent-compose-stop-'))
+    const binaryPath = join(fixtureDir, 'fake-compose')
+    const composeFilePath = join(fixtureDir, 'worker-compose.yaml')
+    const childPidPath = join(fixtureDir, 'child.pid')
+    const signalPath = join(fixtureDir, 'signal')
+    writeFileSync(binaryPath, `#!/bin/sh
+sleep 30 &
+child_pid=$!
+printf '%s' "$child_pid" > "$III_COMPOSE_STATE_DIR/child.pid"
+  trap 'printf SIGINT > "$III_COMPOSE_STATE_DIR/signal"; exit 0' INT
+echo 'up: 1 of 1 changed'
+wait "$child_pid"
+`)
+    chmodSync(binaryPath, 0o755)
+    writeFileSync(composeFilePath, 'containers: {}\n')
+
+    let manager: ComposeManager | undefined
+    let childPid: number | undefined
+    try {
+      manager = new ComposeManager({
+        binaryPath,
+        composeFilePath,
+        daemonNamespace: 'test',
+        composeStateDir: fixtureDir,
+        shutdownTimeoutMs: 200,
+        logLevel: 'none',
+      })
+
+      await manager.start()
+      childPid = Number(readFileSync(childPidPath, 'utf8'))
+      expect(isProcessRunning(childPid)).toBe(true)
+
+      await manager.stop()
+
+      expect(readFileSync(signalPath, 'utf8')).toBe('SIGINT')
+      expect(manager.isRunning()).toBe(false)
+      expect(isProcessRunning(childPid)).toBe(false)
+    }
+    finally {
+      await manager?.stop()
+      if (childPid && isProcessRunning(childPid)) {
+        try { process.kill(childPid, 'SIGKILL') } catch {}
+      }
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('aborts compose when the Nuxt owner process exits immediately', async () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'nvent-compose-parent-exit-'))
+    const binaryPath = join(fixtureDir, 'fake-compose')
+    const enginePath = join(fixtureDir, 'fake-engine')
+    const composeFilePath = join(fixtureDir, 'worker-compose.yaml')
+    const composeSignalPath = join(fixtureDir, 'compose-signal')
+    const engineSignalPath = join(fixtureDir, 'engine-signal')
+    const enginePidPath = join(fixtureDir, 'engine-pid')
+    const readyPath = join(fixtureDir, 'ready')
+    writeFileSync(enginePath, `#!${process.execPath}
+import { writeFileSync } from 'node:fs'
+const stateDir = process.env.III_COMPOSE_STATE_DIR
+writeFileSync(\`${'${stateDir}'}/engine-pid\`, String(process.pid))
+process.once('SIGINT', () => {
+  writeFileSync(\`${'${stateDir}'}/engine-signal\`, 'SIGINT')
+  process.exit(0)
+})
+setInterval(() => {}, 1000)
+  `)
+    writeFileSync(binaryPath, `#!/bin/sh
+  setsid "$III_COMPOSE_STATE_DIR/fake-engine" &
+  engine_pid=$!
+  trap 'printf SIGINT > "$III_COMPOSE_STATE_DIR/compose-signal"; exit 0' INT
+  echo 'engine started'
+  echo "pid: $engine_pid"
+echo 'up: 1 of 1 changed'
+wait
+`)
+    chmodSync(enginePath, 0o755)
+    chmodSync(binaryPath, 0o755)
+    writeFileSync(composeFilePath, 'containers: {}\n')
+
+    const script = `
+      import { ComposeManager } from ${JSON.stringify(new URL('../../packages/nvent/src/runtime/nitro/utils/compose.ts', import.meta.url).href)}
+      import { writeFileSync } from 'node:fs'
+      const manager = new ComposeManager(${JSON.stringify({
+        binaryPath,
+        composeFilePath,
+        daemonNamespace: 'test',
+        composeStateDir: fixtureDir,
+        shutdownTimeoutMs: 200,
+        logLevel: 'none',
+      })})
+      await manager.start()
+      writeFileSync(${JSON.stringify(readyPath)}, 'ready')
+      process.exit(0)
+    `
+
+    let enginePid = 0
+    try {
+      const owner = spawn(process.execPath, ['-e', script], { stdio: 'ignore' })
+      await new Promise<void>((resolve, reject) => {
+        owner.once('exit', code => code === 0 ? resolve() : reject(new Error(`owner exited with ${code}`)))
+        owner.once('error', reject)
+      })
+      await waitForFile(readyPath)
+      await waitForFile(enginePidPath)
+      enginePid = Number(readFileSync(enginePidPath, 'utf8'))
+      await waitForFile(composeSignalPath)
+      await waitForFile(engineSignalPath)
+      expect(readFileSync(composeSignalPath, 'utf8')).toBe('SIGINT')
+      expect(readFileSync(engineSignalPath, 'utf8')).toBe('SIGINT')
+      expect(isProcessRunning(enginePid)).toBe(false)
+    }
+    finally {
+      if (enginePid && isProcessRunning(enginePid)) {
+        try { process.kill(-enginePid, 'SIGKILL') } catch {}
+      }
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
   })
 })

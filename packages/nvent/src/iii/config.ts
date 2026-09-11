@@ -309,28 +309,28 @@ export function defaultIiiEngineConfig(): IiiEngineConfig {
 function defaultStateAdapter(stateDir?: string): StateAdapter {
   return {
     name: 'kv',
-    config: { store_method: 'file_based', file_path: stateDir ?? './.data/state_store' },
+    config: { store_method: 'file_based', file_path: stateDir ?? './data/state_store' },
   }
 }
 
 function defaultQueueAdapter(queueDir?: string): QueueAdapter {
   return {
     name: 'builtin',
-    config: { store_method: 'file_based', file_path: queueDir ?? './.data/queue_store' },
+    config: { store_method: 'file_based', file_path: queueDir ?? './data/queue_store' },
   }
 }
 
 function defaultCronAdapter(): CronAdapter {
   return {
     name: 'kv',
-    config: { store_method: 'file_based', file_path: './.data/cron_store' },
+    config: { store_method: 'file_based', file_path: './data/cron_store' },
   }
 }
 
 function defaultStreamAdapter(): StreamAdapter {
   return {
     name: 'kv',
-    config: { store_method: 'file_based', file_path: './.data/stream_store' },
+    config: { store_method: 'file_based', file_path: './data/stream_store' },
   }
 }
 

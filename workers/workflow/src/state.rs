@@ -12,7 +12,7 @@ use crate::{
     ids,
     internal_state::{ListRunsFilter, WorkflowInternalStateStore},
     types::{
-        NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+        AgentTaskRecord, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
         WorkflowVarRecord,
     },
 };
@@ -97,7 +97,10 @@ pub fn put_fanout_items_memory(
     Ok(())
 }
 
-pub fn get_fanout_items_memory(run_id: &str, node_id: &str) -> Result<Option<Vec<Value>>, WorkflowError> {
+pub fn get_fanout_items_memory(
+    run_id: &str,
+    node_id: &str,
+) -> Result<Option<Vec<Value>>, WorkflowError> {
     let guard = fanout_items_memory()
         .lock()
         .map_err(|_| WorkflowError::State("fanout items memory lock poisoned".to_string()))?;
@@ -135,7 +138,10 @@ pub fn put_node_result_memory(
     Ok(())
 }
 
-pub fn get_node_result_memory(run_id: &str, node_uid: &str) -> Result<Option<Value>, WorkflowError> {
+pub fn get_node_result_memory(
+    run_id: &str,
+    node_uid: &str,
+) -> Result<Option<Value>, WorkflowError> {
     let guard = node_results_memory()
         .lock()
         .map_err(|_| WorkflowError::State("node result memory lock poisoned".to_string()))?;
@@ -603,6 +609,36 @@ fn apply_state_registry_key_presence(
     run.updated_at = now_ms;
 }
 
+pub async fn put_agent_task(task: &AgentTaskRecord) -> Result<(), WorkflowError> {
+    require_internal_state_store()?.put_agent_task(task).await
+}
+
+pub async fn get_agent_task(task_id: &str) -> Result<Option<AgentTaskRecord>, WorkflowError> {
+    require_internal_state_store()?
+        .get_agent_task(task_id)
+        .await
+}
+
+pub async fn get_agent_task_by_session(
+    agent_session_id: &str,
+) -> Result<Option<AgentTaskRecord>, WorkflowError> {
+    require_internal_state_store()?
+        .get_agent_task_by_session(agent_session_id)
+        .await
+}
+
+pub async fn list_agent_tasks_for_run(run_id: &str) -> Result<Vec<AgentTaskRecord>, WorkflowError> {
+    require_internal_state_store()?
+        .list_agent_tasks_for_run(run_id)
+        .await
+}
+
+pub async fn delete_agent_tasks_for_run(run_id: &str) -> Result<(), WorkflowError> {
+    require_internal_state_store()?
+        .delete_agent_tasks_for_run(run_id)
+        .await
+}
+
 /// Delete a terminal run's persisted state: its node-result blobs and per-node
 /// session reverse-index entries, then its definition, then the run record itself.
 /// Used by the sweep to GC runs past the retention window so `list_runs` doesn't
@@ -643,6 +679,7 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
     if let Some(result_ref) = record.result_ref.as_deref() {
         delete_run_result(iii, result_ref).await?;
     }
+    delete_agent_tasks_for_run(&record.run_id).await?;
     delete_def(iii, &record.def_ref).await?;
     delete_run_logs(iii, &record.run_id).await?;
     delete_run_traces(iii, &record.run_id).await?;
@@ -719,7 +756,10 @@ pub async fn put_def(
     require_internal_state_store()?.put_def(def_ref, def).await
 }
 
-pub async fn get_def(_iii: &IIIClient, def_ref: &str) -> Result<Option<WorkflowDef>, WorkflowError> {
+pub async fn get_def(
+    _iii: &IIIClient,
+    def_ref: &str,
+) -> Result<Option<WorkflowDef>, WorkflowError> {
     require_internal_state_store()?.get_def(def_ref).await
 }
 
@@ -749,7 +789,9 @@ pub async fn get_run_input_store(
     _iii: &IIIClient,
     input_ref: &str,
 ) -> Result<Option<Value>, WorkflowError> {
-    require_internal_state_store()?.get_run_input(input_ref).await
+    require_internal_state_store()?
+        .get_run_input(input_ref)
+        .await
 }
 
 pub async fn delete_run_input(_iii: &IIIClient, input_ref: &str) -> Result<(), WorkflowError> {
@@ -810,14 +852,19 @@ pub async fn put_run_vars(
     vars: &BTreeMap<String, WorkflowVarRecord>,
 ) -> Result<(), WorkflowError> {
     let encoded = serde_json::to_value(vars).map_err(WorkflowError::Serde)?;
-    require_internal_state_store()?.put_run_vars(vars_ref, &encoded).await
+    require_internal_state_store()?
+        .put_run_vars(vars_ref, &encoded)
+        .await
 }
 
 pub async fn get_run_vars(
     _iii: &IIIClient,
     vars_ref: &str,
 ) -> Result<BTreeMap<String, WorkflowVarRecord>, WorkflowError> {
-    let Some(raw) = require_internal_state_store()?.get_run_vars(vars_ref).await? else {
+    let Some(raw) = require_internal_state_store()?
+        .get_run_vars(vars_ref)
+        .await?
+    else {
         return Ok(BTreeMap::new());
     };
 
@@ -825,7 +872,9 @@ pub async fn get_run_vars(
 }
 
 pub async fn delete_run_vars(_iii: &IIIClient, vars_ref: &str) -> Result<(), WorkflowError> {
-    require_internal_state_store()?.delete_run_vars(vars_ref).await
+    require_internal_state_store()?
+        .delete_run_vars(vars_ref)
+        .await
 }
 
 pub async fn put_run_result(
@@ -842,7 +891,9 @@ pub async fn get_run_result(
     _iii: &IIIClient,
     result_ref: &str,
 ) -> Result<Option<Value>, WorkflowError> {
-    require_internal_state_store()?.get_run_result(result_ref).await
+    require_internal_state_store()?
+        .get_run_result(result_ref)
+        .await
 }
 
 pub async fn delete_run_result(_iii: &IIIClient, result_ref: &str) -> Result<(), WorkflowError> {
@@ -1175,10 +1226,7 @@ mod tests {
         let list = parse_record_list(&json!([rec]));
         assert_eq!(list.len(), 1, "numeric-keyed sequence object should parse");
         assert_eq!(list[0].stream_ids, vec!["nworkflow", "timeline"]);
-        assert_eq!(
-            list[0].fanout_src.get("classify").copied(),
-            Some(2)
-        );
+        assert_eq!(list[0].fanout_src.get("classify").copied(), Some(2));
     }
 
     #[test]
@@ -1258,16 +1306,12 @@ mod tests {
 
         delete_all_fanout_items_memory("run_a").expect("delete run_a fanout memory");
 
-        assert!(
-            get_fanout_items_memory("run_a", "loop_1")
-                .expect("get run_a/loop_1")
-                .is_none()
-        );
-        assert!(
-            get_fanout_items_memory("run_a", "loop_2")
-                .expect("get run_a/loop_2")
-                .is_none()
-        );
+        assert!(get_fanout_items_memory("run_a", "loop_1")
+            .expect("get run_a/loop_1")
+            .is_none());
+        assert!(get_fanout_items_memory("run_a", "loop_2")
+            .expect("get run_a/loop_2")
+            .is_none());
         assert_eq!(
             get_fanout_items_memory("run_b", "loop_1")
                 .expect("get run_b/loop_1")
@@ -1291,11 +1335,9 @@ mod tests {
         assert_eq!(got, value);
 
         delete_node_result_memory(run_id, node_uid).expect("delete node result memory");
-        assert!(
-            get_node_result_memory(run_id, node_uid)
-                .expect("get after delete")
-                .is_none()
-        );
+        assert!(get_node_result_memory(run_id, node_uid)
+            .expect("get after delete")
+            .is_none());
     }
 
     #[test]
@@ -1305,11 +1347,9 @@ mod tests {
 
         delete_all_node_results_memory("run_a").expect("cleanup run_a");
 
-        assert!(
-            get_node_result_memory("run_a", "a#0")
-                .expect("get run_a")
-                .is_none()
-        );
+        assert!(get_node_result_memory("run_a", "a#0")
+            .expect("get run_a")
+            .is_none());
         assert_eq!(
             get_node_result_memory("run_b", "a#0")
                 .expect("get run_b")
@@ -1342,7 +1382,10 @@ mod tests {
 
         mark_missing_done_results_failed(&mut record, vec!["plan".to_string()]);
 
-        let cp = record.nodes.get("plan").expect("plan checkpoint must exist");
+        let cp = record
+            .nodes
+            .get("plan")
+            .expect("plan checkpoint must exist");
         assert_eq!(cp.state, NodeState::Failed);
         assert!(cp.result_ref.is_none(), "stale result_ref must be cleared");
         assert!(

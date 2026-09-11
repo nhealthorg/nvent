@@ -48,6 +48,8 @@ export interface ComposeManagerOptions {
   waitForUp?: boolean
   /** Max time to wait for compose --up completion markers. Default: 120000 */
   upTimeoutMs?: number
+  /** Max time for the compose daemon and its workers to stop gracefully. Default: 30000 */
+  shutdownTimeoutMs?: number
   /** Compact startup logs: print only key lifecycle lines by default. */
   compactLogs?: boolean
 }
@@ -156,6 +158,9 @@ function createComposeStartupError(detail: string | undefined, ctx: ComposeStart
 
 export class ComposeManager {
   private process: ChildProcess | null = null
+  private processGroupId: number | null = null
+  private engineProcessGroupId: number | null = null
+  private parentExitHandler: (() => void) | null = null
   private readonly opts: Required<ComposeManagerOptions>
 
   constructor(opts: ComposeManagerOptions) {
@@ -167,6 +172,7 @@ export class ComposeManager {
       logLevel: 'info',
       waitForUp: true,
       upTimeoutMs: 120_000,
+      shutdownTimeoutMs: 30_000,
       compactLogs: true,
       engineUrl: '',
       ...opts,
@@ -175,6 +181,42 @@ export class ComposeManager {
 
   isRunning(): boolean {
     return this.process !== null && !this.process.killed && this.process.exitCode === null
+  }
+
+  private isProcessTreeRunning(): boolean {
+    for (const processGroupId of [this.processGroupId, this.engineProcessGroupId]) {
+      if (!processGroupId) continue
+      try {
+        process.kill(-processGroupId, 0)
+        return true
+      }
+      catch {}
+    }
+    return this.process?.exitCode === null
+  }
+
+  private signalProcessTrees(signal: NodeJS.Signals): void {
+    const processGroupIds = new Set([this.processGroupId, this.engineProcessGroupId])
+    for (const processGroupId of processGroupIds) {
+      if (!processGroupId) continue
+      try {
+        process.kill(-processGroupId, signal)
+      }
+      catch {}
+    }
+  }
+
+  private clearParentExitHandler(): void {
+    if (!this.parentExitHandler) return
+    process.removeListener('exit', this.parentExitHandler)
+    this.parentExitHandler = null
+  }
+
+  abort(): void {
+    // iii starts its engine in a second detached process group. Signal both the
+    // compose CLI and engine so forced Nuxt exits retain Ctrl+C semantics.
+    this.signalProcessTrees('SIGINT')
+    if (!this.processGroupId) this.process?.kill('SIGINT')
   }
 
   async start(): Promise<void> {
@@ -221,10 +263,20 @@ export class ComposeManager {
     }
 
     const progress: UpProgress = { completed: false, failed: false }
+    let awaitingEnginePid = false
     const processOutput = (stream: 'stdout' | 'stderr', chunk: Buffer) => {
       for (const line of chunk.toString().split('\n').filter(Boolean)) {
         const normalizedLine = normalizeComposeLine(line)
         if (!normalizedLine) continue
+
+        if (/\bengine started\b/i.test(normalizedLine)) awaitingEnginePid = true
+        else if (awaitingEnginePid) {
+          const pidMatch = normalizedLine.match(/^pid:\s*(\d+)$/i)
+          if (pidMatch) {
+            this.engineProcessGroupId = Number(pidMatch[1])
+            awaitingEnginePid = false
+          }
+        }
 
         if (upOnStart && !progress.completed && !progress.failed) {
           if (/\bup:\s+(?:\d+\s+of\s+\d+\s+changed|nothing\s+to\s+do)\b/i.test(normalizedLine)) {
@@ -259,7 +311,9 @@ export class ComposeManager {
 
     this.process = spawn(binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
+      // A dedicated process group lets stop() verify and, as a last resort,
+      // terminate compose children that outlive the daemon process.
+      detached: process.platform !== 'win32',
       cwd: workingDir,
       env: {
         ...process.env,
@@ -269,6 +323,11 @@ export class ComposeManager {
         RUST_LOG: logLevel,
       },
     })
+    this.processGroupId = process.platform !== 'win32' ? this.process.pid ?? null : null
+    this.engineProcessGroupId = null
+    this.clearParentExitHandler()
+    this.parentExitHandler = () => this.abort()
+    process.once('exit', this.parentExitHandler)
 
     this.process.stdout?.on('data', (chunk: Buffer) => processOutput('stdout', chunk))
     this.process.stderr?.on('data', (chunk: Buffer) => processOutput('stderr', chunk))
@@ -283,6 +342,11 @@ export class ComposeManager {
         console.info(`[nvent] compose daemon exited (code=${code}, signal=${signal})`)
       }
       this.process = null
+      if (!this.isProcessTreeRunning()) {
+        this.processGroupId = null
+        this.engineProcessGroupId = null
+        this.clearParentExitHandler()
+      }
     })
 
     if (upOnStart && waitForUp) {
@@ -307,34 +371,31 @@ export class ComposeManager {
   }
 
   async stop(): Promise<void> {
-    if (!this.process) return
+    if (!this.process && !this.processGroupId) return
 
-    await new Promise<void>((resolve) => {
-      const proc = this.process
-      if (!proc) {
-        resolve()
-        return
-      }
-      proc.once('exit', () => {
-        this.process = null
-        resolve()
-      })
+    const proc = this.process
+    this.abort()
 
-      try {
-        proc.kill('SIGTERM')
-      }
-      catch {
-        try { proc.kill('SIGKILL') } catch {}
-      }
+    const gracefulDeadline = Date.now() + this.opts.shutdownTimeoutMs
+    while (this.isProcessTreeRunning() && Date.now() < gracefulDeadline) {
+      await sleep(100)
+    }
 
-      setTimeout(() => {
-        if (!this.process) return
-        try {
-          this.process.kill('SIGKILL')
-        }
-        catch {}
-      }, 5000)
-    })
+    if (this.isProcessTreeRunning()) {
+      console.warn(`[nvent] compose did not stop within ${this.opts.shutdownTimeoutMs}ms; terminating remaining processes`)
+      this.signalProcessTrees('SIGKILL')
+      if (!this.processGroupId) proc?.kill('SIGKILL')
+
+      const forceDeadline = Date.now() + 2000
+      while (this.isProcessTreeRunning() && Date.now() < forceDeadline) {
+        await sleep(50)
+      }
+    }
+
+    if (this.process === proc) this.process = null
+    this.processGroupId = null
+    this.engineProcessGroupId = null
+    this.clearParentExitHandler()
   }
 }
 

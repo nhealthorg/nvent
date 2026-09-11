@@ -487,7 +487,12 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                 );
 
                 let active_index = if sequential {
-                    ordered_group_active_index(def, record, node_id.as_str(), FanoutMode::Sequential)
+                    ordered_group_active_index(
+                        def,
+                        record,
+                        node_id.as_str(),
+                        FanoutMode::Sequential,
+                    )
                 } else if batch {
                     ordered_group_active_index(def, record, node_id.as_str(), FanoutMode::Batch)
                 } else {
@@ -781,13 +786,15 @@ mod tests {
             "plan".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "plan-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: Some("List the docs to read for: {{topic}}".to_string()),
@@ -804,13 +811,15 @@ mod tests {
             "read".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "read-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: Some("Read and summarize: {{item}}".to_string()),
@@ -832,13 +841,15 @@ mod tests {
             "synthesize".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "synthesize-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: Some("Synthesize from: {{results}}".to_string()),
@@ -869,6 +880,7 @@ mod tests {
             workflow_trace_id: Some("trace_test".to_string()),
             state_scope_id: Some("run_test".to_string()),
             stream_scope_id: Some("run_test".to_string()),
+            agent_session_id: None,
             step: 0,
             status: RunStatus::Running,
             abort: false,
@@ -1076,10 +1088,8 @@ mod tests {
     #[test]
     fn fanned_uids_preserve_namespaced_node_ids() {
         let mut r = record();
-        r.fanout_src.insert(
-            "playground::process-text".to_string(),
-            2,
-        );
+        r.fanout_src
+            .insert("playground::process-text".to_string(), 2);
 
         assert_eq!(
             fanned_uids(&r, "playground::process-text"),
@@ -1250,7 +1260,9 @@ mod tests {
             "b".to_string(),
             NodeDef {
                 label: None,
-                function: function("fn-b"),
+                function: Some(function("fn-b")),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1266,7 +1278,9 @@ mod tests {
             "c".to_string(),
             NodeDef {
                 label: None,
-                function: function("fn-c"),
+                function: Some(function("fn-c")),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1282,7 +1296,9 @@ mod tests {
             "join".to_string(),
             NodeDef {
                 label: None,
-                function: function("fn-join"),
+                function: Some(function("fn-join")),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: InputFrom::Many(vec!["node:b".to_string(), "node:c".to_string()]),
                     template: None,

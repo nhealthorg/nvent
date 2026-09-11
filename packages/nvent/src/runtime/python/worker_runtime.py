@@ -678,6 +678,22 @@ class _WorkflowScopedContext:
         self.streamScopeId = run_id
         self.state = _WorkflowScopedState(client, run_id, node_uid, fn_id)
         self.stream = _WorkflowScopedStream(client, run_id, node_uid, fn_id)
+        self._client = client
+        self.run_id = run_id
+        self.node_uid = node_uid
+
+    async def agent(self, spec: dict, options: dict = None) -> dict:
+        payload = {
+            "run_id": self.run_id,
+            "node_uid": self.node_uid,
+            "spec": spec,
+        }
+        if options:
+            payload["options"] = options
+        return await self._client.trigger({
+            "function_id": "nworkflow::agent-start",
+            "payload": payload,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +753,12 @@ class WorkflowContext:
             self.workflow = _WorkflowScopedContext(client, self.run_id, self.node_uid, fn_id)
         else:
             self.workflow = None
+
+    async def agent(self, spec: dict, options: dict = None) -> dict:
+        """Spawn an agent task using the iii harness loop."""
+        if not self.workflow:
+            raise RuntimeError("ctx.agent() can only be called within an active workflow run")
+        return await self.workflow.agent(spec, options)
 
     def _get_or_create_group_id(self) -> str:
         """Return stable group ID for this invocation, generating one lazily if needed."""

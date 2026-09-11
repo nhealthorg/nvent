@@ -26,11 +26,16 @@ fn should_persist_result(
     return_type: NodeResultReturnType,
     on_memory_fail: Option<NodeMemoryFailPolicy>,
 ) -> bool {
-    matches!(return_type, NodeResultReturnType::Store | NodeResultReturnType::Stream)
-        || matches!(
-            (return_type, on_memory_fail),
-            (NodeResultReturnType::Memory, Some(NodeMemoryFailPolicy::Store))
+    matches!(
+        return_type,
+        NodeResultReturnType::Store | NodeResultReturnType::Stream
+    ) || matches!(
+        (return_type, on_memory_fail),
+        (
+            NodeResultReturnType::Memory,
+            Some(NodeMemoryFailPolicy::Store)
         )
+    )
 }
 
 pub async fn handle(deps: &Deps, req: NodeResultWriteRequest) -> Result<(), WorkflowError> {
@@ -55,7 +60,11 @@ pub async fn handle(deps: &Deps, req: NodeResultWriteRequest) -> Result<(), Work
         }
     }
 
-    let base_node_id = req.node_uid.split('#').next().unwrap_or(req.node_uid.as_str());
+    let base_node_id = req
+        .node_uid
+        .split('#')
+        .next()
+        .unwrap_or(req.node_uid.as_str());
     let result_policy = state::get_def(&deps.iii, &record.def_ref)
         .await?
         .and_then(|def| def.nodes.get(base_node_id).cloned())
@@ -65,7 +74,9 @@ pub async fn handle(deps: &Deps, req: NodeResultWriteRequest) -> Result<(), Work
         .as_ref()
         .map(|result| result.return_type)
         .unwrap_or(NodeResultReturnType::Memory);
-    let on_memory_fail = result_policy.as_ref().and_then(|result| result.on_memory_fail);
+    let on_memory_fail = result_policy
+        .as_ref()
+        .and_then(|result| result.on_memory_fail);
 
     if should_persist_result(return_type, on_memory_fail) {
         let _ = state::delete_node_result_memory(&req.run_id, &req.node_uid);

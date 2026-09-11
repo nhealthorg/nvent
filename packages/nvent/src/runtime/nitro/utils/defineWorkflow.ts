@@ -76,6 +76,68 @@ function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined
   return undefined
 }
 
+export interface AgentInvocationSpec {
+  prompt?: string
+  input?: unknown
+  message?: string
+  agent?: string | {
+    id?: string
+    profile?: string
+    model?: string
+    systemPrompt?: string
+    display?: {
+      name?: string
+      icon?: 'agent' | 'code' | 'search' | 'terminal' | 'database' | 'test' | 'review' | 'docs' | 'design'
+      color?: 'neutral' | 'blue' | 'purple' | 'teal' | 'green' | 'amber' | 'rose'
+    }
+  }
+  task?: {
+    title?: string
+    description?: string
+    context?: Record<string, unknown>
+  }
+}
+
+export interface AgentRuntimeOptions {
+  model?: string
+  provider?: string
+  folder?: string
+  maxTurns?: number
+  timeoutMs?: number
+  functions?: {
+    allow?: string[]
+    deny?: string[]
+  }
+  skills?: string[]
+  systemPrompt?: string
+  systemPromptStrategy?: 'enrich' | 'override'
+  stream?: {
+    enabled?: boolean
+  }
+  result?: {
+    returnType?: 'memory' | 'store'
+    onMemoryFail?: 'store' | 'error'
+  }
+}
+
+export interface AgentResult {
+  status: 'completed' | 'failed' | 'cancelled'
+  sessionId: string
+  turnId?: string
+  output?: unknown
+  result?: unknown
+  error?: string
+  trace?: {
+    runId?: string
+    turnId?: string
+    parentSessionId?: string
+  }
+  stream?: {
+    sessionId: string
+    name: string
+  }
+}
+
 export interface WorkflowContext {
   /**
    * Low-level node definition (full control over spec)
@@ -102,8 +164,27 @@ export interface WorkflowContext {
       onMemoryFail?: 'store' | 'error'
     }
     agent?: any
+    agentOptions?: any
     executor?: any
   }) => Promise<T>
+
+  /**
+   * Run an agent task using the iii harness loop.
+   *
+   * @param spec - Agent invocation specification (prompt, input, agent profile/display, task title)
+  * @param options - Agent runtime options (model/provider, folder, functions allow/deny, skills, limits)
+   *
+   * @example
+   * const result = await ctx.agent({
+   *   prompt: 'Summarize the report concisely.',
+   *   input: processedData,
+   *   agent: 'worker-builder'
+   * }, {
+   *   model: 'claude-sonnet-4',
+  *   folder: '/workspace/project'
+   * })
+   */
+  agent: <T = AgentResult>(spec: AgentInvocationSpec, options?: AgentRuntimeOptions) => Promise<T>
   
   /**
    * High-level helper: call a function with automatic input mapping.
@@ -833,7 +914,8 @@ export function defineWorkflow<
 
           // Handle executor
           if (spec.agent) {
-            nodeDef.agent = typeof spec.agent === 'string' ? { model: spec.agent } : spec.agent
+            nodeDef.agent = spec.agent
+            if (spec.agentOptions) nodeDef.agentOptions = spec.agentOptions
           } else if (spec.function) {
             const fnSpec = typeof spec.function === 'string' ? { id: spec.function } : spec.function
 
@@ -889,6 +971,19 @@ export function defineWorkflow<
                 }
               : {}),
           })
+        },
+
+        agent: async <T = AgentResult>(spec: AgentInvocationSpec, options?: AgentRuntimeOptions): Promise<T> => {
+          const rawId = spec.task?.title || (typeof spec.agent === 'string' ? spec.agent : spec.agent?.id) || 'agent'
+          const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(rawId))
+
+          return ctx.node(nodeId, {
+            label: spec.task?.title ?? (typeof spec.agent === 'string' ? spec.agent : spec.agent?.display?.name ?? 'Agent'),
+            agent: spec,
+            agentOptions: options,
+            input: spec.input ?? createWorkflowValueRef('run_input', 'run_input'),
+            result: options?.result,
+          }) as any
         },
 
         var: async <T = any>(key: string, value: any, options?: { label?: string }): Promise<T> => {

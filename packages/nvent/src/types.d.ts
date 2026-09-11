@@ -55,6 +55,8 @@ export interface NventComposeOptions {
   waitForUp?: boolean
   /** Timeout for compose up completion when waitForUp=true. Default: 120000 */
   upTimeoutMs?: number
+  /** Timeout for graceful compose and worker shutdown. Default: 30000 */
+  shutdownTimeoutMs?: number
   /**
    * Optional explicit package versions per compose worker container.
    * These are independent from `iii.version` and only applied when set.
@@ -67,6 +69,13 @@ export interface NventComposeOptions {
     http?: string
     /** Package version for iii ADE UI container. */
     ade?: string
+    /** Package version for iii harness agent orchestrator container. */
+    harness?: string
+    llmRouter?: string
+    contextManager?: string
+    sessionManager?: string
+    iiiDirectory?: string
+    shell?: string
   }
   /** Workflow worker source type in compose. Default: 'path' */
   workflowWorkerSource?: 'path' | 'package'
@@ -272,6 +281,8 @@ export interface NventIiiOptions {
         sweepExpression?: string
         /** RPC dispatch timeout for workflow worker state/trigger calls (ms). */
         dispatchTimeoutMs?: number
+        /** RPC timeout for best-effort cancellation and deletion cleanup (ms). */
+        cleanupTimeoutMs?: number
         /** Maximum retry attempts per workflow node before fail-out. */
         maxNodeRetries?: number
         /** Retention window for terminal workflow runs (ms). */
@@ -297,6 +308,59 @@ export interface NventIiiOptions {
       host?: string
       /** Enable the Flow visualization page */
       flow?: boolean
+    }
+    /**
+     * Additional custom or iii registry workers to compose in worker-compose.yaml.
+     * Example:
+     * workers: {
+     *   'llm-router': { worker: 'package://api.workers.iii.dev/llm-router', version: '1.4.19' },
+     *   'custom-worker': { worker: 'path://./workers/my-worker' }
+     * }
+     */
+    workers?: Record<string, {
+      worker: string
+      version?: string
+      config_name?: string
+      config_override?: Record<string, unknown>
+      working_dir?: string
+      start_after?: string[]
+      env_file?: string[]
+      scripts?: {
+        pre_run?: string
+        run?: string
+        post_run?: string
+      }
+      startup_timeout?: string
+      stop_timeout?: string
+      [key: string]: unknown
+    }>
+    /** Alias for `workers` */
+    containers?: Record<string, {
+      worker: string
+      version?: string
+      config_name?: string
+      config_override?: Record<string, unknown>
+      working_dir?: string
+      start_after?: string[]
+      env_file?: string[]
+      scripts?: {
+        pre_run?: string
+        run?: string
+        post_run?: string
+      }
+      startup_timeout?: string
+      stop_timeout?: string
+      [key: string]: unknown
+    }>
+    /**
+     * Enable or configure the iii harness agent loop container.
+     * Enabled by default (true) for nworkflow agent integration.
+     */
+    harness?: boolean | {
+      /** Package version for harness. Default: 'latest' */
+      version?: string
+      /** Config override for harness worker container. */
+      config?: Record<string, unknown>
     }
     /** PubSub worker — topic-based event fanout across functions. */
     pubsub?: {

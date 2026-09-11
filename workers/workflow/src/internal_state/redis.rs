@@ -12,7 +12,9 @@ use crate::internal_state::{
     run_matches_workflow_filter, ListRunsFilter, WorkflowInternalStateStore,
 };
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
-use crate::types::{QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord};
+use crate::types::{
+    AgentTaskRecord, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+};
 
 pub struct RedisWorkflowInternalStateStore {
     client: Option<redis::Client>,
@@ -126,6 +128,18 @@ impl RedisWorkflowInternalStateStore {
             sanitize_segment(run_id),
             sanitize_segment(node_uid)
         )
+    }
+
+    fn agent_task_key(&self, task_id: &str) -> String {
+        format!("nvent:wf:agent_task:{task_id}")
+    }
+
+    fn agent_session_key(&self, session_id: &str) -> String {
+        format!("nvent:wf:agent_session:{session_id}")
+    }
+
+    fn run_agent_tasks_key(&self, run_id: &str) -> String {
+        format!("nvent:wf:run:{run_id}:agent_tasks")
     }
 
     fn run_log_key(&self, run_id: &str) -> String {
@@ -830,14 +844,14 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         }
 
         let mut conn = self.conn().await?;
-        let raw: Option<String> = conn
-            .get(self.fanout_key(run_id, node_id))
-            .await
-            .map_err(|err| {
-                WorkflowError::State(format!(
-                    "redis get fanout items failed for {run_id}/{node_id}: {err}"
-                ))
-            })?;
+        let raw: Option<String> =
+            conn.get(self.fanout_key(run_id, node_id))
+                .await
+                .map_err(|err| {
+                    WorkflowError::State(format!(
+                        "redis get fanout items failed for {run_id}/{node_id}: {err}"
+                    ))
+                })?;
 
         match raw {
             Some(json) => Ok(Some(
@@ -1036,6 +1050,138 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                     "redis delete node result failed for {run_id}/{node_uid}: {err}"
                 ))
             })
+    }
+
+    async fn put_agent_task(&self, task: &AgentTaskRecord) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.put_agent_task(task).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let payload = serde_json::to_string(task).map_err(WorkflowError::Serde)?;
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("SET")
+            .arg(self.agent_task_key(&task.task_id))
+            .arg(&payload)
+            .ignore()
+            .cmd("SET")
+            .arg(self.agent_session_key(&task.agent_session_id))
+            .arg(&task.task_id)
+            .ignore()
+            .cmd("SADD")
+            .arg(self.run_agent_tasks_key(&task.run_id))
+            .arg(&task.task_id)
+            .ignore();
+
+        let _: () = pipe.query_async(&mut conn).await.map_err(|err| {
+            WorkflowError::State(format!(
+                "redis put agent task failed for {}: {err}",
+                task.task_id
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    async fn get_agent_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<AgentTaskRecord>, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.get_agent_task(task_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let raw: Option<String> = conn
+            .get(self.agent_task_key(task_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!("redis get agent task failed for {task_id}: {err}"))
+            })?;
+
+        match raw {
+            Some(json_str) => {
+                let task = serde_json::from_str(&json_str).map_err(WorkflowError::Serde)?;
+                Ok(Some(task))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_agent_task_by_session(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<Option<AgentTaskRecord>, WorkflowError> {
+        if !self.has_redis() {
+            return self
+                .fallback
+                .get_agent_task_by_session(agent_session_id)
+                .await;
+        }
+
+        let mut conn = self.conn().await?;
+        let task_id: Option<String> = conn
+            .get(self.agent_session_key(agent_session_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis get agent session key failed for {agent_session_id}: {err}"
+                ))
+            })?;
+
+        if let Some(task_id) = task_id {
+            self.get_agent_task(&task_id).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn list_agent_tasks_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AgentTaskRecord>, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.list_agent_tasks_for_run(run_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let task_ids: Vec<String> = conn
+            .smembers(self.run_agent_tasks_key(run_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis smembers agent tasks failed for {run_id}: {err}"
+                ))
+            })?;
+
+        let mut tasks = Vec::new();
+        for task_id in task_ids {
+            if let Some(task) = self.get_agent_task(&task_id).await? {
+                tasks.push(task);
+            }
+        }
+
+        Ok(tasks)
+    }
+
+    async fn delete_agent_tasks_for_run(&self, run_id: &str) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.delete_agent_tasks_for_run(run_id).await;
+        }
+
+        let tasks = self.list_agent_tasks_for_run(run_id).await?;
+        let mut conn = self.conn().await?;
+
+        for task in &tasks {
+            let _ = conn.del::<_, ()>(self.agent_task_key(&task.task_id)).await;
+            let _ = conn
+                .del::<_, ()>(self.agent_session_key(&task.agent_session_id))
+                .await;
+        }
+        let _ = conn.del::<_, ()>(self.run_agent_tasks_key(run_id)).await;
+
+        Ok(())
     }
 
     async fn put_run_log(

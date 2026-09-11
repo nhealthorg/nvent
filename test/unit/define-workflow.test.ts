@@ -37,6 +37,41 @@ describe('defineWorkflow compilation', () => {
     runtimeConfigMock.nvent.iii.namespace.map.workflows = 'default'
   })
 
+  it('preserves disabled agent message streaming in the workflow plan', async () => {
+    const workflow = defineWorkflow({
+      name: 'result-only-agent',
+      async handler(_input, ctx) {
+        return ctx.agent({ prompt: 'Return only the final answer.' }, {
+          stream: { enabled: false },
+          result: { returnType: 'memory' },
+        })
+      },
+    })
+
+    const plan = await workflow.compile({})
+
+    expect(plan.nodes.var_agent.agentOptions.stream).toEqual({ enabled: false })
+    expect(plan.nodes.var_agent.result).toEqual({ returnType: 'memory' })
+  })
+
+  it('preserves harness provider and folder options in the workflow plan', async () => {
+    const workflow = defineWorkflow({
+      name: 'folder-agent',
+      async handler(_input, ctx) {
+        return ctx.agent({ prompt: 'Review this project.' }, {
+          model: 'test-model',
+          provider: 'test-provider',
+          folder: '/workspace/project',
+        })
+      },
+    })
+
+    const plan = await workflow.compile({})
+
+    expect(plan.nodes.var_agent.agentOptions.provider).toBe('test-provider')
+    expect(plan.nodes.var_agent.agentOptions.folder).toBe('/workspace/project')
+  })
+
   it('keeps control-flow deps separate from older data refs after a parallel block', async () => {
     const workflow = defineWorkflow({
       name: 'multi-step',

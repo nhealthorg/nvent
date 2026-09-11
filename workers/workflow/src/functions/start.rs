@@ -95,6 +95,8 @@ const ALLOWED_DEF_KEYS: &[&str] = &[
 const ALLOWED_NODE_KEYS: &[&str] = &[
     "label",
     "function",
+    "agent",
+    "agentOptions",
     "input",
     "depends_on",
     "fanout",
@@ -217,9 +219,7 @@ fn collect_request_problems(v: &Value) -> Vec<String> {
                         .map(|v| matches!(v, "store" | "error"))
                         .unwrap_or(false);
                     if !valid {
-                        p.push(
-                            "inputPolicy.onMemoryFail must be one of: store, error".to_string(),
-                        );
+                        p.push("inputPolicy.onMemoryFail must be one of: store, error".to_string());
                     }
                 }
             }
@@ -317,6 +317,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
     }
 
     let has_function = n.contains_key("function");
+    let has_agent = n.contains_key("agent");
 
     if has_function {
         match n.get("function") {
@@ -341,8 +342,8 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             )),
             None => unreachable!(),
         }
-    } else {
-        p.push(format!("node `{id}`: missing `function`"));
+    } else if !has_agent {
+        p.push(format!("node `{id}`: missing `function` or `agent`"));
     }
 
     let has_input = n.get("input").map(|x| !x.is_null()).unwrap_or(false);
@@ -680,7 +681,7 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     }
 
     for (node_id, node) in &def.nodes {
-        if node.function.id.trim().is_empty() {
+        if node.effective_function().id.trim().is_empty() {
             return Err(WorkflowError::InvalidDef(format!(
                 "node '{}' has an empty function.id",
                 node_id
@@ -968,6 +969,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         workflow_trace_id: Some(new_trace_id()),
         state_scope_id: Some(refs.state_scope_id),
         stream_scope_id: Some(refs.stream_scope_id),
+        agent_session_id: None,
         step: 0,
         status: RunStatus::Running,
         abort: false,
@@ -1032,13 +1034,15 @@ mod tests {
     fn make_node(function_id: &str, fanout_over: Option<&str>, input_from: InputFrom) -> NodeDef {
         NodeDef {
             label: None,
-            function: FunctionSpec {
+            function: Some(FunctionSpec {
                 id: function_id.to_string(),
                 timeout_ms: None,
                 queue: None,
                 engine_retry: None,
                 runtime: None,
-            },
+            }),
+            agent: None,
+            agent_options: None,
             input: InputSpec {
                 from: input_from,
                 template: None,
@@ -1143,10 +1147,12 @@ mod tests {
             on_memory_fail: Some(NodeMemoryFailPolicy::Store),
         })));
 
-        assert!(!workflow_input_uses_persistent_store(Some(&NodeInputSpec {
-            return_type: NodeInputReturnType::Memory,
-            on_memory_fail: Some(NodeMemoryFailPolicy::Error),
-        })));
+        assert!(!workflow_input_uses_persistent_store(Some(
+            &NodeInputSpec {
+                return_type: NodeInputReturnType::Memory,
+                on_memory_fail: Some(NodeMemoryFailPolicy::Error),
+            }
+        )));
     }
 
     #[test]
@@ -1255,7 +1261,9 @@ mod tests {
 
         let problems = collect_def_problems(&payload);
         assert!(
-            problems.iter().all(|p| !p.contains("fanout.batchSize") && !p.contains("fanout.mode")),
+            problems
+                .iter()
+                .all(|p| !p.contains("fanout.batchSize") && !p.contains("fanout.mode")),
             "fanout.mode=batch with batchSize should be accepted"
         );
     }
@@ -1365,7 +1373,13 @@ mod tests {
     #[test]
     fn rejects_missing_function_id() {
         let mut def = well_formed_def();
-        def.nodes.get_mut("plan").unwrap().function.id = "".to_string();
+        def.nodes
+            .get_mut("plan")
+            .unwrap()
+            .function
+            .as_mut()
+            .unwrap()
+            .id = "".to_string();
         assert!(
             validate_def(&def).is_err(),
             "expected Err for empty function id, got Ok"

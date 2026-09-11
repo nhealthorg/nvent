@@ -95,28 +95,46 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
     }
 
     const fn = (node as any).function
-    if (!fn || typeof fn !== 'object' || Array.isArray(fn)) {
-      issues.push({
-        path: `definition.nodes.${nodeId}.function`,
-        message: 'function must be an object',
-        value: fn,
-      })
-    } else {
-      const functionId = (fn as any).id
-      if (typeof functionId !== 'string' || functionId.length === 0) {
-        issues.push({
-          path: `definition.nodes.${nodeId}.function.id`,
-          message: 'function.id must be a non-empty string',
-          value: functionId,
-        })
-      }
+    const agent = (node as any).agent
 
-      const queue = (fn as any).queue
-      if (queue != null && typeof queue !== 'string') {
+    if (!fn && !agent) {
+      issues.push({
+        path: `definition.nodes.${nodeId}`,
+        message: 'node definition must specify either function or agent',
+        value: node,
+      })
+    } else if (fn) {
+      if (typeof fn !== 'object' || Array.isArray(fn)) {
         issues.push({
-          path: `definition.nodes.${nodeId}.function.queue`,
-          message: 'function.queue must be a string when provided',
-          value: queue,
+          path: `definition.nodes.${nodeId}.function`,
+          message: 'function must be an object',
+          value: fn,
+        })
+      } else {
+        const functionId = (fn as any).id
+        if (typeof functionId !== 'string' || functionId.length === 0) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.function.id`,
+            message: 'function.id must be a non-empty string',
+            value: functionId,
+          })
+        }
+
+        const queue = (fn as any).queue
+        if (queue != null && typeof queue !== 'string') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.function.queue`,
+            message: 'function.queue must be a string when provided',
+            value: queue,
+          })
+        }
+      }
+    } else if (agent) {
+      if (typeof agent !== 'object' || Array.isArray(agent)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.agent`,
+          message: 'agent must be an object',
+          value: agent,
         })
       }
     }
@@ -322,11 +340,13 @@ export function summarizeWorkflowDefinitionShape(plan: WorkflowPlanLike) {
     const rec = node as any
     const input = rec?.input
     const functionSpec = rec?.function
+    const agentSpec = rec?.agent
     const fanout = rec?.fanout
 
     return {
       nodeId,
-      functionIdType: typeof functionSpec?.id,
+      isAgent: Boolean(agentSpec),
+      functionIdType: functionSpec ? typeof functionSpec?.id : undefined,
       functionId: functionSpec?.id,
       inputFromType: Array.isArray(input?.from) ? 'array' : typeof input?.from,
       inputFrom: input?.from,

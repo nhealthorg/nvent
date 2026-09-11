@@ -2,6 +2,7 @@ use iii_sdk::protocol::TriggerRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::error::WorkflowError;
 use crate::observability::{self, ObservabilityAdapter};
@@ -16,6 +17,35 @@ pub struct StreamPublishRequest {
     pub data: Value,
     #[serde(default)]
     pub node_uid: Option<String>,
+}
+
+pub async fn publish_best_effort(deps: &Deps, requests: Vec<StreamPublishRequest>) {
+    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+
+    for request in requests {
+        let run_id = request.run_id.clone();
+        let event_type = request.stream.clone();
+        match tokio::time::timeout(
+            Duration::from_millis(timeout_ms.max(1)),
+            handle(deps, request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(
+                run_id = %run_id,
+                event_type = %event_type,
+                error = %error,
+                "best-effort stream publication failed"
+            ),
+            Err(_) => tracing::warn!(
+                run_id = %run_id,
+                event_type = %event_type,
+                timeout_ms,
+                "best-effort stream publication timed out"
+            ),
+        }
+    }
 }
 
 pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), WorkflowError> {

@@ -12,7 +12,6 @@ use serde_json::json;
 pub struct RunDeleteRequest {
     pub run_id: String,
 }
-
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunDeleteResponse {
     pub deleted: bool,
@@ -58,17 +57,19 @@ pub async fn delete_run_by_id(
     let was_terminal = record.status.is_terminal();
 
     // Best-effort stop cascade for any still-running harness sessions.
-    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    let timeout_ms = deps.cfg().await.cleanup_timeout_ms;
     let mut stopped_sessions = 0u32;
     for sid in collect_running_sessions(&record.nodes) {
         let stop_res = deps
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "harness::stop".into(),
-                payload: json!({ "session_id": sid }),
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
+            .trigger_bounded(
+                TriggerRequest {
+                    function_id: "harness::stop".into(),
+                    payload: json!({ "session_id": sid }),
+                    action: None,
+                    timeout_ms: None,
+                },
+                timeout_ms,
+            )
             .await;
         if stop_res.is_ok() {
             stopped_sessions += 1;
@@ -87,7 +88,7 @@ pub async fn delete_run_by_id(
     let mut queue_cleanup_errors: BTreeMap<String, String> = BTreeMap::new();
     for rec in &tracked_receipts {
         queue_cleanup_attempted += 1;
-        match cleanup_queue_receipt(deps, &rec.queue, &rec.receipt_id).await {
+        match cleanup_queue_receipt(deps, &rec.queue, &rec.receipt_id, timeout_ms).await {
             Ok(()) => queue_cleanup_succeeded += 1,
             Err(e) => {
                 queue_cleanup_errors.insert(rec.receipt_id.clone(), e);
@@ -116,11 +117,14 @@ pub async fn delete_run_by_id(
     })
 }
 
-async fn cleanup_queue_receipt(deps: &Deps, queue: &str, receipt_id: &str) -> Result<(), String> {
+async fn cleanup_queue_receipt(
+    deps: &Deps,
+    queue: &str,
+    receipt_id: &str,
+    timeout_ms: u64,
+) -> Result<(), String> {
     // Compatibility matrix: queue cleanup surfaces can differ across versions.
     // We try known variants in sequence and accept the first success.
-    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-
     let candidates: [(&str, serde_json::Value); 4] = [
         (
             "iii::queue::discard_message",
@@ -143,13 +147,15 @@ async fn cleanup_queue_receipt(deps: &Deps, queue: &str, receipt_id: &str) -> Re
     let mut last_err = String::new();
     for (function_id, payload) in candidates {
         match deps
-            .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
+            .trigger_bounded(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: None,
+                },
+                timeout_ms,
+            )
             .await
         {
             Ok(_) => return Ok(()),

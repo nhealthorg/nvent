@@ -299,9 +299,11 @@ const props = defineProps<{
 
 const headerClass = computed(() => props.kind === 'entry'
   ? 'px-3 py-2 bg-gradient-to-br from-emerald-800 to-emerald-700 text-emerald-50 rounded-t'
-  : props.data?.isLoop
-    ? 'px-3 py-2 bg-gradient-to-br from-cyan-800 to-sky-700 text-cyan-50 rounded-t'
-    : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
+  : props.data?.isAgent || props.data?.agent
+    ? 'px-3 py-2 bg-gradient-to-br from-indigo-800 to-purple-700 text-indigo-50 rounded-t'
+    : props.data?.isLoop
+      ? 'px-3 py-2 bg-gradient-to-br from-cyan-800 to-sky-700 text-cyan-50 rounded-t'
+      : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
 
 const displayName = computed(() => {
   const label = typeof props.data?.label === 'string' ? props.data.label.trim() : ''
@@ -324,6 +326,9 @@ const displayName = computed(() => {
 })
 
 const runnerIcon = computed(() => {
+  if (props.data?.isAgent || props.data?.agent) {
+    return 'i-heroicons-sparkles-20-solid'
+  }
   // Use explicit runtime field if available
   const runtime = props.data?.runtime
   if (runtime === 'python') {

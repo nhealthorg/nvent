@@ -20,6 +20,11 @@ pub struct WorkerConfig {
     #[serde(default = "default_dispatch_timeout_ms")]
     pub dispatch_timeout_ms: u64,
 
+    /// RPC timeout for best-effort cancellation and deletion cleanup.
+    /// Milliseconds.
+    #[serde(default = "default_cleanup_timeout_ms")]
+    pub cleanup_timeout_ms: u64,
+
     /// Maximum number of retry attempts per node before it is marked failed
     /// after a timeout or a reported function error. Hot-applies via
     /// config-cell swap (not structural).
@@ -81,10 +86,13 @@ fn default_pending_timeout_ms() -> u64 {
     300_000
 }
 fn default_sweep_expression() -> String {
-    "0 * * * * *".to_string()
+    "0 */5 * * * *".to_string()
 }
 fn default_dispatch_timeout_ms() -> u64 {
     30_000
+}
+fn default_cleanup_timeout_ms() -> u64 {
+    3_000
 }
 fn default_max_node_retries() -> u32 {
     3
@@ -99,7 +107,7 @@ fn default_internal_state_backend() -> String {
     "redis".to_string()
 }
 fn default_internal_state_file_dir() -> String {
-    ".data/workflow-store".to_string()
+    "data/workflow-store".to_string()
 }
 fn default_redis_global_log_trace_index() -> bool {
     true
@@ -120,6 +128,7 @@ impl Default for WorkerConfig {
             default_pending_timeout_ms: default_pending_timeout_ms(),
             sweep_expression: default_sweep_expression(),
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
+            cleanup_timeout_ms: default_cleanup_timeout_ms(),
             max_node_retries: default_max_node_retries(),
             run_retention_ms: default_run_retention_ms(),
             observability_retention_ms: default_observability_retention_ms(),
@@ -170,17 +179,26 @@ mod tests {
         let cfg = WorkerConfig::from_json(&json!({})).expect("parse ok");
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.default_pending_timeout_ms, 300_000);
-        assert_eq!(cfg.sweep_expression, "0 * * * * *");
+        assert_eq!(cfg.sweep_expression, "0 */5 * * * *");
         assert_eq!(cfg.dispatch_timeout_ms, 30_000);
+        assert_eq!(cfg.cleanup_timeout_ms, 3_000);
         assert_eq!(cfg.max_node_retries, 3);
         assert_eq!(cfg.run_retention_ms, 30 * 24 * 60 * 60 * 1000);
         assert_eq!(cfg.observability_retention_ms, 30 * 24 * 60 * 60 * 1000);
         assert_eq!(cfg.internal_state_backend, "redis");
         assert_eq!(cfg.internal_state_redis_url, None);
-        assert_eq!(cfg.internal_state_file_dir, ".data/workflow-store");
+        assert_eq!(cfg.internal_state_file_dir, "data/workflow-store");
         assert!(cfg.redis_global_log_trace_index);
         assert_eq!(cfg.idempotency_ttl_ms, 30 * 24 * 60 * 60 * 1000);
         assert_eq!(cfg.var_checkpoint_start_version, 25);
         assert_eq!(cfg.var_checkpoint_every_versions, 25);
+    }
+
+    #[test]
+    fn parses_custom_cleanup_timeout() {
+        let cfg = WorkerConfig::from_json(&json!({ "cleanup_timeout_ms": 750 }))
+            .expect("parse custom cleanup timeout");
+
+        assert_eq!(cfg.cleanup_timeout_ms, 750);
     }
 }

@@ -85,6 +85,19 @@
             <span>Var</span>
           </UBadge>
           <UBadge
+            v-if="item.step.isAgent || item.step.agent"
+            size="xs"
+            color="primary"
+            variant="soft"
+            class="flex items-center gap-1"
+          >
+            <UIcon
+              name="i-heroicons-sparkles-20-solid"
+              class="w-3 h-3"
+            />
+            <span>Agent</span>
+          </UBadge>
+          <UBadge
             v-if="item.step.isLoopGroup"
             size="xs"
             :color="getLoopModeColor(item.step.loopMode)"

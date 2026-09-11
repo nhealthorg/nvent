@@ -102,6 +102,9 @@ export default defineNuxtModule<NventIiiOptions>({
     const skipPython = opts.functions?.python?.skip ?? false
     const adeCfg = typeof iiiOpts.ade === 'object' ? iiiOpts.ade : {}
 
+    const harnessCfg = typeof iiiOpts.harness === 'object' ? iiiOpts.harness : {}
+    const includeHarness = iiiOpts.harness !== false
+
     const configuredWsPort = iiiOpts.wsPort
     const configuredHttpPort = iiiOpts.httpPort
     const configuredStreamPort = iiiOpts.streamPort
@@ -130,6 +133,7 @@ export default defineNuxtModule<NventIiiOptions>({
     const composeCompactLogs = composeOpts.compactLogs ?? true
     const composeWaitForUp = composeOpts.waitForUp ?? true
     const composeUpTimeoutMs = composeOpts.upTimeoutMs ?? 120_000
+    const composeShutdownTimeoutMs = composeOpts.shutdownTimeoutMs ?? 30_000
     const composeWorkflowWorkerSource = composeOpts.workflowWorkerSource ?? 'path'
     const composeFileName = (composeOpts.file ?? 'worker-compose.yaml').trim() || 'worker-compose.yaml'
 
@@ -217,13 +221,20 @@ export default defineNuxtModule<NventIiiOptions>({
     }, mergedQueues.queueConfigs)
     // Compose source-of-truth for iii 0.23+ runtime orchestration.
     mkdirSync(nventDir, { recursive: true })
-    // Remove legacy layout artifacts from old engine-first paths and stale dev configs.
+    // Remove legacy layout artifacts from old engine-first paths.
     rmSync(join(nventDir, 'compose'), { recursive: true, force: true })
     rmSync(join(nventDir, 'config.yaml'), { force: true, recursive: false })
     rmSync(join(nventDir, 'iii-config.yaml'), { force: true, recursive: false })
-    if (nuxt.options.dev) {
-      rmSync(join(nventDir, 'config'), { recursive: true, force: true })
-    }
+
+    const customWorkers = {
+      ...(iiiOpts.workers ?? {}),
+      ...(iiiOpts.containers ?? {}),
+    } as Record<string, Record<string, unknown>>
+
+    const composeFilePath = join(nventDir, composeFileName)
+    const existingYamlContent = existsSync(composeFilePath)
+      ? readFileSync(composeFilePath, 'utf-8')
+      : undefined
 
     const buildComposeYaml = (includeAde: boolean) => generateWorkerComposeYaml({
       nventVersion: meta.version,
@@ -247,12 +258,17 @@ export default defineNuxtModule<NventIiiOptions>({
       includeHttp: engineCfg.modules.httpFunctions === true,
       includeStream: engineCfg.modules.stream !== false,
       includeAde,
+      includeHarness,
       startupTimeout: composeEngineAdvanced.startupTimeout,
       stopTimeout: composeEngineAdvanced.stopTimeout,
       engineWorkerOverrides: composeEngineAdvanced.workers,
       packageVersions: composeOpts.packageVersions,
       adeVersion: adeCfg.version,
       adeConfig: iiiOpts.ade ? { http_port: resolvedAdePort } : undefined,
+      harnessVersion: harnessCfg.version,
+      harnessConfig: harnessCfg.config,
+      customWorkers,
+      existingYamlContent,
       workflowWorker: {
         source: composeWorkflowWorkerSource,
         containerName: composeOpts.workflowWorkerContainerName,
@@ -264,7 +280,6 @@ export default defineNuxtModule<NventIiiOptions>({
 
     let composeAdeEnabled = !!iiiOpts.ade
     let composeYaml = buildComposeYaml(composeAdeEnabled)
-    const composeFilePath = join(nventDir, composeFileName)
     writeFileSync(composeFilePath, composeYaml, 'utf-8')
 
     if (composeWorkflowWorkerSource === 'path') {
@@ -313,6 +328,7 @@ export default defineNuxtModule<NventIiiOptions>({
           projectNamespace: composeProjectNamespace,
           file: composeFileName,
           workflowWorkerSource: composeWorkflowWorkerSource,
+          shutdownTimeoutMs: composeShutdownTimeoutMs,
           workerComposeYaml: composeYaml,
         },
         browserAuthFunctionId: iiiOpts.workerManager?.rbac?.authFunctionId ?? 'nvent::browser::auth',
@@ -597,11 +613,12 @@ export default defineNuxtModule<NventIiiOptions>({
               daemonNamespace: composeDaemonNamespace,
               upOnStart: composeUpOnStart,
               composeStateDir: join(nventDir, '.compose-state'),
-              resetNamespaceStateOnStart: true,
+              resetNamespaceStateOnStart: false,
               logLevel: composeLogLevel,
               compactLogs: composeCompactLogs,
               waitForUp: composeWaitForUp,
               upTimeoutMs: composeUpTimeoutMs,
+              shutdownTimeoutMs: composeShutdownTimeoutMs,
               workingDir: nventDir,
             })
             await compose.start()

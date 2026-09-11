@@ -215,6 +215,192 @@ pub struct OutputRef {
     pub from: String,
 }
 
+// ---------------------------------------------------------------------------
+// Agent types (harness integration)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentDisplaySpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AgentProfileSpec {
+    Name(String),
+    Full {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "systemPrompt"
+        )]
+        system_prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<AgentDisplaySpec>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTaskSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentInvocationSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentProfileSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<AgentTaskSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentFunctionPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentStreamSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentRuntimeOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxTurns")]
+    pub max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeoutMs")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub functions: Option<AgentFunctionPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "systemPrompt"
+    )]
+    pub system_prompt: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "systemPromptStrategy"
+    )]
+    pub system_prompt_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<AgentStreamSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<NodeResultSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentTaskStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentTaskRecord {
+    pub task_id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_uid: String,
+    pub workflow_session_id: String,
+    pub agent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_stream_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    pub status: AgentTaskStatus,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub options_hash: String,
+    pub stream_name: String,
+    pub stream_scope_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentResultTrace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentResultStream {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentResult {
+    pub status: AgentTaskStatus,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<AgentResultTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<AgentResultStream>,
+}
+
 /// One agent in the DAG, plus its wiring (inputs, dependency edges, optional
 /// fan-out).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -224,7 +410,18 @@ pub struct NodeDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Function to execute for this node.
-    pub function: FunctionSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionSpec>,
+    /// Declarative agent specification when this node runs an agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentInvocationSpec>,
+    /// Declarative agent runtime options when this node runs an agent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "agentOptions"
+    )]
+    pub agent_options: Option<AgentRuntimeOptions>,
     pub input: InputSpec,
     /// Prerequisite node ids. This node fires only once ALL of them are Done —
     /// this is the barrier / join. Empty means it can start immediately.
@@ -238,8 +435,36 @@ pub struct NodeDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<NodeResultSpec>,
     /// Optional per-node input policy. Defaults to `memory` when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "inputPolicy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "inputPolicy"
+    )]
     pub input_policy: Option<NodeInputSpec>,
+}
+
+impl NodeDef {
+    pub fn effective_function(&self) -> FunctionSpec {
+        if let Some(f) = &self.function {
+            f.clone()
+        } else if self.agent.is_some() {
+            FunctionSpec {
+                id: "harness::spawn".to_string(),
+                timeout_ms: None,
+                queue: None,
+                engine_retry: None,
+                runtime: Some(FunctionRuntime::Unknown),
+            }
+        } else {
+            FunctionSpec {
+                id: "".to_string(),
+                timeout_ms: None,
+                queue: None,
+                engine_retry: None,
+                runtime: None,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -350,7 +575,11 @@ pub struct FanoutSpec {
     /// Fanout item transport/storage policy.
     /// - `memory` (default): keep fanout items in process memory only.
     /// - `store`: persist fanout items in internal state store.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "itemReturnType")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "itemReturnType"
+    )]
     pub item_return_type: Option<NodeInputReturnType>,
 }
 
@@ -433,6 +662,9 @@ pub struct WorkflowRunRecord {
     /// iii stream group identifier used by runtime helpers and cleanup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_scope_id: Option<String>,
+    /// Harness child session shared by all agent turns in this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
     /// Monotonic dequeue guard
     pub step: u64,
     pub status: RunStatus,
@@ -566,6 +798,7 @@ mod tests {
             workflow_trace_id: Some("trace_abc123".to_string()),
             state_scope_id: Some("run_abc123".to_string()),
             stream_scope_id: Some("run_abc123".to_string()),
+            agent_session_id: Some("s_agent_abc123".to_string()),
             step: 3,
             status: RunStatus::AwaitingNodes,
             abort: false,

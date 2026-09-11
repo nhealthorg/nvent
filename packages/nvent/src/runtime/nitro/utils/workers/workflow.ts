@@ -48,6 +48,7 @@ export interface WorkflowWorkerBootConfig {
     defaultPendingTimeoutMs?: number
     sweepExpression?: string
     dispatchTimeoutMs?: number
+    cleanupTimeoutMs?: number
     maxNodeRetries?: number
     runRetentionMs?: number
     observabilityRetentionMs?: number
@@ -133,6 +134,9 @@ export class WorkflowWorkerManager {
     }
     if (runtimeConfig?.dispatchTimeoutMs != null) {
       configPayload.dispatch_timeout_ms = runtimeConfig.dispatchTimeoutMs
+    }
+    if (runtimeConfig?.cleanupTimeoutMs != null) {
+      configPayload.cleanup_timeout_ms = runtimeConfig.cleanupTimeoutMs
     }
     if (runtimeConfig?.maxNodeRetries != null) {
       configPayload.max_node_retries = runtimeConfig.maxNodeRetries

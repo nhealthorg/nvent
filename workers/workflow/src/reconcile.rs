@@ -13,7 +13,8 @@ fn effective_max_retries(def: &WorkflowDef, node_uid: &str, fallback: u32) -> u3
     let base_id = node_uid.split('#').next().unwrap_or(node_uid);
     def.nodes
         .get(base_id)
-        .and_then(|n| n.function.engine_retry.as_ref())
+        .map(|n| n.effective_function())
+        .and_then(|f| f.engine_retry)
         .and_then(|r| r.max_attempts)
         .unwrap_or(fallback)
 }
@@ -122,6 +123,7 @@ async fn retry_or_fail_function_node(
     now: i64,
     max_retries: u32,
     results_cache: &mut Option<BTreeMap<String, Value>>,
+    pending_stream_events: &mut Vec<crate::functions::stream_publish::StreamPublishRequest>,
 ) -> Result<(), WorkflowError> {
     let retries = record.nodes.get(uid).map(|cp| cp.retries).unwrap_or(0);
 
@@ -152,6 +154,7 @@ async fn retry_or_fail_function_node(
                 def,
                 uid,
                 results_cache.as_ref().expect("results cache initialized"),
+                pending_stream_events,
             )
             .await?;
         }
@@ -184,6 +187,7 @@ pub async fn reconcile_function_nodes(
     deps: &crate::functions::Deps,
     def: &WorkflowDef,
     record: &mut WorkflowRunRecord,
+    pending_stream_events: &mut Vec<crate::functions::stream_publish::StreamPublishRequest>,
 ) -> Result<(), WorkflowError> {
     // Find Running nodes without session_id (function-based execution)
     let running_functions: Vec<String> = record
@@ -227,6 +231,7 @@ pub async fn reconcile_function_nodes(
                         now,
                         effective_max_retries(def, &uid, default_max_retries),
                         &mut results_cache,
+                        pending_stream_events,
                     )
                     .await?;
                     continue;
@@ -318,13 +323,18 @@ pub async fn reconcile_run(
         // failed the whole tick, and dead-lettered). Log and move on — the node
         // stays Running and is re-polled next tick; the timeout sweep is the backstop.
         let resp = match deps
-            .iii
-            .trigger(iii_sdk::protocol::TriggerRequest {
-                function_id: "harness::status".into(),
-                payload: json!({ "session_id": session_id }),
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
+            .trigger_bounded(
+                iii_sdk::protocol::TriggerRequest {
+                    function_id: "harness::status".into(),
+                    payload: json!({
+                        "session_id": session_id,
+                        "verbose": true,
+                    }),
+                    action: None,
+                    timeout_ms: None,
+                },
+                timeout_ms,
+            )
             .await
         {
             Ok(resp) => resp,
@@ -345,11 +355,12 @@ pub async fn reconcile_run(
             continue;
         }
 
-        // Turn-id guard: skip if the session has been re-seeded
-        let reported_turn_id = resp.get("turn_id").and_then(|v| v.as_str());
-        let expected_str = expected_turn_id.as_deref();
-        if reported_turn_id != expected_str {
-            continue;
+        // Turn-id guard: skip only if an explicit expected turn_id was set and mismatches
+        if let Some(expected) = expected_turn_id.as_deref() {
+            let reported_turn_id = resp.get("turn_id").and_then(|v| v.as_str());
+            if reported_turn_id != Some(expected) {
+                continue;
+            }
         }
 
         let status = resp
@@ -357,14 +368,23 @@ pub async fn reconcile_run(
             .and_then(|v| v.as_str())
             .unwrap_or("running");
 
-        let result = resp.get("result").cloned();
+        let result = resp
+            .get("result")
+            .or_else(|| resp.get("output"))
+            .or_else(|| resp.get("final_result"))
+            .cloned();
         let result_error = resp
             .get("result_error")
+            .or_else(|| resp.get("error"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         match classify_terminal(status, result, result_error) {
-            NodeOutcome::StillRunning => {}
+            NodeOutcome::StillRunning => {
+                if let Some(cp) = record.nodes.get_mut(&uid) {
+                    cp.pending_at = Some(now);
+                }
+            }
             NodeOutcome::Done(res) => {
                 // Persist the result blob
                 state::put_node_result(&deps.iii, &record.run_id, &uid, &res).await?;
@@ -421,13 +441,15 @@ mod tests {
             "step".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "worker::step".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: Some(EngineRetrySpec { max_attempts }),
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,

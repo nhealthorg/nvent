@@ -25,13 +25,15 @@ fn function_node(
 ) -> NodeDef {
     NodeDef {
         label: None,
-        function: FunctionSpec {
+        function: Some(FunctionSpec {
             id: id.to_string(),
             timeout_ms: None,
             queue: None,
             engine_retry: None,
             runtime: None,
-        },
+        }),
+        agent: None,
+        agent_options: None,
         input,
         depends_on,
         fanout,
@@ -159,6 +161,7 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         workflow_trace_id: Some("trace_test".to_string()),
         state_scope_id: Some("run_test".to_string()),
         stream_scope_id: Some("run_test".to_string()),
+        agent_session_id: None,
         step: 0,
         status: RunStatus::Running,
         abort: false,
@@ -435,8 +438,7 @@ fn redelivered_drive_is_stable() {
 
     // The fanout_src snapshot must be frozen (same items).
     assert_eq!(
-        record.fanout_src["read"],
-        2,
+        record.fanout_src["read"], 2,
         "fanout_src must be frozen after first expansion"
     );
 }
@@ -1152,7 +1154,10 @@ fn missing_done_payload_is_treated_as_failure_not_null_flow() {
 
     let first = record.nodes.get("first").expect("first checkpoint");
     assert_eq!(first.state, NodeState::Failed);
-    assert!(first.result_ref.is_none(), "stale result ref must be removed");
+    assert!(
+        first.result_ref.is_none(),
+        "stale result ref must be removed"
+    );
 
     match decide(&def, &record) {
         TickDecision::Finalize(RunStatus::Failed) => {}
@@ -1189,7 +1194,13 @@ fn output_node_result_is_retained_pre_finalize() {
     }
 
     // The completed output result must remain available while workflow is not finalized.
-    let gathered = dag::gather_input(&def, &record, &json!({"text": "Hello"}), "wait-error", &results);
+    let gathered = dag::gather_input(
+        &def,
+        &record,
+        &json!({"text": "Hello"}),
+        "wait-error",
+        &results,
+    );
     assert_eq!(gathered, json!({"ok": true}));
 }
 

@@ -645,6 +645,9 @@ const stepList = computed(() => {
       isLoopLeader: Boolean(group?.nodeIds[0] === id),
       functionId: node?.function?.id,
       isVarStep: node?.function?.id === 'nworkflow::internal-var-set',
+      isAgent: Boolean(node?.agent),
+      agent: node?.agent,
+      agentOptions: node?.agentOptions,
       canInspectResult: Boolean(state?.result) || loopChildResultUids.length > 0,
       loopChildResultUids,
     })

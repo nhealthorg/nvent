@@ -1,13 +1,18 @@
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::WorkerConfig;
 use crate::internal_state::WorkflowInternalStateStore;
 use crate::locks::WorkflowLocks;
 
+pub mod agent;
 pub mod config_get;
 pub mod lifecycle_hooks;
 pub mod list_runs;
@@ -53,6 +58,48 @@ impl Deps {
 
     pub fn now_ms(&self) -> i64 {
         crate::ids::now_ms()
+    }
+
+    pub async fn trigger_bounded(
+        &self,
+        mut request: TriggerRequest,
+        timeout_ms: u64,
+    ) -> Result<Value, String> {
+        request.timeout_ms = Some(timeout_ms);
+        bounded_call(self.iii.trigger(request), timeout_ms).await
+    }
+}
+
+async fn bounded_call<F, T, E>(future: F, timeout_ms: u64) -> Result<T, String>
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(Duration::from_millis(timeout_ms.max(1)), future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err(format!("local RPC timeout after {timeout_ms}ms")),
+    }
+}
+
+#[cfg(test)]
+mod bounded_call_tests {
+    #[tokio::test]
+    async fn never_resolving_remote_call_is_bounded() {
+        let pending = std::future::pending::<Result<(), &str>>();
+        let error = super::bounded_call(pending, 5)
+            .await
+            .expect_err("pending call must time out");
+
+        assert_eq!(error, "local RPC timeout after 5ms");
+    }
+
+    #[tokio::test]
+    async fn timed_out_call_does_not_block_the_next_call() {
+        let _ = super::bounded_call(std::future::pending::<Result<(), &str>>(), 5).await;
+        let result = super::bounded_call(async { Ok::<_, &str>("next") }, 5).await;
+
+        assert_eq!(result.expect("next call completes"), "next");
     }
 }
 
@@ -368,4 +415,95 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(node_completed::NODE_COMPLETED_DESC),
     );
+
+    let d = deps.clone();
+    iii.register_function(
+        agent::AGENT_START_ID,
+        RegisterFunction::new_async(move |req: agent::AgentStartRequest| {
+            let d = d.clone();
+            async move { agent::handle_start(&d, req).await.map_err(Error::from) }
+        })
+        .description("Internal: spawn an agent task via harness for a workflow run."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        agent::AGENT_EVENT_ID,
+        RegisterFunction::new_async(move |payload: agent::AgentEventPayload| {
+            let d = d.clone();
+            async move {
+                agent::handle_agent_event(&d, payload)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Internal: handle and bridge harness agent events to nworkflow stream and wake tick.",
+        ),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        agent::AGENT_MESSAGE_UPDATED_ID,
+        RegisterFunction::new_async(move |payload: agent::AgentMessageUpdatedPayload| {
+            let d = d.clone();
+            async move {
+                agent::handle_agent_message_updated(&d, payload)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Internal: bridge live assistant message revisions to the workflow run stream.",
+        ),
+    );
+
+    let _ = iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
+        trigger_type: "session::message-updated".to_string(),
+        function_id: agent::AGENT_MESSAGE_UPDATED_ID.to_string(),
+        config: serde_json::json!({
+            "roles": ["assistant"],
+            "metadata": { "spawned_by": "agent" }
+        }),
+        metadata: None,
+    });
+
+    let d = deps.clone();
+    iii.register_function(
+        agent::AGENT_MESSAGE_ADDED_ID,
+        RegisterFunction::new_async(move |payload: agent::AgentMessageAddedPayload| {
+            let d = d.clone();
+            async move {
+                agent::handle_agent_message_added(&d, payload)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Internal: bridge appended assistant and function-result messages to the workflow run stream.",
+        ),
+    );
+
+    let _ = iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
+        trigger_type: "session::message-added".to_string(),
+        function_id: agent::AGENT_MESSAGE_ADDED_ID.to_string(),
+        config: serde_json::json!({
+            "roles": ["assistant", "function_result"],
+            "metadata": { "spawned_by": "agent" }
+        }),
+        metadata: None,
+    });
+
+    for trigger_type in [
+        "harness::turn-started",
+        "harness::turn-completed",
+        "harness::message-queued",
+    ] {
+        let _ = iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
+            trigger_type: trigger_type.to_string(),
+            function_id: agent::AGENT_EVENT_ID.to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        });
+    }
 }

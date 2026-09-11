@@ -39,6 +39,10 @@ export default defineNuxtConfig({
         logLevel: 'trace',
       },
       ade: true,
+      harness: true,
+      workers: {
+        // Additional registry or custom workers can be declared directly here
+      },
       logLevel: 'info',
       observability: {
         level: 'warn',

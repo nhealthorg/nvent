@@ -17,7 +17,8 @@ fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallba
     let base_id = node_uid.split('#').next().unwrap_or(node_uid);
     def.nodes
         .get(base_id)
-        .and_then(|n| n.function.engine_retry.as_ref())
+        .map(|n| n.effective_function())
+        .and_then(|f| f.engine_retry)
         .and_then(|r| r.max_attempts)
         .unwrap_or(fallback)
 }
@@ -124,7 +125,16 @@ async fn sweep_one_run(
     now: i64,
 ) -> Result<bool, WorkflowError> {
     // Acquire per-run lock to serialize against concurrent tick deliveries.
-    let _g = deps.locks.guard(run_id).await;
+    let _guard = deps
+        .locks
+        .guard_bounded(run_id, cfg.cleanup_timeout_ms)
+        .await
+        .ok_or_else(|| {
+            WorkflowError::State(format!(
+                "timed out acquiring run lock for sweep after {}ms: {run_id}",
+                cfg.cleanup_timeout_ms
+            ))
+        })?;
 
     // Re-read after acquiring the lock — state may have changed.
     let Some(mut record) = state::get_run(&deps.iii, run_id).await? else {
@@ -151,8 +161,10 @@ async fn sweep_one_run(
     };
 
     // Poll running nodes for completion.
+    let mut pending_stream_events = Vec::new();
     reconcile::reconcile_run(deps, &mut record).await?;
-    reconcile::reconcile_function_nodes(deps, &def, &mut record).await?;
+    reconcile::reconcile_function_nodes(deps, &def, &mut record, &mut pending_stream_events)
+        .await?;
 
     // Timeout sweep: apply timeout_action to each Running checkpoint.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
@@ -175,7 +187,15 @@ async fn sweep_one_run(
                     c.retries = attempt;
                 }
                 crate::telemetry::record_timeout(true);
-                crate::functions::tick::fire_node(deps, &mut record, &def, &uid, &results).await?;
+                crate::functions::tick::fire_node(
+                    deps,
+                    &mut record,
+                    &def,
+                    &uid,
+                    &results,
+                    &mut pending_stream_events,
+                )
+                .await?;
                 timed_out_any = true;
             }
             crate::timeout::TimeoutAction::FailOut => {
@@ -204,8 +224,7 @@ async fn sweep_one_run(
     // Apply full liveness-based memory cleanup in sweep as well, so stalled runs
     // still release transient payloads even when no regular tick progress occurs.
     let detached_result_uids =
-        crate::functions::tick::release_consumed_memory_artifacts(deps, &def, &mut record)
-            .await?;
+        crate::functions::tick::release_consumed_memory_artifacts(deps, &def, &mut record).await?;
 
     state::put_run(&deps.iii, &record).await?;
 
@@ -220,9 +239,13 @@ async fn sweep_one_run(
         }
     }
 
-    // Re-drive: enqueue the next tick so the run can advance past the
-    // newly-resolved nodes.
-    if let Err(e) = start::enqueue_tick(&deps.iii, &record.run_id, record.step + 1).await {
+    let next_step = record.step + 1;
+    drop(_guard);
+    crate::functions::stream_publish::publish_best_effort(deps, pending_stream_events).await;
+
+    // Re-drive after releasing the run lock so stream registration and the next
+    // tick cannot contend with this sweep invocation.
+    if let Err(e) = start::enqueue_tick(&deps.iii, &record.run_id, next_step).await {
         tracing::warn!(run_id = %record.run_id, error = %e, "sweep: re-enqueue tick failed");
     }
 

@@ -7,7 +7,10 @@ use serde_json::Value;
 use crate::{
     error::WorkflowError,
     state,
-    types::{NodeCheckpoint, NodeMemoryFailPolicy, NodeResultReturnType, NodeResultSpec, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{
+        NodeCheckpoint, NodeMemoryFailPolicy, NodeResultReturnType, NodeResultSpec, NodeState,
+        QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+    },
 };
 
 use super::Deps;
@@ -132,7 +135,10 @@ fn node_result_mode(definition: &WorkflowDef, node_uid: &str) -> NodeResultModeM
     node_result_mode_from_spec(spec)
 }
 
-fn node_result_state(cp: &NodeCheckpoint, mode: &NodeResultModeMetadata) -> NodeResultAvailabilityState {
+fn node_result_state(
+    cp: &NodeCheckpoint,
+    mode: &NodeResultModeMetadata,
+) -> NodeResultAvailabilityState {
     if cp.result_ref.is_some() {
         return NodeResultAvailabilityState::Ready;
     }
@@ -183,7 +189,8 @@ fn output_result_mode(definition: &WorkflowDef) -> NodeResultModeMetadata {
 }
 
 fn derive_store_key(record: &WorkflowRunRecord, definition: &WorkflowDef) -> Option<String> {
-    let output_uses_store = output_result_mode(definition).effective_mode == NodeResultReturnType::Store;
+    let output_uses_store =
+        output_result_mode(definition).effective_mode == NodeResultReturnType::Store;
 
     if output_uses_store {
         record.result_ref.clone()
@@ -551,13 +558,15 @@ mod tests {
             "loop-node".to_string(),
             NodeDef {
                 label: None,
-                function: FunctionSpec {
+                function: Some(FunctionSpec {
                     id: "test-fn".to_string(),
                     timeout_ms: None,
                     queue: None,
                     engine_retry: None,
                     runtime: None,
-                },
+                }),
+                agent: None,
+                agent_options: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -591,6 +600,7 @@ mod tests {
             workflow_trace_id: None,
             state_scope_id: None,
             stream_scope_id: None,
+            agent_session_id: None,
             step: 0,
             status: RunStatus::Running,
             abort: false,
@@ -610,10 +620,7 @@ mod tests {
             updated_at: 0,
         };
 
-        record.fanout_src.insert(
-            "loop-node".to_string(),
-            3,
-        );
+        record.fanout_src.insert("loop-node".to_string(), 3);
         record.nodes.insert(
             "loop-node#0".to_string(),
             NodeCheckpoint {
