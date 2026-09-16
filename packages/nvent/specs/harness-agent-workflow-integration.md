@@ -8,7 +8,7 @@
 
 ## 1. Ziel
 
-nworkflow soll einen ersten-class Agent-Loop bereitstellen, ohne dass Workflow-Autoren rohe harness-Calls oder Session-Details manuell konfigurieren müssen.
+nworkflow soll einen first-class Agent-Loop bereitstellen, ohne dass Workflow-Autoren rohe harness-Calls oder Session-Details manuell konfigurieren müssen.
 
 Der Kern ist:
 

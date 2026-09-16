@@ -11,7 +11,9 @@ use crate::error::WorkflowError;
 use crate::ids::now_ms;
 use crate::internal_state::WorkflowInternalStateStore;
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
-use crate::types::{AgentTaskRecord, QueueReceiptRecord, WorkflowDef, WorkflowRunRecord};
+use crate::types::{
+    AgentTaskRecord, ChildWorkflowLinkRecord, QueueReceiptRecord, WorkflowDef, WorkflowRunRecord,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredRun {
@@ -98,6 +100,15 @@ impl FileWorkflowInternalStateStore {
     fn agent_session_index_path(&self, session_id: &str) -> PathBuf {
         self.agent_session_index_dir()
             .join(format!("{}.json", sanitize_segment(session_id)))
+    }
+
+    fn child_workflow_links_dir(&self) -> PathBuf {
+        self.base_dir.join("child-workflow-links")
+    }
+
+    fn child_workflow_link_path(&self, child_run_id: &str) -> PathBuf {
+        self.child_workflow_links_dir()
+            .join(format!("{}.json", sanitize_segment(child_run_id)))
     }
 
     fn run_path(&self, run_id: &str) -> PathBuf {
@@ -395,6 +406,58 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
             let _ = remove_if_exists(&self.agent_session_index_path(&task.agent_session_id)).await;
         }
         Ok(())
+    }
+
+    async fn put_child_workflow_link(
+        &self,
+        link: &ChildWorkflowLinkRecord,
+    ) -> Result<(), WorkflowError> {
+        write_json_atomic(&self.child_workflow_link_path(&link.child_run_id), link).await
+    }
+
+    async fn get_child_workflow_link(
+        &self,
+        child_run_id: &str,
+    ) -> Result<Option<ChildWorkflowLinkRecord>, WorkflowError> {
+        read_json_opt::<ChildWorkflowLinkRecord>(&self.child_workflow_link_path(child_run_id)).await
+    }
+
+    async fn delete_child_workflow_link(&self, child_run_id: &str) -> Result<(), WorkflowError> {
+        remove_if_exists(&self.child_workflow_link_path(child_run_id)).await
+    }
+
+    async fn list_child_workflow_links_for_run(
+        &self,
+        parent_run_id: &str,
+    ) -> Result<Vec<ChildWorkflowLinkRecord>, WorkflowError> {
+        let mut out = Vec::new();
+        let mut entries = match fs::read_dir(self.child_workflow_links_dir()).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(err) => {
+                return Err(WorkflowError::State(format!(
+                    "list_child_workflow_links read_dir failed: {err}"
+                )))
+            }
+        };
+
+        while let Some(entry) = entries.next_entry().await.map_err(|err| {
+            WorkflowError::State(format!(
+                "list_child_workflow_links read_dir entry failed: {err}"
+            ))
+        })? {
+            let path = entry.path();
+            if !is_json_file(&path) {
+                continue;
+            }
+            if let Some(link) = read_json_opt::<ChildWorkflowLinkRecord>(&path).await? {
+                if link.parent_run_id == parent_run_id {
+                    out.push(link);
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     async fn put_run_log(
@@ -699,6 +762,81 @@ mod tests {
             vec!["trace-1"]
         );
         assert!(!second_has_more);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn child_workflow_link_roundtrips_and_filters_by_parent_run() {
+        use crate::types::ChildWorkflowLinkRecord;
+
+        let dir = temp_store_dir();
+        let mut cfg = WorkerConfig::default();
+        cfg.internal_state_backend = "file".to_string();
+        cfg.internal_state_file_dir = dir.to_string_lossy().into_owned();
+
+        let store = FileWorkflowInternalStateStore::new(&cfg);
+
+        let link_a = ChildWorkflowLinkRecord {
+            child_run_id: "r_child_a".to_string(),
+            parent_run_id: "r_parent".to_string(),
+            parent_node_uid: "invoice".to_string(),
+            created_at: 100,
+        };
+        let link_b = ChildWorkflowLinkRecord {
+            child_run_id: "r_child_b".to_string(),
+            parent_run_id: "r_parent".to_string(),
+            parent_node_uid: "ship".to_string(),
+            created_at: 200,
+        };
+        let link_other = ChildWorkflowLinkRecord {
+            child_run_id: "r_child_c".to_string(),
+            parent_run_id: "r_other_parent".to_string(),
+            parent_node_uid: "step".to_string(),
+            created_at: 300,
+        };
+
+        store.put_child_workflow_link(&link_a).await.expect("put a");
+        store.put_child_workflow_link(&link_b).await.expect("put b");
+        store
+            .put_child_workflow_link(&link_other)
+            .await
+            .expect("put other");
+
+        let fetched = store
+            .get_child_workflow_link("r_child_a")
+            .await
+            .expect("get a")
+            .expect("link a present");
+        assert_eq!(fetched, link_a);
+
+        assert!(store
+            .get_child_workflow_link("r_missing")
+            .await
+            .expect("get missing")
+            .is_none());
+
+        let mut for_parent = store
+            .list_child_workflow_links_for_run("r_parent")
+            .await
+            .expect("list for parent");
+        for_parent.sort_by(|a, b| a.child_run_id.cmp(&b.child_run_id));
+        assert_eq!(for_parent, vec![link_a.clone(), link_b.clone()]);
+
+        store
+            .delete_child_workflow_link("r_child_a")
+            .await
+            .expect("delete a");
+        assert!(store
+            .get_child_workflow_link("r_child_a")
+            .await
+            .expect("get after delete")
+            .is_none());
+        let remaining = store
+            .list_child_workflow_links_for_run("r_parent")
+            .await
+            .expect("list after delete");
+        assert_eq!(remaining, vec![link_b]);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

@@ -334,6 +334,24 @@
               >
                 {{ item.eventType === 'stream.delete' ? 'delete' : 'publish' }}
               </UBadge>
+              <UBadge
+                v-if="item.eventData?.mirrored"
+                color="warning"
+                variant="subtle"
+                size="xs"
+              >
+                child {{ shortId(item.eventData.originRunId) }}
+              </UBadge>
+              <UButton
+                v-if="item.eventData?.mirrored && item.eventData?.originRunId"
+                icon="i-lucide-external-link"
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                aria-label="Open child run"
+                title="Open child run"
+                @click.stop="emit('open-child-run', { runId: item.eventData.originRunId })"
+              />
             </div>
 
             <div class="flex flex-wrap gap-2 text-[10px] text-gray-500 dark:text-gray-400">
@@ -341,6 +359,8 @@
               <span v-if="item.eventData?.functionId" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">fn {{ item.eventData.functionId }}</span>
               <span v-if="item.eventData?.itemId" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">item {{ item.eventData.itemId }}</span>
               <span v-if="item.eventData?.runId" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">group {{ item.eventData.runId }}</span>
+              <span v-if="item.eventData?.originNodeUid" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">from {{ item.eventData.originNodeUid }}</span>
+              <span v-if="Array.isArray(item.eventData?.nodePath) && item.eventData.nodePath.length" class="rounded bg-gray-100 dark:bg-gray-800 px-2 py-0.5 font-mono">path {{ item.eventData.nodePath.join(' / ') }}</span>
             </div>
 
             <div v-if="item.eventData?.preview" class="text-xs text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">
@@ -409,6 +429,9 @@ import { computed } from '#imports'
 import type { TimelineItem } from '@nuxt/ui'
 
 const props = defineProps<{ items: any[], heightClass?: string }>()
+const emit = defineEmits<{
+  (event: 'open-child-run', payload: { runId: string }): void
+}>()
 
 const heightClass = computed(() => props.heightClass || 'h-96')
 

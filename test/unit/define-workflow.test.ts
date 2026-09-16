@@ -790,4 +790,81 @@ describe('defineWorkflow compilation', () => {
 
     await expect(workflow.handler({ text: 'Hello' })).rejects.toThrow(/hook namespace must not be empty/)
   })
+
+  it('compiles ctx.callWorkflow into a child_workflow node with auto-generated node id', async () => {
+    const workflow = defineWorkflow({
+      name: 'invoice-pipeline',
+      async handler(input: { orderId: string }, ctx) {
+        return ctx.callWorkflow('billing::generate-invoice', input)
+      },
+    })
+
+    const plan = await workflow.compile({ orderId: 'o1' })
+    const node = plan.nodes['billing::generate-invoice']
+
+    expect(node.child_workflow).toEqual({ workflow: 'billing::generate-invoice' })
+    expect(node.function).toBeUndefined()
+    expect(node.result).toEqual({ returnType: 'memory' })
+  })
+
+  it('compiles ctx.callWorkflow with an explicit node id and options', async () => {
+    const workflow = defineWorkflow({
+      name: 'invoice-pipeline-explicit',
+      async handler(input: { orderId: string }, ctx) {
+        const invoice = await ctx.callWorkflow('invoice', 'billing::generate-invoice', input)
+        return ctx.callWorkflow('ship', 'logistics::dispatch-order', invoice, {
+          result: { returnType: 'store' },
+        })
+      },
+    })
+
+    const plan = await workflow.compile({ orderId: 'o1' })
+
+    expect(plan.nodes.invoice.child_workflow).toEqual({ workflow: 'billing::generate-invoice' })
+    expect(plan.nodes.ship.child_workflow).toEqual({ workflow: 'logistics::dispatch-order' })
+    expect(plan.nodes.ship.result).toEqual({ returnType: 'store' })
+    expect(plan.nodes.ship.depends_on).toEqual(['invoice'])
+  })
+
+  it('forwards caller_session_id/notify from a wrapped ctx.callWorkflow trigger and unwraps the real input', async () => {
+    triggerMock.mockResolvedValue({ run_id: 'run_child_1' })
+
+    const workflow = defineWorkflow({
+      name: 'billing::generate-invoice',
+      async handler(input: { orderId: string }, ctx) {
+        return ctx.call('process', input)
+      },
+    })
+
+    await workflow.handler({
+      _childWorkflow: {
+        callerSessionId: 'wf_r_parent_invoice',
+        notify: { function_id: 'nworkflow::child-completed' },
+      },
+      input: { orderId: 'o1' },
+    } as any)
+
+    const payload = triggerMock.mock.calls[0]?.[0]?.payload
+    expect(payload.caller_session_id).toBe('wf_r_parent_invoice')
+    expect(payload.notify).toEqual({ function_id: 'nworkflow::child-completed' })
+    expect(payload.input).toEqual({ orderId: 'o1' })
+  })
+
+  it('does not add caller_session_id/notify for a plain top-level trigger', async () => {
+    triggerMock.mockResolvedValue({ run_id: 'run_top_1' })
+
+    const workflow = defineWorkflow({
+      name: 'billing::generate-invoice-plain',
+      async handler(input: { orderId: string }, ctx) {
+        return ctx.call('process', input)
+      },
+    })
+
+    await workflow.handler({ orderId: 'o1' })
+
+    const payload = triggerMock.mock.calls[0]?.[0]?.payload
+    expect(payload.caller_session_id).toBeUndefined()
+    expect(payload.notify).toBeUndefined()
+    expect(payload.input).toEqual({ orderId: 'o1' })
+  })
 })

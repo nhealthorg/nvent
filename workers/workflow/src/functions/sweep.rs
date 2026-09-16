@@ -23,6 +23,46 @@ fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallba
         .unwrap_or(fallback)
 }
 
+/// `Some(child_run_id)` iff a timed-out checkpoint is a `child_workflow` node,
+/// i.e. one whose Refire (would orphan the old child) or FailOut (would leave
+/// it running forever unobserved) must first best-effort stop it. Pure.
+fn child_run_id_to_stop_on_timeout(cp: &crate::types::NodeCheckpoint) -> Option<&str> {
+    cp.child_run_id.as_deref()
+}
+
+/// Best-effort cascade stop for a still-running child workflow whose parent
+/// node is about to be refired (would orphan the old child) or failed out
+/// (would leave it running forever unobserved). Mirrors the cascade already
+/// used by `nworkflow::stop` for a caller-initiated cancellation.
+async fn stop_child_workflow_best_effort(
+    deps: &Deps,
+    parent_run_id: &str,
+    node_uid: &str,
+    child_run_id: &str,
+    timeout_ms: u64,
+) {
+    let stop_res = deps
+        .trigger_bounded(
+            iii_sdk::protocol::TriggerRequest {
+                function_id: "nworkflow::stop".into(),
+                payload: serde_json::json!({ "run_id": child_run_id }),
+                action: None,
+                timeout_ms: None,
+            },
+            timeout_ms,
+        )
+        .await;
+    if let Err(e) = stop_res {
+        tracing::warn!(
+            run_id = %parent_run_id,
+            node_uid = %node_uid,
+            child_run_id = %child_run_id,
+            error = %e,
+            "sweep: best-effort child workflow stop failed on node timeout"
+        );
+    }
+}
+
 pub const SWEEP_ID: &str = "nworkflow::sweep";
 pub const SWEEP_DESC: &str =
     "Internal cron sweep: reconcile AwaitingNodes runs and time out nodes past their deadline. \
@@ -165,6 +205,7 @@ async fn sweep_one_run(
     reconcile::reconcile_run(deps, &mut record).await?;
     reconcile::reconcile_function_nodes(deps, &def, &mut record, &mut pending_stream_events)
         .await?;
+    reconcile::reconcile_child_workflow_nodes(deps, &mut record).await?;
 
     // Timeout sweep: apply timeout_action to each Running checkpoint.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
@@ -183,6 +224,18 @@ async fn sweep_one_run(
         ) {
             crate::timeout::TimeoutAction::StillWaiting => {}
             crate::timeout::TimeoutAction::Refire { attempt } => {
+                // A still-running child would otherwise keep executing orphaned
+                // once fire_node starts a brand-new child run below.
+                if let Some(child_run_id) = child_run_id_to_stop_on_timeout(&cp) {
+                    stop_child_workflow_best_effort(
+                        deps,
+                        &record.run_id,
+                        &uid,
+                        child_run_id,
+                        cfg.cleanup_timeout_ms,
+                    )
+                    .await;
+                }
                 if let Some(c) = record.nodes.get_mut(&uid) {
                     c.retries = attempt;
                 }
@@ -199,6 +252,16 @@ async fn sweep_one_run(
                 timed_out_any = true;
             }
             crate::timeout::TimeoutAction::FailOut => {
+                if let Some(child_run_id) = child_run_id_to_stop_on_timeout(&cp) {
+                    stop_child_workflow_best_effort(
+                        deps,
+                        &record.run_id,
+                        &uid,
+                        child_run_id,
+                        cfg.cleanup_timeout_ms,
+                    )
+                    .await;
+                }
                 if let Some(c) = record.nodes.get_mut(&uid) {
                     c.state = NodeState::Failed;
                     c.result_error = Some(format!(
@@ -257,4 +320,96 @@ async fn sweep_one_run(
     }
 
     Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        EngineRetrySpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef,
+        WorkflowDef,
+    };
+    use std::collections::BTreeMap;
+
+    fn retry_test_def(max_attempts: Option<u32>) -> WorkflowDef {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "step".to_string(),
+            NodeDef {
+                label: None,
+                function: Some(FunctionSpec {
+                    id: "worker::step".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: Some(EngineRetrySpec { max_attempts }),
+                    runtime: None,
+                }),
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        WorkflowDef {
+            version: 1,
+            nodes,
+            output: OutputRef {
+                from: "node:step".to_string(),
+            },
+            default_functions: None,
+            metadata: None,
+        }
+    }
+
+    fn checkpoint(child_run_id: Option<&str>) -> NodeCheckpoint {
+        NodeCheckpoint {
+            state: NodeState::Running,
+            session_id: None,
+            turn_id: None,
+            result_ref: None,
+            result_error: None,
+            child_run_id: child_run_id.map(str::to_string),
+            pending_at: None,
+            pending_timeout_ms: None,
+            retries: 0,
+            completed_at: None,
+            worker_name: None,
+        }
+    }
+
+    #[test]
+    fn effective_max_retries_prefers_node_override() {
+        let def = retry_test_def(Some(1));
+        assert_eq!(effective_max_retries(&def, "step", 3), 1);
+        assert_eq!(effective_max_retries(&def, "step#4", 3), 1);
+    }
+
+    #[test]
+    fn effective_max_retries_falls_back_to_worker_default() {
+        let def = retry_test_def(None);
+        assert_eq!(effective_max_retries(&def, "step", 3), 3);
+        assert_eq!(effective_max_retries(&def, "missing", 3), 3);
+    }
+
+    #[test]
+    fn child_run_id_to_stop_on_timeout_is_some_only_for_child_workflow_nodes() {
+        assert_eq!(
+            child_run_id_to_stop_on_timeout(&checkpoint(Some("r_child_1"))),
+            Some("r_child_1")
+        );
+        assert_eq!(child_run_id_to_stop_on_timeout(&checkpoint(None)), None);
+    }
 }

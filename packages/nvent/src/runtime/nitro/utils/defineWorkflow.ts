@@ -165,6 +165,7 @@ export interface WorkflowContext {
     }
     agent?: any
     agentOptions?: any
+    childWorkflow?: { workflow: string }
     executor?: any
   }) => Promise<T>
 
@@ -209,6 +210,20 @@ export interface WorkflowContext {
    * const result2 = await ctx.call('analyze', result1)
    */
   call: WorkflowCall
+
+  /**
+   * Start a child workflow run and await its terminal result. The node stays
+   * `Running` until the child run completes; the child gets its own
+   * `run_id`, state scope and stream — no state is shared with the parent.
+   *
+   * @example
+   * // Auto-generated node ID from the target workflow's function id
+   * const invoice = await ctx.callWorkflow('billing::generate-invoice', input)
+   *
+   * // Explicit node ID
+   * const shipped = await ctx.callWorkflow('ship', 'logistics::dispatch-order', invoice)
+   */
+  callWorkflow: WorkflowCallWorkflow
 
   /**
    * Persist a workflow-scoped variable and return its current value reference.
@@ -367,6 +382,8 @@ export interface WorkflowLoopOptions {
 const WORKFLOW_BRANCH = Symbol('workflow.branch')
 const WORKFLOW_LOOP_ITEM = Symbol('workflow.loop.item')
 const WORKFLOW_VALUE_REF = Symbol('workflow.value.ref')
+/** Mirrors `child_workflow::CHILD_WORKFLOW_WRAPPER_KEY` in the workflow worker. */
+const CHILD_WORKFLOW_WRAPPER_KEY = '_childWorkflow'
 
 export type WorkflowParallelBranch<T = any> = {
   [WORKFLOW_BRANCH]: true
@@ -448,6 +465,14 @@ type CallOptions = {
   inputOnMemoryFail?: 'store' | 'error'
 }
 
+type ChildWorkflowCallOptions = {
+  label?: string
+  /** Reserved: bounds only the internal dispatch RPC, not the child run's lifetime. */
+  timeoutMs?: number
+  result?: NodeResultOptions
+  inputPolicy?: NodeInputOptions
+}
+
 type WorkflowCall = {
   <T = any>(functionId: string): Promise<T>
   <T = any>(functionId: string, input: any): Promise<T>
@@ -455,6 +480,15 @@ type WorkflowCall = {
   <T = any>(nodeId: string, functionId: string): Promise<T>
   <T = any>(nodeId: string, functionId: string, input: any): Promise<T>
   <T = any>(nodeId: string, functionId: string, input: any, options: CallOptions): Promise<T>
+}
+
+type WorkflowCallWorkflow = {
+  <T = any>(workflowId: string): Promise<T>
+  <T = any>(workflowId: string, input: any): Promise<T>
+  <T = any>(workflowId: string, input: any, options: ChildWorkflowCallOptions): Promise<T>
+  <T = any>(nodeId: string, workflowId: string): Promise<T>
+  <T = any>(nodeId: string, workflowId: string, input: any): Promise<T>
+  <T = any>(nodeId: string, workflowId: string, input: any, options: ChildWorkflowCallOptions): Promise<T>
 }
 
 type NodeResultOptions = {
@@ -608,6 +642,59 @@ function buildFunctionSpec(functionId: string, callOptions?: CallOptions) {
   }
 }
 
+type ParsedCallWorkflow = {
+  nodeId: string
+  workflowId: string
+  input: any
+  options?: ChildWorkflowCallOptions
+}
+
+function isChildWorkflowCallOptions(value: unknown): value is ChildWorkflowCallOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  const allowedKeys = new Set(['label', 'timeoutMs', 'result', 'inputPolicy'])
+  const keys = Object.keys(v)
+  if (keys.length === 0 || keys.some(key => !allowedKeys.has(key))) return false
+  return 'timeoutMs' in v || 'result' in v || 'inputPolicy' in v
+}
+
+/** Same two/three/four-arg shape as `parseCallArguments`, for `ctx.callWorkflow`. */
+function parseCallWorkflowArguments(args: any[]): ParsedCallWorkflow {
+  const work = [...args]
+  let options: ChildWorkflowCallOptions | undefined
+  if (work.length > 0 && isChildWorkflowCallOptions(work[work.length - 1])) {
+    options = work.pop()
+  }
+
+  let nodeId: string
+  let workflowId: string
+  let input: any
+
+  if (work.length === 1) {
+    workflowId = work[0]
+    nodeId = workflowId
+    input = 'run_input'
+  }
+  else if (work.length === 2) {
+    if (typeof work[0] === 'string' && typeof work[1] === 'string') {
+      nodeId = work[0]
+      workflowId = work[1]
+      input = 'run_input'
+    } else {
+      workflowId = work[0]
+      nodeId = workflowId
+      input = work[1]
+    }
+  }
+  else {
+    nodeId = work[0]
+    workflowId = work[1]
+    input = work[2]
+  }
+
+  return { nodeId, workflowId, input, options }
+}
+
 export type WorkflowHandler<TInput = any, TOutput = any> = (
   input: TInput,
   ctx: WorkflowContext,
@@ -721,7 +808,22 @@ export function defineWorkflow<
     // The "nvent" generic function handler. 
     // When called as a standard function (e.g. via iii.trigger), it compiles 
     // the workflow and starts the execution via the workflow-worker.
-    async handler(input: TInput) {
+    async handler(rawInput: TInput) {
+      // ctx.callWorkflow(...) triggers the target workflow's own registered
+      // function id wrapped in `_childWorkflow` (see child_workflow.rs), so the
+      // caller_session_id/notify needed for parent/root linkage and completion
+      // reconciliation reach nworkflow::start without changing the public
+      // top-level trigger contract for any other caller.
+      let input: TInput = rawInput
+      let childWorkflowCallerSessionId: string | undefined
+      let childWorkflowNotify: { function_id: string, queue?: string } | undefined
+      if (rawInput && typeof rawInput === 'object' && CHILD_WORKFLOW_WRAPPER_KEY in (rawInput as Record<string, unknown>)) {
+        const wrapper = (rawInput as Record<string, any>)[CHILD_WORKFLOW_WRAPPER_KEY]
+        childWorkflowCallerSessionId = wrapper?.callerSessionId
+        childWorkflowNotify = wrapper?.notify
+        input = (rawInput as Record<string, any>).input
+      }
+
       const plan = await workflow.compile(input)
       const hookNamespaceDefault = resolveWorkflowHookNamespaceDefault()
       const definitionCandidate: Record<string, unknown> = {
@@ -750,6 +852,8 @@ export function defineWorkflow<
             definition,
             input,
             ...(workflowInputPolicy ? { inputPolicy: workflowInputPolicy } : {}),
+            ...(childWorkflowCallerSessionId ? { caller_session_id: childWorkflowCallerSessionId } : {}),
+            ...(childWorkflowNotify ? { notify: childWorkflowNotify } : {}),
           },
           ...(workflowsNamespace ? { namespace: workflowsNamespace } : {}),
         })
@@ -916,6 +1020,8 @@ export function defineWorkflow<
           if (spec.agent) {
             nodeDef.agent = spec.agent
             if (spec.agentOptions) nodeDef.agentOptions = spec.agentOptions
+          } else if (spec.childWorkflow) {
+            nodeDef.childWorkflow = spec.childWorkflow
           } else if (spec.function) {
             const fnSpec = typeof spec.function === 'string' ? { id: spec.function } : spec.function
 
@@ -986,6 +1092,19 @@ export function defineWorkflow<
           }) as any
         },
 
+        callWorkflow: (async (...args: any[]) => {
+          const parsed = parseCallWorkflowArguments(args)
+          const nodeId = applyAutoNodeSuffix(parsed.nodeId)
+
+          return ctx.node(nodeId, {
+            label: parsed.options?.label,
+            childWorkflow: { workflow: parsed.workflowId },
+            input: parsed.input,
+            result: buildResultPolicy(parsed.options?.result),
+            ...(parsed.options?.inputPolicy ? { inputPolicy: buildInputPolicy(parsed.options.inputPolicy) } : {}),
+          })
+        }) as WorkflowCallWorkflow,
+
         var: async <T = any>(key: string, value: any, options?: { label?: string }): Promise<T> => {
           const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(key))
           return ctx.node(nodeId, {
@@ -1048,6 +1167,25 @@ export function defineWorkflow<
                 fanout: { over: nestedOver },
               })
             },
+            callWorkflow: (async (...args: any[]) => {
+              const parsed = parseCallWorkflowArguments(args)
+              const nodeId = applyAutoNodeSuffix(parsed.nodeId)
+              const isItemInput = isWorkflowLoopItemRef(parsed.input)
+
+              return ctx.node(nodeId, {
+                label: parsed.options?.label,
+                childWorkflow: { workflow: parsed.workflowId },
+                input: isItemInput ? 'fanout_item' : parsed.input,
+                fanout: {
+                  over: fanoutOver,
+                  ...(loopMode !== 'parallel' ? { mode: loopMode } : {}),
+                  ...(loopMode === 'batch' ? { batchSize: loopBatchSize } : {}),
+                  ...(loopItemInputReturnType !== 'memory' ? { itemReturnType: loopItemInputReturnType } : {}),
+                },
+                result: buildResultPolicy(parsed.options?.result ?? { returnType: loopItemResultReturnType }),
+                ...(parsed.options?.inputPolicy ? { inputPolicy: buildInputPolicy(parsed.options.inputPolicy) } : {}),
+              })
+            }) as WorkflowCallWorkflow,
             loop: async <U = any>(nestedItems: any, nestedFn: (nestedCtx: WorkflowLoopContext) => U | Promise<U>, nestedOptions?: WorkflowLoopOptions): Promise<U> => {
               return ctx.loop(nestedItems, nestedFn, nestedOptions)
             },

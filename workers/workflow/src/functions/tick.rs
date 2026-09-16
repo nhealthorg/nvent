@@ -807,6 +807,7 @@ async fn execute_internal_var_set(
             turn_id: None,
             result_ref: Some(crate::ids::new_ref_id("node_result")),
             result_error: None,
+            child_run_id: None,
             pending_at: Some(now),
             pending_timeout_ms: None,
             retries: 0,
@@ -910,6 +911,7 @@ pub(crate) async fn fire_node(
                         turn_id: None,
                         result_ref: None,
                         result_error: Some(format!("node input load failed: {e}")),
+                        child_run_id: None,
                         pending_at: Some(now),
                         pending_timeout_ms: None,
                         retries: attempt,
@@ -1004,6 +1006,7 @@ pub(crate) async fn fire_node(
                 turn_id: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: Some(deps.now_ms()),
                 pending_timeout_ms: node_pending_timeout_ms,
                 retries: attempt,
@@ -1051,6 +1054,61 @@ pub(crate) async fn fire_node(
         }
     }
 
+    if let Some(child_workflow_spec) = &node.child_workflow {
+        // Persist run record (including completions of previous steps & this node's
+        // Running state) BEFORE the child-start RPC, same ordering as the agent path.
+        record.nodes.insert(
+            node_uid.to_string(),
+            NodeCheckpoint {
+                state: NodeState::Running,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                child_run_id: None,
+                pending_at: Some(deps.now_ms()),
+                pending_timeout_ms: node_pending_timeout_ms,
+                retries: attempt,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+        record.updated_at = deps.now_ms();
+        state::put_run(&deps.iii, record).await?;
+
+        let start_req = crate::functions::child_workflow::ChildStartRequest {
+            run_id: record.run_id.clone(),
+            node_uid: node_uid.to_string(),
+            workflow: child_workflow_spec.workflow.clone(),
+            input: input_val,
+        };
+
+        match crate::functions::child_workflow::start_child_workflow_task(deps, start_req).await {
+            Ok(start_res) => {
+                if let Some(cp) = record.nodes.get_mut(node_uid) {
+                    cp.child_run_id = Some(start_res.child_run_id);
+                }
+                record.updated_at = deps.now_ms();
+                state::put_run(&deps.iii, record).await?;
+                return Ok(());
+            }
+            Err(e) => {
+                let err_msg = format!(
+                    "failed to start child workflow '{}': {e}",
+                    child_workflow_spec.workflow
+                );
+                if let Some(cp) = record.nodes.get_mut(node_uid) {
+                    cp.state = NodeState::Failed;
+                    cp.result_error = Some(err_msg);
+                    cp.completed_at = Some(deps.now_ms());
+                }
+                record.updated_at = deps.now_ms();
+                state::put_run(&deps.iii, record).await?;
+                return Ok(());
+            }
+        }
+    }
+
     // Discovery check: if the function is not in the registry, fail immediately
     // instead of enqueuing into a black hole.
     if !crate::discovery::is_function_available(&deps.discovery, &function.id).await {
@@ -1075,6 +1133,7 @@ pub(crate) async fn fire_node(
                         "Function not found after retries: {}",
                         function.id
                     )),
+                    child_run_id: None,
                     pending_at: Some(deps.now_ms()),
                     pending_timeout_ms: None,
                     retries: attempt,
@@ -1102,6 +1161,7 @@ pub(crate) async fn fire_node(
                     turn_id: None,
                     result_ref: None,
                     result_error: Some("function_missing_discovery_snapshot".to_string()),
+                    child_run_id: None,
                     pending_at: Some(deps.now_ms()),
                     pending_timeout_ms: Some(10_000),
                     retries: attempt,
@@ -1176,6 +1236,7 @@ pub(crate) async fn fire_node(
                         turn_id: None,
                         result_ref: None,
                         result_error: Some(format!("Trigger logic error: {}", err_msg)),
+                        child_run_id: None,
                         pending_at: Some(deps.now_ms()),
                         pending_timeout_ms: None,
                         retries: attempt,
@@ -1242,6 +1303,7 @@ pub(crate) async fn fire_node(
                         turn_id: None,
                         result_ref: None, // Result written by function when complete
                         result_error: None,
+                        child_run_id: None,
                         pending_at: Some(deps.now_ms()),
                         pending_timeout_ms: node_pending_timeout_ms,
                         retries: attempt,
@@ -1267,6 +1329,7 @@ pub(crate) async fn fire_node(
                     turn_id: None,
                     result_ref: None,
                     result_error: Some(format!("Trigger failed: {}", e)),
+                    child_run_id: None,
                     pending_at: Some(deps.now_ms()),
                     pending_timeout_ms: None,
                     retries: attempt,
@@ -1472,6 +1535,7 @@ pub async fn handle(
     crate::reconcile::reconcile_run(deps, &mut record).await?;
     crate::reconcile::reconcile_function_nodes(deps, &def, &mut record, &mut pending_stream_events)
         .await?;
+    crate::reconcile::reconcile_child_workflow_nodes(deps, &mut record).await?;
 
     // 6. Load done results.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
@@ -1683,6 +1747,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1708,6 +1773,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -1738,6 +1804,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: None,
@@ -1784,6 +1851,10 @@ mod tests {
             result_error: None,
             notify: None,
             caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -1796,6 +1867,7 @@ mod tests {
             turn_id: None,
             result_ref: None,
             result_error: None,
+            child_run_id: None,
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
@@ -1821,6 +1893,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1852,6 +1925,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -1880,6 +1954,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -1933,6 +2008,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -1969,6 +2045,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/read#0".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -1984,6 +2061,7 @@ mod tests {
                 turn_id: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: Some(1),
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2030,6 +2108,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2062,6 +2141,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2090,6 +2170,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2105,6 +2186,7 @@ mod tests {
                 turn_id: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: Some(1),
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2138,6 +2220,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2167,6 +2250,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "node:load".into(),
                     template: None,
@@ -2192,6 +2276,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2234,6 +2319,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/load".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2249,6 +2335,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("run_test/middle".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2330,6 +2417,7 @@ mod tests {
                 turn_id: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -2400,6 +2488,7 @@ mod tests {
             turn_id: None,
             result_ref: None,
             result_error: err.map(|s| s.to_string()),
+            child_run_id: None,
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
@@ -2508,6 +2597,7 @@ mod tests {
                 turn_id: Some("turn_plan".to_string()),
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: Some(1),
                 pending_timeout_ms: Some(10_000),
                 retries: 0,

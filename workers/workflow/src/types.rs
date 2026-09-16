@@ -401,6 +401,29 @@ pub struct AgentResult {
     pub stream: Option<AgentResultStream>,
 }
 
+/// Reverse-link from a child workflow run back to the parent node that
+/// started it via `ctx.callWorkflow(...)`. The `notify` callback fired on
+/// child termination only carries `{run_id, status, result, result_error}` —
+/// this record is how `nworkflow::child-completed` finds which parent run and
+/// node to reconcile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChildWorkflowLinkRecord {
+    pub child_run_id: String,
+    pub parent_run_id: String,
+    pub parent_node_uid: String,
+    pub created_at: i64,
+}
+
+/// Declarative child-workflow specification when this node starts another
+/// workflow run (via `ctx.callWorkflow(...)`) and awaits its terminal result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ChildWorkflowSpec {
+    /// Registered function id of the target workflow (may equal the running
+    /// workflow's own id for self-recursion).
+    pub workflow: String,
+}
+
 /// One agent in the DAG, plus its wiring (inputs, dependency edges, optional
 /// fan-out).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -422,6 +445,14 @@ pub struct NodeDef {
         rename = "agentOptions"
     )]
     pub agent_options: Option<AgentRuntimeOptions>,
+    /// Declarative child-workflow specification when this node runs a nested
+    /// workflow run instead of a function or agent turn.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "childWorkflow"
+    )]
+    pub child_workflow: Option<ChildWorkflowSpec>,
     pub input: InputSpec,
     /// Prerequisite node ids. This node fires only once ALL of them are Done —
     /// this is the barrier / join. Empty means it can start immediately.
@@ -450,6 +481,14 @@ impl NodeDef {
         } else if self.agent.is_some() {
             FunctionSpec {
                 id: "harness::spawn".to_string(),
+                timeout_ms: None,
+                queue: None,
+                engine_retry: None,
+                runtime: Some(FunctionRuntime::Unknown),
+            }
+        } else if self.child_workflow.is_some() {
+            FunctionSpec {
+                id: "nworkflow::child-start".to_string(),
                 timeout_ms: None,
                 queue: None,
                 engine_retry: None,
@@ -707,6 +746,21 @@ pub struct WorkflowRunRecord {
     /// non-agent caller (no session to nest under).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_session_id: Option<String>,
+    /// Direct parent linkage for UI breadcrumbs and introspection when this
+    /// run was started via `ctx.callWorkflow(...)`. `None` for a root run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    /// The node_uid in `parent_run_id` that started this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node_uid: Option<String>,
+    /// The top-most ancestor run_id in this call chain. `None` when this run
+    /// IS the root (equivalent to `parent_run_id.is_none()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_run_id: Option<String>,
+    /// The root run's `stream_scope_id`, used as the mirror target for
+    /// cross-run live stream bridging. Present iff `root_run_id` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_stream_scope_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -727,6 +781,11 @@ pub struct NodeCheckpoint {
     /// Set when a 'completed' turn carried result_error
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_error: Option<String>,
+    /// Set when this node started a child workflow run; the run_id of that
+    /// child run, present for the whole node lifetime (Running through
+    /// terminal). Absent for function/agent/queue-backed nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,6 +877,7 @@ mod tests {
                         turn_id: Some("turn_xyz".to_string()),
                         result_ref: Some("run_abc123/plan".to_string()),
                         result_error: None,
+                        child_run_id: None,
                         pending_at: None,
                         pending_timeout_ms: None,
                         retries: 0,
@@ -832,6 +892,10 @@ mod tests {
             result_error: None,
             notify: None,
             caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_001,
         };
@@ -957,5 +1021,170 @@ mod tests {
             result.is_err(),
             "legacy map fanout_src shape must be rejected"
         );
+    }
+
+    #[test]
+    fn child_workflow_link_record_round_trips_through_json() {
+        let link = ChildWorkflowLinkRecord {
+            child_run_id: "r_child".to_string(),
+            parent_run_id: "r_parent".to_string(),
+            parent_node_uid: "invoice".to_string(),
+            created_at: 1_700_000_000,
+        };
+
+        let json_str = serde_json::to_string(&link).expect("serialize");
+        let decoded: ChildWorkflowLinkRecord =
+            serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(link, decoded);
+    }
+
+    #[test]
+    fn child_workflow_link_record_requires_all_fields() {
+        let value = json!({
+            "child_run_id": "r_child",
+            "parent_run_id": "r_parent"
+        });
+
+        let result: Result<ChildWorkflowLinkRecord, _> = serde_json::from_value(value);
+        assert!(
+            result.is_err(),
+            "parent_node_uid and created_at must be required, not defaulted"
+        );
+    }
+
+    #[test]
+    fn effective_function_dispatches_child_start_for_child_workflow_node() {
+        let node = NodeDef {
+            label: None,
+            function: None,
+            agent: None,
+            agent_options: None,
+            child_workflow: Some(ChildWorkflowSpec {
+                workflow: "billing::generate-invoice".to_string(),
+            }),
+            input: InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            },
+            depends_on: vec![],
+            fanout: None,
+            result: None,
+            input_policy: None,
+        };
+
+        assert_eq!(node.effective_function().id, "nworkflow::child-start");
+    }
+
+    #[test]
+    fn effective_function_prefers_explicit_function_over_child_workflow() {
+        let node = NodeDef {
+            label: None,
+            function: Some(FunctionSpec {
+                id: "explicit::fn".to_string(),
+                timeout_ms: None,
+                queue: None,
+                engine_retry: None,
+                runtime: None,
+            }),
+            agent: None,
+            agent_options: None,
+            child_workflow: Some(ChildWorkflowSpec {
+                workflow: "billing::generate-invoice".to_string(),
+            }),
+            input: InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            },
+            depends_on: vec![],
+            fanout: None,
+            result: None,
+            input_policy: None,
+        };
+
+        assert_eq!(node.effective_function().id, "explicit::fn");
+    }
+
+    #[test]
+    fn node_def_serializes_child_workflow_as_camel_case() {
+        let node = NodeDef {
+            label: None,
+            function: None,
+            agent: None,
+            agent_options: None,
+            child_workflow: Some(ChildWorkflowSpec {
+                workflow: "billing::generate-invoice".to_string(),
+            }),
+            input: InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            },
+            depends_on: vec![],
+            fanout: None,
+            result: None,
+            input_policy: None,
+        };
+
+        let value = serde_json::to_value(&node).expect("serialize");
+        assert_eq!(
+            value["childWorkflow"]["workflow"],
+            "billing::generate-invoice"
+        );
+        assert!(value.get("child_workflow").is_none());
+
+        let decoded: NodeDef = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, node);
+    }
+
+    #[test]
+    fn workflow_run_record_round_trips_parent_and_root_linkage() {
+        let mut record = fresh_minimal_run_record();
+        record.parent_run_id = Some("r_parent".to_string());
+        record.parent_node_uid = Some("invoice".to_string());
+        record.root_run_id = Some("r_root".to_string());
+        record.root_stream_scope_id = Some("r_root".to_string());
+
+        let value = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(value["parent_run_id"], "r_parent");
+        assert_eq!(value["parent_node_uid"], "invoice");
+        assert_eq!(value["root_run_id"], "r_root");
+        assert_eq!(value["root_stream_scope_id"], "r_root");
+
+        let decoded: WorkflowRunRecord = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, record);
+    }
+
+    fn fresh_minimal_run_record() -> WorkflowRunRecord {
+        WorkflowRunRecord {
+            run_id: "r_1".to_string(),
+            workflow_name: None,
+            workflow_trace_id: None,
+            state_scope_id: None,
+            stream_scope_id: None,
+            agent_session_id: None,
+            step: 0,
+            status: RunStatus::Running,
+            abort: false,
+            def_ref: "r_1".to_string(),
+            input_ref: "r_1".to_string(),
+            vars_ref: None,
+            state_keys_map: BTreeMap::new(),
+            stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
+            nodes: BTreeMap::new(),
+            fanout_src: BTreeMap::new(),
+            result_ref: None,
+            result_error: None,
+            notify: None,
+            caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
+            created_at: 0,
+            updated_at: 0,
+        }
     }
 }

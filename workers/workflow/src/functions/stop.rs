@@ -21,6 +21,9 @@ pub struct StopResponse {
     pub stopping: bool,
     #[serde(default)]
     pub stopped_sessions: u32,
+    /// Still-running `ctx.callWorkflow(...)` child runs best-effort stopped.
+    #[serde(default)]
+    pub stopped_child_workflows: u32,
     #[serde(default)]
     pub queue_fragments_detected: u64,
     #[serde(default)]
@@ -69,6 +72,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
         return Ok(StopResponse {
             stopping: false,
             stopped_sessions: 0,
+            stopped_child_workflows: 0,
             queue_fragments_detected: 0,
             checked_queues: Vec::new(),
             tracked_receipt_count: 0,
@@ -83,6 +87,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
         return Ok(StopResponse {
             stopping: false,
             stopped_sessions: 0,
+            stopped_child_workflows: 0,
             queue_fragments_detected: 0,
             checked_queues: Vec::new(),
             tracked_receipt_count: 0,
@@ -98,6 +103,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
         .map(|d| crate::functions::start::prepare_definition_for_execution(&d));
 
     let running_session_ids = collect_running_sessions(&record.nodes);
+    let running_child_run_ids = collect_running_child_workflows(&record.nodes);
     let queue_candidates = collect_queue_candidates(&record.nodes);
 
     // Terminal-first: persist the cancellation before any best-effort remote cleanup so
@@ -139,6 +145,30 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
             Ok(_) => stopped_sessions += 1,
             Err(e) => {
                 tracing::warn!(run_id = %req.run_id, error = %e, "cancel: harness::stop failed")
+            }
+        }
+    }
+
+    // Best-effort stop cascade for still-running ctx.callWorkflow(...) child runs.
+    // A genuine RPC hop (not in-process recursion) so it composes uniformly with
+    // however deep the child itself is nested.
+    let mut stopped_child_workflows = 0u32;
+    for child_run_id in running_child_run_ids {
+        let stop_res = deps
+            .trigger_bounded(
+                TriggerRequest {
+                    function_id: "nworkflow::stop".into(),
+                    payload: json!({ "run_id": child_run_id }),
+                    action: None,
+                    timeout_ms: None,
+                },
+                cleanup_timeout_ms,
+            )
+            .await;
+        match stop_res {
+            Ok(_) => stopped_child_workflows += 1,
+            Err(e) => {
+                tracing::warn!(run_id = %req.run_id, child_run_id = %child_run_id, error = %e, "cancel: nworkflow::stop cascade to child workflow failed")
             }
         }
     }
@@ -206,6 +236,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Workf
     Ok(StopResponse {
         stopping: true,
         stopped_sessions,
+        stopped_child_workflows,
         queue_fragments_detected,
         checked_queues,
         tracked_receipt_count,
@@ -279,10 +310,22 @@ fn collect_running_sessions(nodes: &BTreeMap<String, crate::types::NodeCheckpoin
         .collect()
 }
 
+fn collect_running_child_workflows(
+    nodes: &BTreeMap<String, crate::types::NodeCheckpoint>,
+) -> Vec<String> {
+    nodes
+        .values()
+        .filter(|cp| cp.state == NodeState::Running)
+        .filter_map(|cp| cp.child_run_id.clone())
+        .collect()
+}
+
 fn collect_queue_candidates(nodes: &BTreeMap<String, crate::types::NodeCheckpoint>) -> Vec<String> {
     nodes
         .iter()
-        .filter(|(_, cp)| cp.state == NodeState::Running && cp.session_id.is_none())
+        .filter(|(_, cp)| {
+            cp.state == NodeState::Running && cp.session_id.is_none() && cp.child_run_id.is_none()
+        })
         .map(|(uid, _)| uid.clone())
         .collect()
 }
@@ -326,7 +369,8 @@ async fn topic_depth(deps: &Deps, topic: &str, timeout_ms: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::RunStatus;
+    use crate::types::{NodeCheckpoint, NodeState, RunStatus};
+    use std::collections::BTreeMap;
 
     #[test]
     fn stopping_false_for_terminal_status() {
@@ -334,5 +378,69 @@ mod tests {
         assert!(!super::should_stop(RunStatus::Cancelled));
         assert!(super::should_stop(RunStatus::Running));
         assert!(super::should_stop(RunStatus::AwaitingNodes));
+    }
+
+    fn checkpoint(
+        state: NodeState,
+        session_id: Option<&str>,
+        child_run_id: Option<&str>,
+    ) -> NodeCheckpoint {
+        NodeCheckpoint {
+            state,
+            session_id: session_id.map(str::to_string),
+            turn_id: None,
+            result_ref: None,
+            result_error: None,
+            child_run_id: child_run_id.map(str::to_string),
+            pending_at: None,
+            pending_timeout_ms: None,
+            retries: 0,
+            completed_at: None,
+            worker_name: None,
+        }
+    }
+
+    #[test]
+    fn collect_running_child_workflows_ignores_non_running_and_session_backed_nodes() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "invoice".to_string(),
+            checkpoint(NodeState::Running, None, Some("r_child_1")),
+        );
+        nodes.insert(
+            "done-child".to_string(),
+            checkpoint(NodeState::Done, None, Some("r_child_2")),
+        );
+        nodes.insert(
+            "agent-step".to_string(),
+            checkpoint(NodeState::Running, Some("wf_s1"), None),
+        );
+
+        assert_eq!(
+            super::collect_running_child_workflows(&nodes),
+            vec!["r_child_1".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_queue_candidates_excludes_session_and_child_workflow_backed_nodes() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "plain-fn".to_string(),
+            checkpoint(NodeState::Running, None, None),
+        );
+        nodes.insert(
+            "invoice".to_string(),
+            checkpoint(NodeState::Running, None, Some("r_child_1")),
+        );
+        nodes.insert(
+            "agent-step".to_string(),
+            checkpoint(NodeState::Running, Some("wf_s1"), None),
+        );
+
+        assert_eq!(
+            super::collect_queue_candidates(&nodes),
+            vec!["plain-fn".to_string()]
+        );
     }
 }

@@ -16,6 +16,8 @@ const isStateSlideoverOpen = ref(false)
 const isStreamSlideoverOpen = ref(false)
 const isCancelSlideoverOpen = ref(false)
 const isDeleteModalOpen = ref(false)
+const isChildRunsSlideoverOpen = ref(false)
+const childRunsSlideoverRuns = ref<Array<{ index: number, runId: string, status: string, error?: string, retries?: number, pendingAt?: number, completedAt?: number }>>([])
 const cancelPending = ref(false)
 const cancelError = ref<string | null>(null)
 const cancelResult = ref<WorkflowStopResponse | null>(null)
@@ -24,6 +26,10 @@ const deleteError = ref<string | null>(null)
 
 interface WorkflowRunStatusResponse {
   status: string
+  parent_run_id?: string
+  parent_node_uid?: string
+  root_run_id?: string
+  root_stream_scope_id?: string
   definition: any
   nodes: Record<string, any>
   node_results?: Record<string, string>
@@ -394,6 +400,7 @@ const flowMeta = computed(() => {
       loopGroupId: loopGroup?.id,
       loopGroupSize: loopGroup?.nodeIds.length || 0,
       loopPipeline: loopGroup?.label,
+      childWorkflow: node.childWorkflow,
     }
   })
 
@@ -407,8 +414,8 @@ const flowMeta = computed(() => {
         label: node.label,
         queue: node.function?.queue || 'default',
         engineRetryMax: node.function?.engine_retry?.max_attempts,
-        workerId: node.function.id,
-        runtime: node.function.runtime as 'nodejs' | 'python',
+        workerId: node.function?.id,
+        runtime: node.function?.runtime as 'nodejs' | 'python' | undefined,
         runtype: (node as any).runtype || 'task',
         emits: (node as any).emits || [],
       }
@@ -452,6 +459,7 @@ const stepStates = computed(() => {
       completed_at: nodeStatus.completed_at,
       worker_name: nodeStatus.worker_name,
       retries: nodeStatus.retries,
+      child_run_id: nodeStatus.child_run_id,
     }
   })
 
@@ -483,6 +491,27 @@ const stepStates = computed(() => {
       .map(([, cp]: any) => Number(cp?.completed_at || 0))
       .filter(v => v > 0)
 
+    // Expose one clickable entry per fanned-out child_workflow run so the
+    // diagram/overview can navigate into individual loop iterations instead
+    // of only showing the aggregated loop status.
+    const childRuns = nodeDef?.childWorkflow
+      ? children
+        .map(([uid, cp]: any) => {
+          const match = /#(\d+)$/.exec(uid)
+          return {
+            index: match ? Number(match[1]) : 0,
+            runId: cp?.child_run_id as string | undefined,
+            status: String(cp?.state || '').toLowerCase(),
+            error: typeof cp?.result_error === 'string' ? cp.result_error : undefined,
+            retries: Number(cp?.retries || 0),
+            pendingAt: Number(cp?.pending_at || 0) || undefined,
+            completedAt: Number(cp?.completed_at || 0) || undefined,
+          }
+        })
+        .filter((entry): entry is { index: number, runId: string, status: string, error: string | undefined, retries: number, pendingAt: number | undefined, completedAt: number | undefined } => typeof entry.runId === 'string' && entry.runId.length > 0)
+        .sort((a, b) => a.index - b.index)
+      : undefined
+
     out[baseId] = {
       ...(out[baseId] || {}),
       status: aggregated,
@@ -499,6 +528,7 @@ const stepStates = computed(() => {
           : 'pending',
       pending_at: childPending.length > 0 ? Math.min(...childPending) : out[baseId]?.pending_at,
       completed_at: childCompleted.length > 0 ? Math.max(...childCompleted) : out[baseId]?.completed_at,
+      ...(childRuns?.length ? { child_runs: childRuns } : {}),
     }
   })
 
@@ -591,12 +621,14 @@ const stepList = computed(() => {
       else if (statuses.length > 0 && statuses.every(s => s === 'completed' || s === 'done')) groupStatus = 'completed'
 
       const groupRetries = memberStates.reduce((sum: number, memberState: any) => sum + Number(memberState?.retries || 0), 0)
+      const groupChildRuns = memberStates.flatMap((memberState: any) => memberState?.child_runs || [])
 
       out.push({
         key: `loop-group:${group.id}`,
         status: groupStatus,
         retries: groupRetries,
         isLoopGroup: true,
+        childRuns: groupChildRuns,
         loopGroupId: group.id,
         loopOver: group.over,
         loopMode: group.mode,
@@ -634,6 +666,7 @@ const stepList = computed(() => {
       resultAvailable: state?.result_available,
       resultState: state?.result_state,
       retries: state?.retries,
+      childRuns: state?.child_runs,
       isLoop: false,
       loopOver: group?.over,
       loopMode: group?.mode || 'parallel',
@@ -644,6 +677,9 @@ const stepList = computed(() => {
       inLoopGroup: Boolean(group),
       isLoopLeader: Boolean(group?.nodeIds[0] === id),
       functionId: node?.function?.id,
+      childWorkflowId: node?.childWorkflow?.workflow,
+      childRunId: state?.child_run_id,
+      isChildWorkflow: Boolean(node?.childWorkflow),
       isVarStep: node?.function?.id === 'nworkflow::internal-var-set',
       isAgent: Boolean(node?.agent),
       agent: node?.agent,
@@ -691,6 +727,16 @@ const resultOverview = computed(() => {
     pending,
   }
 })
+
+function openChildRun(payload: { runId: string, nodeId?: string }) {
+  if (!payload.runId) return
+  void push(`/workflows/runs/${encodeURIComponent(payload.runId)}`)
+}
+
+function viewChildRuns(runs: Array<{ index: number, runId: string, status: string, error?: string, retries?: number, pendingAt?: number, completedAt?: number }>) {
+  childRunsSlideoverRuns.value = runs
+  isChildRunsSlideoverOpen.value = true
+}
 
 const selectedStep = ref<string | null>(null)
 const isResultSlideoverOpen = ref(false)
@@ -1118,6 +1164,21 @@ const formattedNodeResult = computed(() => {
               Run: <span class="font-mono text-lg opacity-70">{{ (runId || '').slice(0, 8) }}...</span>
             </h1>
             <p class="text-xs text-zinc-500 dark:text-zinc-400">Execution detail and node status</p>
+            <div
+              v-if="status?.parent_run_id"
+              class="mt-1 flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400"
+            >
+              <span>Child of</span>
+              <UButton
+                variant="link"
+                color="primary"
+                size="xs"
+                :label="`${status.parent_run_id.slice(0, 8)}...`"
+                :title="status.parent_run_id"
+                @click="push(`/workflows/runs/${encodeURIComponent(status.parent_run_id)}`)"
+              />
+              <span v-if="status.parent_node_uid">via {{ status.parent_node_uid }}</span>
+            </div>
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -1155,6 +1216,19 @@ const formattedNodeResult = computed(() => {
               <NventFlowStreamInspector
                 :run-id="runId"
                 :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
+              />
+            </template>
+          </USlideover>
+
+          <!-- Child Runs Slideover (opened programmatically from diagram/overview) -->
+          <USlideover
+            v-model="isChildRunsSlideoverOpen"
+            title="Child Runs"
+          >
+            <template #content>
+              <NventFlowChildRunsSlideover
+                :runs="childRunsSlideoverRuns"
+                @open-child-run="(runId: string) => openChildRun({ runId })"
               />
             </template>
           </USlideover>
@@ -1427,6 +1501,8 @@ const formattedNodeResult = computed(() => {
             :flow="flowMeta"
             :step-states="stepStates"
             :flow-status="normalizedStatus"
+            @open-child-run="openChildRun"
+            @view-child-runs="viewChildRuns"
           />
           <div v-else class="h-full flex items-center justify-center text-zinc-500">
              No diagram data available
@@ -1452,6 +1528,8 @@ const formattedNodeResult = computed(() => {
             @cancel-flow="cancelRun"
             @restart-flow="() => {}"
             @inspect-step-result="openResultSlideover"
+            @open-child-run="openChildRun"
+            @view-child-runs="viewChildRuns"
           />
           <div v-else-if="pending" class="p-8 space-y-4">
             <div class="h-8 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse w-1/2"></div>
@@ -1473,6 +1551,7 @@ const formattedNodeResult = computed(() => {
             :selected-step="selectedStep"
             :selected-step-node-ids="selectedStepNodeIds"
             :loop-index-options="loopIndexOptions"
+            @open-child-run="openChildRun"
           />
         </div>
       </div>

@@ -97,6 +97,7 @@ const ALLOWED_NODE_KEYS: &[&str] = &[
     "function",
     "agent",
     "agentOptions",
+    "childWorkflow",
     "input",
     "depends_on",
     "fanout",
@@ -107,6 +108,7 @@ const ALLOWED_FUNCTION_KEYS: &[&str] = &["id", "timeout_ms", "queue", "engine_re
 const ALLOWED_RESULT_KEYS: &[&str] = &["returnType", "streamChunkSize", "onMemoryFail"];
 const ALLOWED_INPUT_POLICY_KEYS: &[&str] = &["returnType", "onMemoryFail"];
 const ALLOWED_FANOUT_KEYS: &[&str] = &["over", "mode", "batchSize", "itemReturnType"];
+const ALLOWED_CHILD_WORKFLOW_KEYS: &[&str] = &["workflow"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
 // structural problem (plus the canonical shape), instead of serde's fail-fast
@@ -318,6 +320,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
 
     let has_function = n.contains_key("function");
     let has_agent = n.contains_key("agent");
+    let has_child_workflow = n.contains_key("childWorkflow");
 
     if has_function {
         match n.get("function") {
@@ -342,9 +345,33 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             )),
             None => unreachable!(),
         }
+    } else if has_child_workflow {
+        match n.get("childWorkflow") {
+            Some(Value::Object(child_workflow)) => {
+                for k in child_workflow.keys() {
+                    if !ALLOWED_CHILD_WORKFLOW_KEYS.contains(&k.as_str()) {
+                        p.push(format!("node `{id}`.childWorkflow: unknown field `{k}`"));
+                    }
+                }
+                let has_workflow = child_workflow
+                    .get("workflow")
+                    .and_then(|m| m.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if !has_workflow {
+                    p.push(format!("node `{id}`.childWorkflow: missing `workflow`"));
+                }
+            }
+            Some(other) => p.push(format!(
+                "node `{id}`.childWorkflow must be an object, not {}",
+                json_type(other)
+            )),
+            None => unreachable!(),
+        }
     } else if !has_agent {
         p.push(format!("node `{id}`: missing `function` or `agent`"));
     }
+
 
     let has_input = n.get("input").map(|x| !x.is_null()).unwrap_or(false);
     if !has_input {
@@ -879,6 +906,50 @@ async fn caller_workflow_depth(
     Ok(depth)
 }
 
+/// Pure derivation of `(root_run_id, root_stream_scope_id)` from a parent's own
+/// record: inherited transitively when the parent itself has a root, otherwise
+/// the parent IS the root and both resolve to its own `run_id` — the physical
+/// stream group every run's events are actually published/read under.
+fn derive_root_linkage(parent_run_id: &str, parent_record: &WorkflowRunRecord) -> (String, String) {
+    let root_run_id = parent_record
+        .root_run_id
+        .clone()
+        .unwrap_or_else(|| parent_run_id.to_string());
+    let root_stream_scope_id = parent_record
+        .root_stream_scope_id
+        .clone()
+        .unwrap_or_else(|| root_run_id.clone());
+    (root_run_id, root_stream_scope_id)
+}
+
+/// Resolve `(parent_run_id, root_run_id, root_stream_scope_id)` for a new run
+/// from its `caller_session_id`, reusing the same session→run lookup
+/// `caller_workflow_depth` performs. `root_run_id`/`root_stream_scope_id` are
+/// inherited transitively (a grandchild points at the same root as its
+/// parent), so every descendant can reach the root's stream scope in one hop.
+async fn resolve_parent_linkage(
+    deps: &Deps,
+    caller_session_id: Option<&str>,
+) -> Result<(Option<String>, Option<String>, Option<String>), WorkflowError> {
+    let Some(session_id) = caller_session_id else {
+        return Ok((None, None, None));
+    };
+    let Some(parent_run_id) = deps.internal_state.run_id_for_session(session_id).await? else {
+        return Ok((None, None, None));
+    };
+    let Some(parent_record) = state::get_run(&deps.iii, &parent_run_id).await? else {
+        return Ok((None, None, None));
+    };
+
+    let (root_run_id, root_stream_scope_id) = derive_root_linkage(&parent_run_id, &parent_record);
+
+    Ok((
+        Some(parent_run_id),
+        Some(root_run_id),
+        Some(root_stream_scope_id),
+    ))
+}
+
 /// Start a run: validate, resolve the caller session, dedupe on the idempotency
 /// key, persist the Running record, and enqueue the first tick. Fire-and-forget —
 /// the caller gets the `run_id` back immediately and receives the outcome via
@@ -941,6 +1012,12 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         )));
     }
 
+    // Direct parent/root linkage for ctx.callWorkflow(...) introspection & the
+    // root-stream mirror target. `None` when the caller isn't a workflow node
+    // session (e.g. a top-level chat/console start), so this run IS the root.
+    let (parent_run_id, root_run_id, root_stream_scope_id) =
+        resolve_parent_linkage(deps, caller_session_id.as_deref()).await?;
+
     let now = deps.now_ms();
 
     // Pre-initialize nodes in Pending state to show progress in UI immediately
@@ -957,6 +1034,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
                 completed_at: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 retries: 0,
                 worker_name: None,
             },
@@ -985,6 +1063,10 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         result_error: None,
         notify: req.notify,
         caller_session_id,
+        parent_run_id,
+        parent_node_uid: None,
+        root_run_id,
+        root_stream_scope_id,
         created_at: now,
         updated_at: now,
     };
@@ -1043,6 +1125,7 @@ mod tests {
             }),
             agent: None,
             agent_options: None,
+            child_workflow: None,
             input: InputSpec {
                 from: input_from,
                 template: None,
@@ -1087,6 +1170,73 @@ mod tests {
             default_functions: None,
             metadata: None,
         }
+    }
+
+    fn bare_run_record(run_id: &str) -> WorkflowRunRecord {
+        WorkflowRunRecord {
+            run_id: run_id.to_string(),
+            workflow_name: None,
+            workflow_trace_id: None,
+            state_scope_id: None,
+            stream_scope_id: Some(new_scope_id("stream")),
+            agent_session_id: None,
+            step: 0,
+            status: RunStatus::Running,
+            abort: false,
+            def_ref: run_id.to_string(),
+            input_ref: run_id.to_string(),
+            vars_ref: None,
+            state_keys_map: BTreeMap::new(),
+            stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
+            nodes: BTreeMap::new(),
+            fanout_src: BTreeMap::new(),
+            result_ref: None,
+            result_error: None,
+            notify: None,
+            caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn derive_root_linkage_treats_a_rootless_parent_as_the_root() {
+        // A parent with no root_run_id/root_stream_scope_id of its own IS the
+        // root: both must resolve to its own run_id, the physical group every
+        // reader/writer actually keys stream storage on.
+        let parent = bare_run_record("r_parent");
+        let (root_run_id, root_stream_scope_id) = derive_root_linkage("r_parent", &parent);
+        assert_eq!(root_run_id, "r_parent");
+        assert_eq!(root_stream_scope_id, "r_parent");
+    }
+
+    #[test]
+    fn derive_root_linkage_inherits_transitively_from_a_non_root_parent() {
+        // A grandchild's mirror target must be the ORIGINAL root's run_id, not
+        // its immediate parent's — and never the vestigial `stream_scope_id`.
+        let mut parent = bare_run_record("r_child");
+        parent.root_run_id = Some("r_root".to_string());
+        parent.root_stream_scope_id = Some("r_root".to_string());
+
+        let (root_run_id, root_stream_scope_id) = derive_root_linkage("r_child", &parent);
+        assert_eq!(root_run_id, "r_root");
+        assert_eq!(root_stream_scope_id, "r_root");
+    }
+
+    #[test]
+    fn derive_root_linkage_never_falls_back_to_the_vestigial_stream_scope_id() {
+        // Regression guard: `stream_scope_id` is never used as a physical stream
+        // group anywhere, so it must never leak into the derived root linkage.
+        let parent = bare_run_record("r_parent");
+        assert_ne!(parent.stream_scope_id.as_deref(), Some("r_parent"));
+
+        let (_, root_stream_scope_id) = derive_root_linkage("r_parent", &parent);
+        assert_eq!(root_stream_scope_id, "r_parent");
     }
 
     #[test]

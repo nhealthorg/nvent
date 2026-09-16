@@ -13,7 +13,8 @@ use crate::internal_state::{
 };
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
 use crate::types::{
-    AgentTaskRecord, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+    AgentTaskRecord, ChildWorkflowLinkRecord, QueueReceiptRecord, RunStatus, WorkflowDef,
+    WorkflowRunRecord,
 };
 
 pub struct RedisWorkflowInternalStateStore {
@@ -140,6 +141,20 @@ impl RedisWorkflowInternalStateStore {
 
     fn run_agent_tasks_key(&self, run_id: &str) -> String {
         format!("nvent:wf:run:{run_id}:agent_tasks")
+    }
+
+    fn child_workflow_link_key(&self, child_run_id: &str) -> String {
+        format!(
+            "nvent:wf:child_workflow_link:{}",
+            sanitize_segment(child_run_id)
+        )
+    }
+
+    fn run_child_workflow_links_key(&self, parent_run_id: &str) -> String {
+        format!(
+            "nvent:wf:run:{}:child_workflow_links",
+            sanitize_segment(parent_run_id)
+        )
     }
 
     fn run_log_key(&self, run_id: &str) -> String {
@@ -1182,6 +1197,113 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         let _ = conn.del::<_, ()>(self.run_agent_tasks_key(run_id)).await;
 
         Ok(())
+    }
+
+    async fn put_child_workflow_link(
+        &self,
+        link: &ChildWorkflowLinkRecord,
+    ) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.put_child_workflow_link(link).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let payload = serde_json::to_string(link).map_err(WorkflowError::Serde)?;
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("SET")
+            .arg(self.child_workflow_link_key(&link.child_run_id))
+            .arg(&payload)
+            .ignore()
+            .cmd("SADD")
+            .arg(self.run_child_workflow_links_key(&link.parent_run_id))
+            .arg(&link.child_run_id)
+            .ignore();
+
+        let _: () = pipe.query_async(&mut conn).await.map_err(|err| {
+            WorkflowError::State(format!(
+                "redis put child workflow link failed for {}: {err}",
+                link.child_run_id
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    async fn get_child_workflow_link(
+        &self,
+        child_run_id: &str,
+    ) -> Result<Option<ChildWorkflowLinkRecord>, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.get_child_workflow_link(child_run_id).await;
+        }
+
+        let mut conn = self.conn().await?;
+        let raw: Option<String> = conn
+            .get(self.child_workflow_link_key(child_run_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis get child workflow link failed for {child_run_id}: {err}"
+                ))
+            })?;
+
+        match raw {
+            Some(json_str) => {
+                let link = serde_json::from_str(&json_str).map_err(WorkflowError::Serde)?;
+                Ok(Some(link))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn delete_child_workflow_link(&self, child_run_id: &str) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.delete_child_workflow_link(child_run_id).await;
+        }
+
+        // The parent's link-id set entry is left behind; list_child_workflow_links_for_run
+        // already tolerates dangling ids (get returns None and is skipped), and the set
+        // itself is deleted wholesale once its parent run is deleted.
+        let mut conn = self.conn().await?;
+        conn.del::<_, ()>(self.child_workflow_link_key(child_run_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis delete child workflow link failed for {child_run_id}: {err}"
+                ))
+            })
+    }
+
+    async fn list_child_workflow_links_for_run(
+        &self,
+        parent_run_id: &str,
+    ) -> Result<Vec<ChildWorkflowLinkRecord>, WorkflowError> {
+        if !self.has_redis() {
+            return self
+                .fallback
+                .list_child_workflow_links_for_run(parent_run_id)
+                .await;
+        }
+
+        let mut conn = self.conn().await?;
+        let child_run_ids: Vec<String> = conn
+            .smembers(self.run_child_workflow_links_key(parent_run_id))
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis smembers child workflow links failed for {parent_run_id}: {err}"
+                ))
+            })?;
+
+        let mut links = Vec::new();
+        for child_run_id in child_run_ids {
+            if let Some(link) = self.get_child_workflow_link(&child_run_id).await? {
+                links.push(link);
+            }
+        }
+
+        Ok(links)
     }
 
     async fn put_run_log(

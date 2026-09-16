@@ -27,6 +27,13 @@ pub struct RunDeleteResponse {
     pub queue_cleanup_succeeded: usize,
     #[serde(default)]
     pub queue_cleanup_errors: BTreeMap<String, String>,
+    /// `ctx.callWorkflow(...)` child runs cascade-deleted before this run.
+    #[serde(default)]
+    pub child_workflows_deleted: u32,
+    /// Child runs whose cascade-delete RPC failed; their link is kept so a
+    /// later delete attempt on this run can retry them.
+    #[serde(default)]
+    pub child_workflows_failed: u32,
 }
 
 pub async fn handle(
@@ -51,10 +58,52 @@ pub async fn delete_run_by_id(
             queue_cleanup_attempted: 0,
             queue_cleanup_succeeded: 0,
             queue_cleanup_errors: BTreeMap::new(),
+            child_workflows_deleted: 0,
+            child_workflows_failed: 0,
         });
     };
 
     let was_terminal = record.status.is_terminal();
+
+    // Child artifacts before the parent record: cascade-delete every
+    // ctx.callWorkflow(...) child run (deepest first, via the same
+    // nworkflow::run-delete RPC a caller would use) before touching this run's
+    // own artifacts. A link is only cleared once its child is confirmed gone,
+    // so a failed cascade step leaves a retryable trail instead of an orphan.
+    let child_links = crate::state::list_child_workflow_links_for_run(run_id)
+        .await
+        .unwrap_or_default();
+    let mut child_workflows_deleted = 0u32;
+    let mut child_workflows_failed = 0u32;
+    let cascade_timeout_ms = deps.cfg().await.cleanup_timeout_ms;
+    for link in &child_links {
+        let delete_res = deps
+            .trigger_bounded(
+                TriggerRequest {
+                    function_id: "nworkflow::run-delete".into(),
+                    payload: json!({ "run_id": link.child_run_id }),
+                    action: None,
+                    timeout_ms: None,
+                },
+                cascade_timeout_ms,
+            )
+            .await;
+        match delete_res {
+            Ok(_) => {
+                child_workflows_deleted += 1;
+                let _ = crate::state::delete_child_workflow_link(&link.child_run_id).await;
+            }
+            Err(e) => {
+                child_workflows_failed += 1;
+                tracing::warn!(
+                    run_id = %run_id,
+                    child_run_id = %link.child_run_id,
+                    error = %e,
+                    "failed to cascade-delete child workflow run; link kept for retry"
+                );
+            }
+        }
+    }
 
     // Best-effort stop cascade for any still-running harness sessions.
     let timeout_ms = deps.cfg().await.cleanup_timeout_ms;
@@ -114,6 +163,8 @@ pub async fn delete_run_by_id(
         queue_cleanup_attempted,
         queue_cleanup_succeeded,
         queue_cleanup_errors,
+        child_workflows_deleted,
+        child_workflows_failed,
     })
 }
 
@@ -207,6 +258,8 @@ mod tests {
             queue_cleanup_attempted: 1,
             queue_cleanup_succeeded: 1,
             queue_cleanup_errors: BTreeMap::new(),
+            child_workflows_deleted: 0,
+            child_workflows_failed: 0,
         };
 
         let v = serde_json::to_value(&resp).expect("serialize response");

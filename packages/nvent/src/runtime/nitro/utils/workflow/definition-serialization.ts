@@ -96,11 +96,12 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
 
     const fn = (node as any).function
     const agent = (node as any).agent
+    const childWorkflow = (node as any).childWorkflow
 
-    if (!fn && !agent) {
+    if (!fn && !agent && !childWorkflow) {
       issues.push({
         path: `definition.nodes.${nodeId}`,
-        message: 'node definition must specify either function or agent',
+        message: 'node definition must specify either function, agent, or childWorkflow',
         value: node,
       })
     } else if (fn) {
@@ -136,6 +137,23 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
           message: 'agent must be an object',
           value: agent,
         })
+      }
+    } else if (childWorkflow) {
+      if (typeof childWorkflow !== 'object' || Array.isArray(childWorkflow)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.childWorkflow`,
+          message: 'childWorkflow must be an object',
+          value: childWorkflow,
+        })
+      } else {
+        const workflowId = (childWorkflow as any).workflow
+        if (typeof workflowId !== 'string' || workflowId.length === 0) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.childWorkflow.workflow`,
+            message: 'childWorkflow.workflow must be a non-empty string',
+            value: workflowId,
+          })
+        }
       }
     }
 

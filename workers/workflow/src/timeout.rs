@@ -49,6 +49,7 @@ mod tests {
             turn_id: Some("t".into()),
             result_ref: None,
             result_error: None,
+            child_run_id: None,
             pending_at: Some(pending_at),
             pending_timeout_ms: timeout,
             retries,

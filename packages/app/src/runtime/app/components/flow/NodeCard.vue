@@ -21,6 +21,14 @@
           >
             {{ displayName }}
           </p>
+          <UBadge
+            v-if="data?.isChildWorkflow"
+            label="WORKFLOW"
+            size="xs"
+            color="primary"
+            variant="soft"
+            icon="i-lucide-workflow"
+          />
         </div>
         <div class="flex items-center gap-2">
           <span
@@ -52,6 +60,80 @@
     </template>
 
     <div class="px-3 py-2 text-xs space-y-1">
+      <div
+        v-if="data?.isChildWorkflow"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-lucide-git-branch"
+            class="size-3"
+          />
+          Target
+        </span>
+        <span
+          class="truncate ml-2 font-mono"
+          :title="data.childWorkflowId"
+        >{{ data.childWorkflowId || '-' }}</span>
+      </div>
+      <div
+        v-if="data?.childRuns?.length"
+        class="pt-1"
+      >
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+            <UIcon
+              name="i-lucide-git-branch"
+              class="size-3"
+            />
+            Child runs ({{ data.childRuns.length }})
+          </span>
+        </div>
+        <div
+          v-if="data.childRuns.length <= inlineChildRunLimit"
+          class="flex flex-wrap gap-1"
+        >
+          <button
+            v-for="run in data.childRuns"
+            :key="run.runId"
+            type="button"
+            class="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[10px] font-mono text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+            :title="run.runId"
+            @click.stop="emit('open-child-run', run.runId)"
+          >
+            #{{ run.index }}
+          </button>
+        </div>
+        <div
+          v-else
+          class="flex items-center justify-between gap-2"
+        >
+          <span class="text-[10px] text-gray-500 dark:text-gray-400">{{ childRunStatusSummary(data.childRuns) }}</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded border border-primary-300 dark:border-primary-700 px-1.5 py-0.5 text-[10px] font-medium text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+            @click.stop="emit('view-child-runs', data.childRuns)"
+          >
+            View all
+          </button>
+        </div>
+      </div>
+      <div
+        v-else-if="data?.childRunId"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon
+            name="i-lucide-external-link"
+            class="size-3"
+          />
+          Child run
+        </span>
+        <span
+          class="truncate ml-2 font-mono text-primary-500"
+          :title="data.childRunId"
+        >{{ shortId(data.childRunId) }}</span>
+      </div>
       <div class="flex items-center justify-between">
         <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
           <UIcon
@@ -294,16 +376,45 @@ interface AwaitConfig {
 const props = defineProps<{
   id: string
   data: Record<string, any>
-  kind?: 'entry' | 'step'
+  kind?: 'entry' | 'step' | 'child'
 }>()
+
+const emit = defineEmits<{
+  'open-child-run': [runId: string]
+  'view-child-runs': [runs: Array<{ index: number, runId: string, status: string }>]
+}>()
+
+const inlineChildRunLimit = 6
+
+function childRunStatusSummary(runs: Array<{ status: string }>): string {
+  const counts = { running: 0, completed: 0, failed: 0, other: 0 }
+  for (const run of runs) {
+    const status = (run.status || '').toLowerCase()
+    if (status === 'running' || status === 'active' || status === 'queued' || status === 'pending') counts.running++
+    else if (status === 'done' || status === 'completed') counts.completed++
+    else if (status === 'failed' || status === 'error') counts.failed++
+    else counts.other++
+  }
+  const parts = [`${counts.completed} done`]
+  if (counts.running > 0) parts.push(`${counts.running} running`)
+  if (counts.failed > 0) parts.push(`${counts.failed} failed`)
+  if (counts.other > 0) parts.push(`${counts.other} pending`)
+  return parts.join(' • ')
+}
 
 const headerClass = computed(() => props.kind === 'entry'
   ? 'px-3 py-2 bg-gradient-to-br from-emerald-800 to-emerald-700 text-emerald-50 rounded-t'
+  : props.kind === 'child'
+    ? 'px-3 py-2 bg-gradient-to-br from-violet-800 to-indigo-700 text-violet-50 rounded-t'
   : props.data?.isAgent || props.data?.agent
     ? 'px-3 py-2 bg-gradient-to-br from-indigo-800 to-purple-700 text-indigo-50 rounded-t'
     : props.data?.isLoop
       ? 'px-3 py-2 bg-gradient-to-br from-cyan-800 to-sky-700 text-cyan-50 rounded-t'
       : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
+
+  function shortId(value: string): string {
+    return value.length > 12 ? `${value.slice(0, 8)}...${value.slice(-3)}` : value
+  }
 
 const displayName = computed(() => {
   const label = typeof props.data?.label === 'string' ? props.data.label.trim() : ''

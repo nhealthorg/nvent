@@ -269,6 +269,50 @@
             </div>
 
             <div
+              v-if="item.step.childRuns?.length"
+              class="mt-2"
+            >
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-semibold uppercase tracking-wide text-cyan-700/80 dark:text-cyan-300/80">
+                  Child runs ({{ item.step.childRuns.length }})
+                </span>
+                <UButton
+                  v-if="item.step.childRuns.length > inlineChildRunLimit"
+                  size="2xs"
+                  variant="soft"
+                  color="cyan"
+                  @click.stop="emit('view-child-runs', item.step.childRuns)"
+                >
+                  View all
+                </UButton>
+              </div>
+              <div
+                v-if="item.step.childRuns.length <= inlineChildRunLimit"
+                class="flex flex-wrap gap-1.5"
+              >
+                <button
+                  v-for="run in item.step.childRuns"
+                  :key="run.runId"
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-cyan-300/70 dark:border-cyan-700 bg-white/80 dark:bg-cyan-950/30 px-1.5 py-1 text-[10px] font-mono hover:bg-cyan-100 dark:hover:bg-cyan-900/40"
+                  :title="run.runId"
+                  @click.stop="emit('open-child-run', { runId: run.runId })"
+                >
+                  <UIcon
+                    :name="getStepStatusIcon(run.status)"
+                    class="w-3 h-3"
+                    :class="getStepStatusIconColor(run.status)"
+                  />
+                  <span>#{{ run.index }}</span>
+                  <UIcon
+                    name="i-lucide-external-link"
+                    class="w-3 h-3 opacity-70"
+                  />
+                </button>
+              </div>
+            </div>
+
+            <div
               v-if="item.step.canInspectResult"
               class="mt-3 flex justify-end"
             >
@@ -663,7 +707,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   'inspect-step-result': [stepKey: string]
+  'open-child-run': [payload: { runId: string }]
+  'view-child-runs': [runs: Array<{ index: number, runId: string, status: string }>]
 }>()
+
+const inlineChildRunLimit = 6
 
 // Copy to clipboard functionality
 const copiedUrl = ref<string | null>(null)

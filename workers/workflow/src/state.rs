@@ -639,6 +639,36 @@ pub async fn delete_agent_tasks_for_run(run_id: &str) -> Result<(), WorkflowErro
         .await
 }
 
+pub async fn put_child_workflow_link(
+    link: &crate::types::ChildWorkflowLinkRecord,
+) -> Result<(), WorkflowError> {
+    require_internal_state_store()?
+        .put_child_workflow_link(link)
+        .await
+}
+
+pub async fn get_child_workflow_link(
+    child_run_id: &str,
+) -> Result<Option<crate::types::ChildWorkflowLinkRecord>, WorkflowError> {
+    require_internal_state_store()?
+        .get_child_workflow_link(child_run_id)
+        .await
+}
+
+pub async fn delete_child_workflow_link(child_run_id: &str) -> Result<(), WorkflowError> {
+    require_internal_state_store()?
+        .delete_child_workflow_link(child_run_id)
+        .await
+}
+
+pub async fn list_child_workflow_links_for_run(
+    parent_run_id: &str,
+) -> Result<Vec<crate::types::ChildWorkflowLinkRecord>, WorkflowError> {
+    require_internal_state_store()?
+        .list_child_workflow_links_for_run(parent_run_id)
+        .await
+}
+
 /// Delete a terminal run's persisted state: its node-result blobs and per-node
 /// session reverse-index entries, then its definition, then the run record itself.
 /// Used by the sweep to GC runs past the retention window so `list_runs` doesn't
@@ -661,7 +691,12 @@ pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(
     }
     delete_run_state_entries_from_registry(iii, record).await?;
 
-    let stream_group_id = record.stream_scope_id.as_deref().unwrap_or(&record.run_id);
+    // The physical stream group a run's events are published/read under is
+    // always its own `run_id` (see `stream_publish::publish_to_group` and every
+    // reader). `stream_scope_id` is a separate persisted identifier that is
+    // never used as a stream group, so deleting under it would silently leave
+    // the real stream entries (and their storage) behind forever.
+    let stream_group_id = record.run_id.as_str();
     for stream_name in &record.stream_ids {
         delete_run_stream_entries(iii, stream_name, stream_group_id).await?;
     }

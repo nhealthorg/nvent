@@ -13,6 +13,7 @@ use crate::internal_state::WorkflowInternalStateStore;
 use crate::locks::WorkflowLocks;
 
 pub mod agent;
+pub mod child_workflow;
 pub mod config_get;
 pub mod lifecycle_hooks;
 pub mod list_runs;
@@ -424,6 +425,34 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { agent::handle_start(&d, req).await.map_err(Error::from) }
         })
         .description("Internal: spawn an agent task via harness for a workflow run."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        child_workflow::CHILD_START_ID,
+        RegisterFunction::new_async(move |req: child_workflow::ChildStartRequest| {
+            let d = d.clone();
+            async move {
+                child_workflow::start_child_workflow_task(&d, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description("Internal: start a child workflow run for ctx.callWorkflow(...) and link it to its parent node."),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        child_workflow::CHILD_COMPLETED_ID,
+        RegisterFunction::new_async(move |payload: child_workflow::ChildCompletedPayload| {
+            let d = d.clone();
+            async move {
+                child_workflow::handle_completed(&d, payload)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description("Internal: notify callback fired when a ctx.callWorkflow(...) child run reaches a terminal state."),
     );
 
     let d = deps.clone();

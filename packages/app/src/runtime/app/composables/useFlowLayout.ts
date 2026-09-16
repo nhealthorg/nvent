@@ -54,6 +54,10 @@ export interface StepNodeData {
   worker_name?: string
   pending_at?: number
   completed_at?: number
+  childWorkflowId?: string
+  childRunId?: string
+  childRuns?: Array<{ index: number, runId: string, status: string }>
+  isChildWorkflow?: boolean
   [key: string]: any
 }
 
@@ -117,8 +121,12 @@ export function useFlowLayout(props: {
   }
 
   function estimateStepHeight(stepLike: any): number {
-    if (stepLike?.isLoop || stepLike?.loopGroupId) return 180
-    return 210
+    const base = stepLike?.isLoop || stepLike?.loopGroupId ? 180 : 210
+    // child_workflow nodes render an extra "Target" row plus a child-runs
+    // section (chips or a status summary + "View all" button), so they need
+    // more vertical room than a plain function/agent node.
+    const childWorkflowExtra = stepLike?.childWorkflow ? 70 : 0
+    return base + childWorkflowExtra
   }
 
   function getDisplayLabel(stepName: string, step: any): string {
@@ -252,6 +260,10 @@ export function useFlowLayout(props: {
               attempt: s?.attempt,
               error: s?.error,
               __nodeHeight: nodeHeight,
+                childWorkflowId: step?.childWorkflow?.workflow,
+                childRunId: s?.child_run_id,
+                childRuns: s?.child_runs,
+                isChildWorkflow: Boolean(step?.childWorkflow),
             },
             type: 'flow-step',
             style: { minWidth: `${nodeWidth}px`, zIndex: 20 },

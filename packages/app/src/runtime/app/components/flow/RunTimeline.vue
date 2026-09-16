@@ -94,6 +94,7 @@
           <TimelineList
             :items="streamItems"
             height-class="min-h-full"
+            @open-child-run="emit('open-child-run', $event)"
           />
         </div>
       </template>
@@ -113,6 +114,7 @@
           v-else
           :items="modeItems"
           height-class="min-h-full"
+          @open-child-run="emit('open-child-run', $event)"
         />
       </template>
 
@@ -159,6 +161,10 @@ const props = defineProps<{
   selectedStep?: string | null
   selectedStepNodeIds?: string[]
   loopIndexOptions?: Array<{ value: string, label: string }>
+}>()
+
+const emit = defineEmits<{
+  (event: 'open-child-run', payload: { runId: string }): void
 }>()
 
 const mode = ref<TimelineMode>('traces')

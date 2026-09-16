@@ -63,6 +63,26 @@
               :data="data"
               kind="step"
               @action="onAction"
+              @open-child-run="(runId) => emit('openChildRun', { runId, nodeId: id })"
+              @view-child-runs="(runs) => emit('viewChildRuns', runs)"
+            />
+            <Handle
+              type="target"
+              :position="Position.Left"
+            />
+            <Handle
+              type="source"
+              :position="Position.Right"
+            />
+          </template>
+
+          <template #node-flow-child-workflow="{ id, data }">
+            <FlowNodeCard
+              :id="id"
+              :data="data"
+              kind="child"
+              @open-child-run="(runId) => emit('openChildRun', { runId, nodeId: id })"
+              @view-child-runs="(runs) => emit('viewChildRuns', runs)"
             />
             <Handle
               type="target"
@@ -135,6 +155,8 @@ const props = defineProps<{
 const heightClass = computed(() => props.heightClass || 'h-80')
 const emit = defineEmits<{
   (e: 'nodeSelected', payload: { id: string }): void
+  (e: 'openChildRun', payload: { runId: string, nodeId: string }): void
+  (e: 'viewChildRuns', payload: Array<{ index: number, runId: string, status: string }>): void
   (e: 'nodeAction', payload: { id: string, action: 'run' | 'logs' | 'details' }): void
 }>()
 const flowId = computed(() => props.flow?.id)
@@ -261,6 +283,10 @@ watch(
 function onNodeClick(evt: any) {
   const id = evt?.node?.id || evt?.id
   if (id) emit('nodeSelected', { id })
+  const childRunId = evt?.node?.data?.childRunId
+  if (id && typeof childRunId === 'string' && childRunId.length > 0) {
+    emit('openChildRun', { runId: childRunId, nodeId: id })
+  }
 }
 
 function onAction(payload: { id: string, action: 'run' | 'logs' | 'details' }) {

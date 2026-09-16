@@ -7,7 +7,8 @@ use crate::config::WorkerConfig;
 use crate::error::WorkflowError;
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
 use crate::types::{
-    AgentTaskRecord, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+    AgentTaskRecord, ChildWorkflowLinkRecord, QueueReceiptRecord, RunStatus, WorkflowDef,
+    WorkflowRunRecord,
 };
 
 pub mod file;
@@ -164,6 +165,24 @@ pub trait WorkflowInternalStateStore: Send + Sync {
         run_id: &str,
     ) -> Result<Vec<AgentTaskRecord>, WorkflowError>;
     async fn delete_agent_tasks_for_run(&self, run_id: &str) -> Result<(), WorkflowError>;
+
+    // ---------------------------------------------------------------------
+    // Child workflow links (ctx.callWorkflow parent/child correlation)
+    // ---------------------------------------------------------------------
+
+    async fn put_child_workflow_link(
+        &self,
+        link: &ChildWorkflowLinkRecord,
+    ) -> Result<(), WorkflowError>;
+    async fn get_child_workflow_link(
+        &self,
+        child_run_id: &str,
+    ) -> Result<Option<ChildWorkflowLinkRecord>, WorkflowError>;
+    async fn delete_child_workflow_link(&self, child_run_id: &str) -> Result<(), WorkflowError>;
+    async fn list_child_workflow_links_for_run(
+        &self,
+        parent_run_id: &str,
+    ) -> Result<Vec<ChildWorkflowLinkRecord>, WorkflowError>;
 
     // ---------------------------------------------------------------------
     // Logs / traces

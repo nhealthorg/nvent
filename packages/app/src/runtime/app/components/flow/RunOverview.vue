@@ -86,6 +86,8 @@
         v-model="selectedStep"
         :items="radioItems"
         @inspect-step-result="emit('inspect-step-result', $event)"
+        @open-child-run="emit('open-child-run', $event)"
+        @view-child-runs="emit('view-child-runs', $event)"
       />
     </div>
   </div>
@@ -128,6 +130,8 @@ const emit = defineEmits<{
   'cancel-flow': []
   'restart-flow': []
   'inspect-step-result': [stepKey: string]
+  'open-child-run': [payload: { runId: string }]
+  'view-child-runs': [runs: Array<{ index: number, runId: string, status: string }>]
 }>()
 
 const executableStepCount = computed(() => props.steps.filter(step => !step?.isLoopGroup).length)

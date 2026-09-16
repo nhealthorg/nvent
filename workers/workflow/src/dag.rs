@@ -31,6 +31,7 @@ fn pending_checkpoint() -> NodeCheckpoint {
         turn_id: None,
         result_ref: None,
         result_error: None,
+        child_run_id: None,
         pending_at: None,
         pending_timeout_ms: None,
         retries: 0,
@@ -795,6 +796,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: Some("List the docs to read for: {{topic}}".to_string()),
@@ -820,6 +822,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: Some("Read and summarize: {{item}}".to_string()),
@@ -850,6 +853,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: Some("Synthesize from: {{results}}".to_string()),
@@ -896,6 +900,10 @@ mod tests {
             result_error: None,
             notify: None,
             caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -908,6 +916,7 @@ mod tests {
             turn_id: None,
             result_ref: None,
             result_error: None,
+            child_run_id: None,
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
@@ -1187,6 +1196,7 @@ mod tests {
             turn_id: None,
             result_ref: None,
             result_error: None,
+            child_run_id: None,
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
@@ -1202,6 +1212,7 @@ mod tests {
             turn_id: None,
             result_ref: None,
             result_error: None,
+            child_run_id: None,
             pending_at: None,
             pending_timeout_ms: None,
             retries: 0,
@@ -1263,6 +1274,7 @@ mod tests {
                 function: Some(function("fn-b")),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1281,6 +1293,7 @@ mod tests {
                 function: Some(function("fn-c")),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1299,6 +1312,7 @@ mod tests {
                 function: Some(function("fn-join")),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: InputFrom::Many(vec!["node:b".to_string(), "node:c".to_string()]),
                     template: None,

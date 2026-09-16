@@ -6,7 +6,7 @@ use crate::{
     error::WorkflowError,
     ids::new_ref_id,
     state,
-    types::{NodeState, WorkflowDef, WorkflowRunRecord},
+    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
 };
 
 fn effective_max_retries(def: &WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
@@ -179,6 +179,19 @@ async fn retry_or_fail_function_node(
 // reconcile_function_nodes
 // ---------------------------------------------------------------------------
 
+/// Running nodes dispatched as a plain function/queue call: no `session_id`
+/// (not harness-backed) and no `child_run_id` (a `ctx.callWorkflow` node —
+/// those are polled separately, against the child run's own status). Pure.
+fn collect_running_function_node_uids(nodes: &BTreeMap<String, NodeCheckpoint>) -> Vec<String> {
+    nodes
+        .iter()
+        .filter(|(_, cp)| {
+            cp.state == NodeState::Running && cp.session_id.is_none() && cp.child_run_id.is_none()
+        })
+        .map(|(uid, _)| uid.clone())
+        .collect()
+}
+
 /// Poll Running function-based nodes (those without session_id) for completion.
 /// Functions write their result via state::put and optionally emit
 /// workflow::node-completed to wake the tick (fast path). This polling is the
@@ -189,13 +202,10 @@ pub async fn reconcile_function_nodes(
     record: &mut WorkflowRunRecord,
     pending_stream_events: &mut Vec<crate::functions::stream_publish::StreamPublishRequest>,
 ) -> Result<(), WorkflowError> {
-    // Find Running nodes without session_id (function-based execution)
-    let running_functions: Vec<String> = record
-        .nodes
-        .iter()
-        .filter(|(_, cp)| cp.state == NodeState::Running && cp.session_id.is_none())
-        .map(|(uid, _)| uid.clone())
-        .collect();
+    // Find Running nodes without session_id (function-based execution). Child-workflow
+    // nodes also have session_id == None but are reconciled separately, against the
+    // child run's own status, by `reconcile_child_workflow_nodes`.
+    let running_functions: Vec<String> = collect_running_function_node_uids(&record.nodes);
 
     if !running_functions.is_empty() {
         tracing::debug!(
@@ -284,6 +294,134 @@ pub async fn reconcile_function_nodes(
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// reconcile_child_workflow_nodes
+// ---------------------------------------------------------------------------
+
+/// `(node_uid, child_run_id)` pairs for every Running `child_workflow` node. Pure.
+fn collect_running_child_workflow_nodes(
+    nodes: &BTreeMap<String, NodeCheckpoint>,
+) -> Vec<(String, String)> {
+    nodes
+        .iter()
+        .filter(|(_, cp)| cp.state == NodeState::Running)
+        .filter_map(|(uid, cp)| {
+            cp.child_run_id
+                .clone()
+                .map(|child_id| (uid.clone(), child_id))
+        })
+        .collect()
+}
+
+/// Map a child run's status to the `classify_terminal` status string, or
+/// `None` while it is still in flight. Pure.
+fn child_terminal_status_str(status: RunStatus) -> Option<&'static str> {
+    match status {
+        RunStatus::Completed => Some("completed"),
+        RunStatus::Failed => Some("failed"),
+        RunStatus::Cancelled => Some("cancelled"),
+        RunStatus::Running | RunStatus::AwaitingNodes => None,
+    }
+}
+
+/// Parent-node `result_error` for a failed child run. Pure.
+fn child_workflow_failed_message(child_run_id: &str, err: &str) -> String {
+    format!("child workflow (run {child_run_id}) failed: {err}")
+}
+
+/// Parent-node `result_error` for a cancelled child run. Pure.
+fn child_workflow_cancelled_message(child_run_id: &str) -> String {
+    format!("child workflow (run {child_run_id}) cancelled")
+}
+
+/// Poll Running `child_workflow` nodes against their target run's own status.
+/// This is the pull-side fallback for `child_workflow::handle_completed` (the
+/// push path via `notify`): if that callback is ever lost — worker restart,
+/// dropped delivery — this closes the loop by directly checking whether the
+/// child run already reached a terminal state.
+pub async fn reconcile_child_workflow_nodes(
+    deps: &crate::functions::Deps,
+    record: &mut WorkflowRunRecord,
+) -> Result<(), WorkflowError> {
+    let running_children = collect_running_child_workflow_nodes(&record.nodes);
+
+    let now = deps.now_ms();
+
+    for (uid, child_run_id) in running_children {
+        let Some(child_record) = state::get_run(&deps.iii, &child_run_id).await? else {
+            // Vanished before reporting back (swept/deleted). Leave Running — the
+            // timeout sweep is the backstop so the parent node doesn't hang forever.
+            tracing::warn!(
+                run_id = %record.run_id,
+                node_uid = %uid,
+                child_run_id = %child_run_id,
+                "reconcile: child workflow run not found"
+            );
+            continue;
+        };
+
+        let status = match child_terminal_status_str(child_record.status) {
+            Some(status) => status,
+            None => continue,
+        };
+
+        let result = match child_record.result_ref.as_deref() {
+            Some(result_ref) => state::get_run_result(&deps.iii, result_ref).await?,
+            None => None,
+        };
+
+        tracing::info!(
+            run_id = %record.run_id,
+            node_uid = %uid,
+            child_run_id = %child_run_id,
+            status,
+            "reconcile: child workflow run reached terminal state (pull fallback)"
+        );
+
+        match classify_terminal(status, result, child_record.result_error.clone()) {
+            NodeOutcome::StillRunning => {
+                unreachable!("status is always one of the terminal branches above")
+            }
+            NodeOutcome::Done(res) => {
+                state::put_node_result(&deps.iii, &record.run_id, &uid, &res).await?;
+                if let Some(cp) = record.nodes.get_mut(&uid) {
+                    cp.result_ref = Some(new_ref_id("node_result"));
+                    cp.state = NodeState::Done;
+                    cp.completed_at = Some(now);
+                    let dur = cp
+                        .pending_at
+                        .map(|p| (now - p).max(0) as f64)
+                        .unwrap_or(0.0);
+                    crate::telemetry::record_node_terminal(true, dur);
+                }
+            }
+            NodeOutcome::Failed(err) => {
+                if let Some(cp) = record.nodes.get_mut(&uid) {
+                    cp.result_error = Some(child_workflow_failed_message(&child_run_id, &err));
+                    cp.state = NodeState::Failed;
+                    cp.completed_at = Some(now);
+                    let dur = cp
+                        .pending_at
+                        .map(|p| (now - p).max(0) as f64)
+                        .unwrap_or(0.0);
+                    crate::telemetry::record_node_terminal(false, dur);
+                }
+            }
+            NodeOutcome::Cancelled => {
+                if let Some(cp) = record.nodes.get_mut(&uid) {
+                    cp.result_error = Some(child_workflow_cancelled_message(&child_run_id));
+                    cp.state = NodeState::Cancelled;
+                    cp.completed_at = Some(now);
+                }
+            }
+        }
+
+        let _ = state::delete_child_workflow_link(&child_run_id).await;
     }
 
     Ok(())
@@ -450,6 +588,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -593,5 +732,133 @@ mod tests {
         let def = retry_test_def(None);
         assert_eq!(effective_max_retries(&def, "step", 3), 3);
         assert_eq!(effective_max_retries(&def, "missing", 3), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Child-workflow reconcile helpers
+    // -----------------------------------------------------------------------
+
+    fn checkpoint(
+        state: NodeState,
+        session_id: Option<&str>,
+        child_run_id: Option<&str>,
+    ) -> NodeCheckpoint {
+        NodeCheckpoint {
+            state,
+            session_id: session_id.map(str::to_string),
+            turn_id: None,
+            result_ref: None,
+            result_error: None,
+            child_run_id: child_run_id.map(str::to_string),
+            pending_at: None,
+            pending_timeout_ms: None,
+            retries: 0,
+            completed_at: None,
+            worker_name: None,
+        }
+    }
+
+    #[test]
+    fn collect_running_function_node_uids_excludes_child_and_session_backed_nodes() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "plain-fn".to_string(),
+            checkpoint(NodeState::Running, None, None),
+        );
+        nodes.insert(
+            "invoice".to_string(),
+            checkpoint(NodeState::Running, None, Some("r_child_1")),
+        );
+        nodes.insert(
+            "agent-step".to_string(),
+            checkpoint(NodeState::Running, Some("wf_s1"), None),
+        );
+        nodes.insert(
+            "done-fn".to_string(),
+            checkpoint(NodeState::Done, None, None),
+        );
+
+        assert_eq!(
+            collect_running_function_node_uids(&nodes),
+            vec!["plain-fn".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_running_child_workflow_nodes_ignores_non_running_and_plain_nodes() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "invoice".to_string(),
+            checkpoint(NodeState::Running, None, Some("r_child_1")),
+        );
+        nodes.insert(
+            "shipped".to_string(),
+            checkpoint(NodeState::Done, None, Some("r_child_2")),
+        );
+        nodes.insert(
+            "plain-fn".to_string(),
+            checkpoint(NodeState::Running, None, None),
+        );
+
+        assert_eq!(
+            collect_running_child_workflow_nodes(&nodes),
+            vec![("invoice".to_string(), "r_child_1".to_string())]
+        );
+    }
+
+    #[test]
+    fn child_terminal_status_str_maps_terminal_statuses_only() {
+        assert_eq!(
+            child_terminal_status_str(RunStatus::Completed),
+            Some("completed")
+        );
+        assert_eq!(child_terminal_status_str(RunStatus::Failed), Some("failed"));
+        assert_eq!(
+            child_terminal_status_str(RunStatus::Cancelled),
+            Some("cancelled")
+        );
+        assert_eq!(child_terminal_status_str(RunStatus::Running), None);
+        assert_eq!(child_terminal_status_str(RunStatus::AwaitingNodes), None);
+    }
+
+    #[test]
+    fn child_workflow_messages_name_the_child_run_and_cause() {
+        assert_eq!(
+            child_workflow_failed_message("r_child_1", "boom"),
+            "child workflow (run r_child_1) failed: boom"
+        );
+        assert_eq!(
+            child_workflow_cancelled_message("r_child_1"),
+            "child workflow (run r_child_1) cancelled"
+        );
+    }
+
+    #[test]
+    fn child_run_completed_status_maps_to_done_outcome_via_classify_terminal() {
+        let status = child_terminal_status_str(RunStatus::Completed).expect("terminal");
+        let outcome = classify_terminal(status, Some(json!({"ok": true})), None);
+        assert_eq!(outcome, NodeOutcome::Done(json!({"ok": true})));
+    }
+
+    #[test]
+    fn child_run_failed_status_carries_child_result_error_into_outcome() {
+        let status = child_terminal_status_str(RunStatus::Failed).expect("terminal");
+        let outcome = classify_terminal(status, None, Some("upstream boom".to_string()));
+        match outcome {
+            NodeOutcome::Failed(err) => assert_eq!(
+                child_workflow_failed_message("r_child_9", &err),
+                "child workflow (run r_child_9) failed: upstream boom"
+            ),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn child_run_cancelled_status_maps_to_cancelled_outcome() {
+        let status = child_terminal_status_str(RunStatus::Cancelled).expect("terminal");
+        assert_eq!(
+            classify_terminal(status, None, None),
+            NodeOutcome::Cancelled
+        );
     }
 }

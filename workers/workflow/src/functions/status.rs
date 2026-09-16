@@ -41,6 +41,14 @@ fn default_include_result() -> bool {
 pub struct StatusResponse {
     pub run_id: String,
     pub status: RunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_stream_scope_id: Option<String>,
     /// Per-node state keyed by node uid.
     pub nodes: BTreeMap<String, NodeCheckpoint>,
     /// Errors for nodes that failed, keyed by node uid — e.g. "no provider
@@ -343,6 +351,10 @@ pub async fn handle(
     Ok(Some(StatusResponse {
         run_id: record.run_id,
         status: record.status,
+        parent_run_id: record.parent_run_id,
+        parent_node_uid: record.parent_node_uid,
+        root_run_id: record.root_run_id,
+        root_stream_scope_id: record.root_stream_scope_id,
         nodes: record.nodes,
         node_errors,
         definition,
@@ -384,6 +396,7 @@ mod tests {
                 turn_id: None,
                 result_ref: Some("r_abc123/plan".to_string()),
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -412,6 +425,10 @@ mod tests {
         let resp = StatusResponse {
             run_id: "r_abc123".to_string(),
             status: RunStatus::AwaitingNodes,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
             nodes,
             node_errors,
             definition: WorkflowDef {
@@ -473,6 +490,10 @@ mod tests {
         let resp = StatusResponse {
             run_id: "r_xyz".to_string(),
             status: RunStatus::Running,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
             nodes: BTreeMap::new(),
             node_errors: BTreeMap::new(),
             definition: WorkflowDef {
@@ -567,6 +588,7 @@ mod tests {
                 }),
                 agent: None,
                 agent_options: None,
+                child_workflow: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -616,6 +638,10 @@ mod tests {
             result_error: None,
             notify: None,
             caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
             created_at: 0,
             updated_at: 0,
         };
@@ -629,6 +655,7 @@ mod tests {
                 turn_id: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,
@@ -644,6 +671,7 @@ mod tests {
                 turn_id: None,
                 result_ref: None,
                 result_error: None,
+                child_run_id: None,
                 pending_at: None,
                 pending_timeout_ms: None,
                 retries: 0,

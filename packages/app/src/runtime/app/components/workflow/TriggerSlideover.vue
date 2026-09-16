@@ -135,7 +135,21 @@ watch(() => props.workflow, (newWf) => {
     const initial: any = {}
     if (newWf.request_format) {
       Object.entries(newWf.request_format).forEach(([key, spec]: [string, any]) => {
-        initial[key] = spec.default !== undefined ? spec.default : (spec.type === 'boolean' ? false : '')
+        if (spec.default !== undefined) {
+          initial[key] = spec.default
+          return
+        }
+        if (spec.type === 'boolean') {
+          initial[key] = false
+          return
+        }
+        if (spec.type === 'object' || spec.type === 'array' || spec.type === 'number') {
+          // No form control renders for these types below; sending '' would
+          // silently corrupt them (e.g. an object field becoming a string).
+          // Omit the key so the workflow handler's own fallback applies.
+          return
+        }
+        initial[key] = ''
       })
     }
     payload.value = initial
