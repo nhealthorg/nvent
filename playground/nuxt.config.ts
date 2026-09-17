@@ -58,7 +58,7 @@ export default defineNuxtConfig({
           ],
         },
       },
-      workflow: {
+      nworkflow: {
         adapter: {
           type: 'redis',
           redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
@@ -70,6 +70,10 @@ export default defineNuxtConfig({
         },
       },
       queue: {
+        adapter: {
+          type: 'redis',
+          redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
+        },
         queueConfigs: {
           default: {
             concurrency: 4,

@@ -134,7 +134,19 @@ export default defineNuxtModule<NventIiiOptions>({
     const composeWaitForUp = composeOpts.waitForUp ?? true
     const composeUpTimeoutMs = composeOpts.upTimeoutMs ?? 120_000
     const composeShutdownTimeoutMs = composeOpts.shutdownTimeoutMs ?? 30_000
-    const composeWorkflowWorkerSource = composeOpts.workflowWorkerSource ?? 'path'
+    let composeWorkflowWorkerSource = composeOpts.workflowWorkerSource ?? 'path'
+    // Allow CI/build environments to skip staging a local workflow binary.
+    // Set `NVENT_SKIP_WORKFLOW_STAGING=1` (or `NVENT_SKIP_III` for backwards compatibility)
+    // in the environment to force using the package-based workflow worker source
+    // instead of attempting to stage a local `path` binary.
+    const skipWorkflowBinaryStaging = !!(
+      process.env.NVENT_SKIP_WORKFLOW_STAGING ||
+      process.env.NVENT_SKIP_III
+    )
+    if (skipWorkflowBinaryStaging && composeWorkflowWorkerSource === 'path') {
+      console.warn('[nvent] NVENT_SKIP_WORKFLOW_STAGING set: switching workflowWorkerSource from "path" to "package" to avoid staging.')
+      composeWorkflowWorkerSource = 'package'
+    }
     const composeFileName = (composeOpts.file ?? 'worker-compose.yaml').trim() || 'worker-compose.yaml'
 
     const version = iiiOpts.version ?? 'latest'

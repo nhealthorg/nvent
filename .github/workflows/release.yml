@@ -145,6 +145,8 @@ jobs:
           pnpm bumpp ${{ needs.resolve-version.outputs.version }} --recursive --no-commit --no-tag --no-push --yes
 
       - name: Build packages
+        env:
+          NVENT_SKIP_WORKFLOW_STAGING: "1"
         run: pnpm build:meta
 
       - name: Commit and tag version
