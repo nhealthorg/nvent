@@ -195,29 +195,7 @@ importers:
 
   packages/workflow-worker/workflow-worker-linux-x64-musl: {}
 
-  packages/workflow-worker/workflow-worker-meta:
-    optionalDependencies:
-      '@nvent-addon/workflow-worker-darwin-arm64':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@nvent-addon/workflow-worker-darwin-x64':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@nvent-addon/workflow-worker-linux-arm64-gnu':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@nvent-addon/workflow-worker-linux-arm64-musl':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@nvent-addon/workflow-worker-linux-x64-gnu':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@nvent-addon/workflow-worker-linux-x64-musl':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@nvent-addon/workflow-worker-win32-x64-msvc':
-        specifier: 1.0.2
-        version: 1.0.2
+  packages/workflow-worker/workflow-worker-meta: {}
 
   packages/workflow-worker/workflow-worker-win32-x64-msvc: {}
 
@@ -1472,41 +1450,6 @@ packages:
 
   '@nuxtjs/color-mode@4.0.1':
     resolution: {integrity: sha512-eiA7hWXi5zNHaYKyJFCGF6i0wFZtuvR7KDXZ6jiSvwxjCpRFwphrw0MOSmNfArTSSsT1wpW+/2H92cejeVfUlg==}
-
-  '@nvent-addon/workflow-worker-darwin-arm64@1.0.2':
-    resolution: {integrity: sha512-a8HP7CGCjpvaL+xNVru3NlbIvDE51WzOTYy7M2oLxn7InsjaEl8L64dZ0rBwVIfeKCzdg5fpDAZe8pVmaMZXSA==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@nvent-addon/workflow-worker-darwin-x64@1.0.2':
-    resolution: {integrity: sha512-CVbA9wQ2g9kcBd0s9ymm8IeILDaAK5Tdt+QDtZi9GDpg2QjAMFR1Q3uJ+XbBoYpi0ZtuIsFqr2CMNnWNsXqu8A==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@nvent-addon/workflow-worker-linux-arm64-gnu@1.0.2':
-    resolution: {integrity: sha512-9Ijqtw6TV7B+T7iSm9Kvz4S/0jF/s8KUR+f/NPuuHTJDkamGgM2yeFBiI2dessA8lenM/rKZPChmtxTRKT4QwA==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-arm64-musl@1.0.2':
-    resolution: {integrity: sha512-wO1ZkRD1N2gvwu/aJvPt7RDe1EVUrpup8eWwAQDKLcCnAewbs24SmBeryzi++3qDxua9PMxu+1iSFwk2YY46gA==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-x64-gnu@1.0.2':
-    resolution: {integrity: sha512-mm4XB25keH+jx7TzBylRCkf6Mb73tpip64uJbXUDUbjX9PR0HWXNweVK/t/jVZPjA4aS9gX+2qp65K8+A81GNA==}
-    cpu: [x64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-x64-musl@1.0.2':
-    resolution: {integrity: sha512-B9ppZVKzUyoc8GX5cnjG9RjOSB5wzrtc9kTpzuKquu/FtD8QHVM6rkJu3v9CtWA6Hq3LwxuywgZOW7ANxMdI7g==}
-    cpu: [x64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-win32-x64-msvc@1.0.2':
-    resolution: {integrity: sha512-+jLMAYp5RzQMhGEqFEVqfRYd8KgELECzsfAC00dGAj4q3ivcNsL7sDWDKan67CwwZOCvqHTyaGBlddsB8aqEPw==}
-    cpu: [x64]
-    os: [win32]
 
   '@opentelemetry/api-logs@0.57.2':
     resolution: {integrity: sha512-uIX52NnTM0iBh84MShlpouI7UKqkZ7MrUszTmaypHBu4r7NofznSnQRfJ+uUeDtQDj6w8eFGg5KBLDAwAPz1+A==}
@@ -10194,27 +10137,6 @@ snapshots:
       - oxc-parser
       - rolldown
       - unplugin
-
-  '@nvent-addon/workflow-worker-darwin-arm64@1.0.2':
-    optional: true
-
-  '@nvent-addon/workflow-worker-darwin-x64@1.0.2':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-arm64-gnu@1.0.2':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-arm64-musl@1.0.2':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-x64-gnu@1.0.2':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-x64-musl@1.0.2':
-    optional: true
-
-  '@nvent-addon/workflow-worker-win32-x64-msvc@1.0.2':
-    optional: true
 
   '@opentelemetry/api-logs@0.57.2':
     dependencies:
