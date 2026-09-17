@@ -69,6 +69,8 @@ jobs:
             package_dir: packages/workflow-worker/workflow-worker-win32-x64-msvc
 
     runs-on: ${{ matrix.os }}
+    env:
+      NVENT_SKIP_WORKFLOW_STAGING: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -121,6 +123,8 @@ jobs:
       - resolve-version
       - build-worker-platform-artifacts
     runs-on: ubuntu-latest
+    env:
+      NVENT_SKIP_WORKFLOW_STAGING: "1"
     steps:
       - uses: actions/checkout@v4
         with:
