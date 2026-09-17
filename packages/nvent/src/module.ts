@@ -300,8 +300,15 @@ export default defineNuxtModule<NventIiiOptions>({
 
     if (composeWorkflowWorkerSource === 'path' && !stagedWorkflowBinary) {
       const message = '[nvent] Compose workflow worker source is path, but workflow binary could not be staged. Managed runtime requires a valid workflow binary.'
+      const skipWorkflowBinaryStagingNow = !!(
+        process.env.NVENT_SKIP_WORKFLOW_STAGING ||
+        process.env.NVENT_SKIP_III
+      )
       if (failOnInstallFailure || managed) {
-        throw new Error(message)
+        if (!skipWorkflowBinaryStagingNow) {
+          throw new Error(message)
+        }
+        console.warn('[nvent] NVENT_SKIP_WORKFLOW_STAGING set: continuing without staged workflow binary (no throw).')
       }
       console.warn(message)
     }
