@@ -57,11 +57,26 @@ export interface WorkflowFanoutSpec {
   itemReturnType?: 'memory' | 'store'
 }
 
+export interface WorkflowReduceSpec {
+  over: string
+  mode: 'sequential'
+  initial: unknown
+  itemReturnType?: 'memory' | 'store'
+  accumulatorReturnType?: 'memory' | 'store'
+  body?: string[]
+}
+
+export interface WorkflowReduceBodySpec {
+  reduce: string
+}
+
 export interface WorkflowNodeDef {
   label?: string
-  function: WorkflowFunctionSpec
+  function?: WorkflowFunctionSpec
   depends_on?: string[]
   fanout?: WorkflowFanoutSpec
+  reduce?: WorkflowReduceSpec
+  reduce_body?: WorkflowReduceBodySpec
 }
 
 export interface WorkflowDef {

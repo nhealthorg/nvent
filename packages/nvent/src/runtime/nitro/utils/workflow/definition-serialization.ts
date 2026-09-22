@@ -97,8 +97,9 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
     const fn = (node as any).function
     const agent = (node as any).agent
     const childWorkflow = (node as any).childWorkflow
+    const reduce = (node as any).reduce
 
-    if (!fn && !agent && !childWorkflow) {
+    if (!fn && !agent && !childWorkflow && !reduce) {
       issues.push({
         path: `definition.nodes.${nodeId}`,
         message: 'node definition must specify either function, agent, or childWorkflow',
@@ -152,6 +153,36 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
             path: `definition.nodes.${nodeId}.childWorkflow.workflow`,
             message: 'childWorkflow.workflow must be a non-empty string',
             value: workflowId,
+          })
+        }
+      }
+    } else if (reduce) {
+      if (typeof reduce !== 'object' || Array.isArray(reduce)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.reduce`,
+          message: 'reduce must be an object',
+          value: reduce,
+        })
+      } else {
+        if (typeof reduce.over !== 'string' || reduce.over.length === 0) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.reduce.over`,
+            message: 'reduce.over must be a non-empty string',
+            value: reduce.over,
+          })
+        }
+        if (reduce.mode !== 'sequential') {
+          issues.push({
+            path: `definition.nodes.${nodeId}.reduce.mode`,
+            message: 'reduce.mode must be sequential',
+            value: reduce.mode,
+          })
+        }
+        if (reduce.body != null && (!Array.isArray(reduce.body) || !reduce.body.every((id: unknown) => typeof id === 'string'))) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.reduce.body`,
+            message: 'reduce.body must be string[] when provided',
+            value: reduce.body,
           })
         }
       }

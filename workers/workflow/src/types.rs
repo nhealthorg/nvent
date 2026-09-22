@@ -453,6 +453,16 @@ pub struct NodeDef {
         rename = "childWorkflow"
     )]
     pub child_workflow: Option<ChildWorkflowSpec>,
+    /// Durable sequential accumulator operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce: Option<ReduceSpec>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "reduceBody",
+        alias = "reduce_body"
+    )]
+    pub reduce_body: Option<ReduceBodySpec>,
     pub input: InputSpec,
     /// Prerequisite node ids. This node fires only once ALL of them are Done —
     /// this is the barrier / join. Empty means it can start immediately.
@@ -472,6 +482,36 @@ pub struct NodeDef {
         rename = "inputPolicy"
     )]
     pub input_policy: Option<NodeInputSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReduceBodySpec {
+    pub reduce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ReduceSpec {
+    /// Runtime array path, for example `node:load-items.result.items`.
+    pub over: String,
+    /// V1 intentionally supports only strict sequential reduction.
+    pub mode: ReduceMode,
+    /// Initial accumulator value.
+    pub initial: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_return_type: Option<NodeResultReturnType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accumulator_return_type: Option<NodeResultReturnType>,
+    /// Static body node ids compiled for one reduce iteration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReduceMode {
+    Sequential,
 }
 
 impl NodeDef {
@@ -688,6 +728,28 @@ pub struct WorkflowVarRecord {
     pub versions: Vec<WorkflowVarVersionRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReduceState {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReduceCheckpoint {
+    pub next_index: usize,
+    pub total_items: usize,
+    pub accumulator: Value,
+    pub state: ReduceState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_body_uids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunRecord {
     pub run_id: String,
@@ -733,6 +795,9 @@ pub struct WorkflowRunRecord {
     /// node_id -> frozen fanout item count (payload lives in internal state store)
     #[serde(default)]
     pub fanout_src: BTreeMap<String, usize>,
+    /// Durable sequential reduce state keyed by the reduce node id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reduce_checkpoints: BTreeMap<String, ReduceCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -850,6 +915,23 @@ mod tests {
     }
 
     #[test]
+    fn reduce_checkpoint_round_trips_resume_state() {
+        let checkpoint = ReduceCheckpoint {
+            next_index: 2,
+            total_items: 5,
+            accumulator: serde_json::json!({ "sum": 3 }),
+            state: ReduceState::Running,
+            active_body_uids: vec!["reduce@2:add-item".to_string()],
+            error: None,
+        };
+
+        let encoded = serde_json::to_string(&checkpoint).expect("serialize");
+        let decoded: ReduceCheckpoint = serde_json::from_str(&encoded).expect("deserialize");
+
+        assert_eq!(checkpoint, decoded);
+    }
+
+    #[test]
     fn record_round_trips_through_json() {
         let record = WorkflowRunRecord {
             run_id: "run_abc123".to_string(),
@@ -888,6 +970,7 @@ mod tests {
                 m
             },
             fanout_src: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,
@@ -1062,6 +1145,8 @@ mod tests {
             child_workflow: Some(ChildWorkflowSpec {
                 workflow: "billing::generate-invoice".to_string(),
             }),
+            reduce: None,
+            reduce_body: None,
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
@@ -1092,6 +1177,8 @@ mod tests {
             child_workflow: Some(ChildWorkflowSpec {
                 workflow: "billing::generate-invoice".to_string(),
             }),
+            reduce: None,
+            reduce_body: None,
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
@@ -1116,6 +1203,8 @@ mod tests {
             child_workflow: Some(ChildWorkflowSpec {
                 workflow: "billing::generate-invoice".to_string(),
             }),
+            reduce: None,
+            reduce_body: None,
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
@@ -1175,6 +1264,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,

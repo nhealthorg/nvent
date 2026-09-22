@@ -589,6 +589,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -634,6 +636,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,

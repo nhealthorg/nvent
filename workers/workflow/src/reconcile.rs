@@ -589,6 +589,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,

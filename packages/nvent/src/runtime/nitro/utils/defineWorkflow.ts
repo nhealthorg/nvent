@@ -166,6 +166,15 @@ export interface WorkflowContext {
     agent?: any
     agentOptions?: any
     childWorkflow?: { workflow: string }
+    reduce?: {
+      over: string
+      mode: 'sequential'
+      initial: unknown
+      itemReturnType?: 'memory' | 'store'
+      accumulatorReturnType?: 'memory' | 'store'
+      body?: string[]
+    }
+    reduce_body?: { reduce: string }
     executor?: any
   }) => Promise<T>
 
@@ -248,6 +257,16 @@ export interface WorkflowContext {
   loop: <T = any>(items: any, fn: (ctx: WorkflowLoopContext) => T | Promise<T>, options?: WorkflowLoopOptions) => Promise<T>
 
   /**
+   * Compile a durable, strictly sequential accumulator operation.
+   */
+  reduce: <TItem = any, TAccumulator = any>(
+    items: any,
+    initial: TAccumulator,
+    fn: (accumulator: TAccumulator, item: TItem, iteration: WorkflowReduceContext) => TAccumulator | Promise<TAccumulator>,
+    options?: WorkflowReduceOptions,
+  ) => Promise<TAccumulator>
+
+  /**
    * Declare one logical parallel branch that can contain sequential steps.
    * Use with ctx.all to run several branches concurrently in the DAG.
    *
@@ -293,6 +312,12 @@ export interface WorkflowContext {
 export interface WorkflowLoopContext extends WorkflowContext {
   /** Current loop item token (maps to fanout_item at runtime). */
   item: WorkflowLoopItemRef
+}
+
+export interface WorkflowReduceContext extends WorkflowContext {
+  item: WorkflowLoopItemRef
+  accumulator: WorkflowValueRef
+  index: WorkflowValueRef
 }
 
 export type WorkflowHookInput = Record<string, unknown>
@@ -379,6 +404,12 @@ export interface WorkflowLoopOptions {
   itemInputReturnType?: 'memory' | 'store'
 }
 
+export interface WorkflowReduceOptions {
+  mode?: 'sequential'
+  itemReturnType?: 'memory' | 'store'
+  accumulatorReturnType?: 'memory' | 'store'
+}
+
 const WORKFLOW_BRANCH = Symbol('workflow.branch')
 const WORKFLOW_LOOP_ITEM = Symbol('workflow.loop.item')
 const WORKFLOW_VALUE_REF = Symbol('workflow.value.ref')
@@ -394,11 +425,11 @@ export type WorkflowLoopItemRef = {
   [WORKFLOW_LOOP_ITEM]: true
 }
 
-type WorkflowValueRef = {
+export type WorkflowValueRef = {
   [WORKFLOW_VALUE_REF]: true
   $ref: string
   $path?: string[]
-  $source: 'node' | 'fanout_item'
+  $source: 'node' | 'fanout_item' | 'run_input'
 }
 
 function isWorkflowParallelBranch(value: unknown): value is WorkflowParallelBranch<any> {
@@ -423,7 +454,7 @@ function isWorkflowValueRef(value: unknown): value is WorkflowValueRef {
   )
 }
 
-function createWorkflowValueRef(source: 'node' | 'fanout_item', ref: string, path: string[] = []): any {
+function createWorkflowValueRef(source: 'node' | 'fanout_item' | 'run_input', ref: string, path: string[] = []): any {
   const target: Record<string | symbol, any> = {
     [WORKFLOW_VALUE_REF]: true,
     $source: source,
@@ -871,6 +902,7 @@ export function defineWorkflow<
       const nodeOrder: string[] = []
       let autoNodeCounter = 0
       let controlFrontier: string[] = []
+      let activeReduceId: string | null = null
       let parallelCollector: string[] | null = null
       let parallelFixedFrontier: string[] | null = null
       const collectNodeRefs = (obj: any, refs: Set<string>) => {
@@ -996,6 +1028,9 @@ export function defineWorkflow<
             depends_on: dependsOn,
             input: normalizeInput(spec.input, dataDeps),
             fanout: typeof spec.fanout === 'string' ? { over: spec.fanout } : spec.fanout,
+            ...(spec.reduce ? { reduce: spec.reduce } : {}),
+            ...(spec.reduce_body ? { reduce_body: spec.reduce_body } : {}),
+            ...(activeReduceId && !spec.reduce ? { reduce_body: { reduce: activeReduceId } } : {}),
             result: buildResultPolicy(spec.result),
             ...(spec.inputPolicy ? { inputPolicy: buildInputPolicy(spec.inputPolicy) } : {}),
           }
@@ -1192,6 +1227,60 @@ export function defineWorkflow<
           }
 
           return await fn(loopCtx)
+        },
+
+        reduce: async <TItem = any, TAccumulator = any>(
+          items: any,
+          initial: TAccumulator,
+          fn: (accumulator: TAccumulator, item: TItem, iteration: WorkflowReduceContext) => TAccumulator | Promise<TAccumulator>,
+          options?: WorkflowReduceOptions,
+        ): Promise<TAccumulator> => {
+          const over = resolveFanoutOver(items)
+          const mode = options?.mode ?? 'sequential'
+          if (mode !== 'sequential') {
+            throw new Error(`reduce options.mode must be sequential, got: ${mode}`)
+          }
+
+          const reduceId = applyAutoNodeSuffix('reduce')
+          const previousFrontier = [...controlFrontier]
+          const bodyStart = nodeOrder.length
+          const iterationContext: WorkflowReduceContext = {
+            ...ctx,
+            item: createWorkflowValueRef('fanout_item', 'reduce_item') as WorkflowLoopItemRef,
+            accumulator: createWorkflowValueRef('node', `reduce:${reduceId}:accumulator`) as WorkflowValueRef,
+            index: createWorkflowValueRef('node', `reduce:${reduceId}:index`) as WorkflowValueRef,
+          }
+
+          // Compile the body once against symbolic iteration references. The worker
+          // will execute these nodes under the durable reduce checkpoint.
+          const previousReduceId = activeReduceId
+          activeReduceId = reduceId
+          try {
+            await fn(
+              iterationContext.accumulator as TAccumulator,
+              iterationContext.item as TItem,
+              iterationContext,
+            )
+          } finally {
+            activeReduceId = previousReduceId
+          }
+          const body = nodeOrder.slice(bodyStart)
+          for (const bodyNodeId of body) {
+            nodes[bodyNodeId].reduce_body = { reduce: reduceId }
+          }
+          controlFrontier = previousFrontier
+
+          return ctx.node(reduceId, {
+            input: { from: over },
+            reduce: {
+              over,
+              mode,
+              initial,
+              ...(options?.itemReturnType ? { itemReturnType: options.itemReturnType } : {}),
+              ...(options?.accumulatorReturnType ? { accumulatorReturnType: options.accumulatorReturnType } : {}),
+              body,
+            },
+          }) as Promise<TAccumulator>
         },
 
         branch: <T = any>(fn: (c: WorkflowContext) => T | Promise<T>): WorkflowParallelBranch<T> => ({

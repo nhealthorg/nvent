@@ -436,6 +436,43 @@ describe('defineWorkflow compilation', () => {
     expect(plan.nodes['finalize'].depends_on).toEqual(['process-item'])
   })
 
+  it('compiles a sequential reduce with an accumulator contract', async () => {
+    const workflow = defineWorkflow({
+      name: 'reduce-sequential',
+      async handler(input: { text: string }, ctx) {
+        const items = await ctx.call('load-items', input)
+
+        const total = await ctx.reduce(items, 0, async (_accumulator, _item, iteration) => {
+          return iteration.call('add-item', {
+            accumulator: iteration.accumulator,
+            item: iteration.item,
+            index: iteration.index,
+          })
+        }, {
+          mode: 'sequential',
+          itemReturnType: 'store',
+          accumulatorReturnType: 'store',
+        })
+
+        return ctx.call('finalize', total)
+      },
+    })
+
+    const plan = await workflow.compile({ text: 'Hello' })
+
+    expect(plan.nodes.reduce.reduce).toMatchObject({
+      over: 'node:load-items',
+      mode: 'sequential',
+      initial: 0,
+      itemReturnType: 'store',
+      accumulatorReturnType: 'store',
+      body: ['add-item'],
+    })
+    expect(plan.nodes['add-item'].reduce_body).toEqual({ reduce: 'reduce' })
+    expect(plan.nodes['add-item'].input).toEqual({ from: 'run_input' })
+    expect(plan.nodes.finalize.depends_on).toEqual(['reduce'])
+  })
+
   it('compiles loop with batch mode and batchSize', async () => {
     const workflow = defineWorkflow({
       name: 'loop-batch',

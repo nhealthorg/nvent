@@ -98,6 +98,9 @@ const ALLOWED_NODE_KEYS: &[&str] = &[
     "agent",
     "agentOptions",
     "childWorkflow",
+    "reduce",
+    "reduceBody",
+    "reduce_body",
     "input",
     "depends_on",
     "fanout",
@@ -109,6 +112,15 @@ const ALLOWED_RESULT_KEYS: &[&str] = &["returnType", "streamChunkSize", "onMemor
 const ALLOWED_INPUT_POLICY_KEYS: &[&str] = &["returnType", "onMemoryFail"];
 const ALLOWED_FANOUT_KEYS: &[&str] = &["over", "mode", "batchSize", "itemReturnType"];
 const ALLOWED_CHILD_WORKFLOW_KEYS: &[&str] = &["workflow"];
+const ALLOWED_REDUCE_KEYS: &[&str] = &[
+    "over",
+    "mode",
+    "initial",
+    "itemReturnType",
+    "accumulatorReturnType",
+    "body",
+];
+const ALLOWED_REDUCE_BODY_KEYS: &[&str] = &["reduce"];
 
 // Custom Deserialize so a malformed `definition` yields ONE error listing EVERY
 // structural problem (plus the canonical shape), instead of serde's fail-fast
@@ -321,6 +333,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
     let has_function = n.contains_key("function");
     let has_agent = n.contains_key("agent");
     let has_child_workflow = n.contains_key("childWorkflow");
+    let has_reduce = n.contains_key("reduce");
 
     if has_function {
         match n.get("function") {
@@ -368,8 +381,30 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             )),
             None => unreachable!(),
         }
-    } else if !has_agent {
+    } else if !has_agent && !has_reduce {
         p.push(format!("node `{id}`: missing `function` or `agent`"));
+    }
+
+    for (field, allowed) in [
+        ("reduce", ALLOWED_REDUCE_KEYS),
+        ("reduceBody", ALLOWED_REDUCE_BODY_KEYS),
+        ("reduce_body", ALLOWED_REDUCE_BODY_KEYS),
+    ] {
+        let Some(value) = n.get(field) else {
+            continue;
+        };
+        let Some(object) = value.as_object() else {
+            p.push(format!(
+                "node `{id}`.{field} must be an object, not {}",
+                json_type(value)
+            ));
+            continue;
+        };
+        for key in object.keys() {
+            if !allowed.contains(&key.as_str()) {
+                p.push(format!("node `{id}`.{field}: unknown field `{key}`"));
+            }
+        }
     }
 
 
@@ -1059,6 +1094,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         queue_receipts: Vec::new(),
         nodes,
         fanout_src: BTreeMap::new(),
+        reduce_checkpoints: BTreeMap::new(),
         result_ref: Some(refs.result_ref),
         result_error: None,
         notify: req.notify,
@@ -1126,6 +1162,8 @@ mod tests {
             agent: None,
             agent_options: None,
             child_workflow: None,
+            reduce: None,
+            reduce_body: None,
             input: InputSpec {
                 from: input_from,
                 template: None,
@@ -1191,6 +1229,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,

@@ -1,7 +1,7 @@
 export type WorkflowValueRefLike = {
   $ref: string
   $path?: string[]
-  $source: 'node' | 'fanout_item'
+  $source: 'node' | 'fanout_item' | 'run_input'
 }
 
 export type IsWorkflowValueRef = (value: unknown) => value is WorkflowValueRefLike

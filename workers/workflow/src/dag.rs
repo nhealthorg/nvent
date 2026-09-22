@@ -4,7 +4,8 @@ use serde_json::Value;
 
 use crate::ids::node_uid;
 use crate::types::{
-    FanoutMode, NodeCheckpoint, NodeDef, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord,
+    FanoutMode, NodeCheckpoint, NodeDef, NodeState, ReduceCheckpoint, ReduceState, RunStatus,
+    WorkflowDef, WorkflowRunRecord,
 };
 
 // ponytail: generous cap so a runaway `over` array can't materialize unbounded
@@ -254,6 +255,153 @@ pub fn expand_ready_fanouts(
     expanded
 }
 
+/// Initializes each reduce whose source result is available.
+///
+/// Only the source cardinality and the initial accumulator are persisted here.
+/// Iteration execution is deliberately handled by the reduce scheduler, so a
+/// redelivered tick cannot re-resolve or replace an existing checkpoint.
+pub fn initialize_ready_reductions(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+) -> Vec<String> {
+    let candidates: Vec<(&str, &NodeDef)> = def
+        .nodes
+        .iter()
+        .filter_map(|(id, node_def)| {
+            if node_def.reduce.is_some() && !record.reduce_checkpoints.contains_key(id.as_str()) {
+                Some((id.as_str(), node_def))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut initialized = Vec::new();
+    for (node_id, node_def) in candidates {
+        let reduce = node_def.reduce.as_ref().expect("candidate has reduce spec");
+        let source_node_id = reduce
+            .over
+            .strip_prefix("node:")
+            .and_then(|path| path.split('.').next())
+            .unwrap_or_default();
+
+        if !source_node_id.is_empty() && !results.contains_key(source_node_id) {
+            continue;
+        }
+        if source_node_id.is_empty() && !deps_done(def, record, node_id) {
+            continue;
+        }
+
+        match resolve_over_path(&reduce.over, results) {
+            Ok(items) => {
+                record.reduce_checkpoints.insert(
+                    node_id.to_string(),
+                    ReduceCheckpoint {
+                        next_index: 0,
+                        total_items: items.len(),
+                        accumulator: reduce.initial.clone(),
+                        state: ReduceState::Pending,
+                        active_body_uids: Vec::new(),
+                        error: None,
+                    },
+                );
+                initialized.push(node_id.to_string());
+            }
+            Err(detail) => {
+                record.reduce_checkpoints.insert(
+                    node_id.to_string(),
+                    ReduceCheckpoint {
+                        next_index: 0,
+                        total_items: 0,
+                        accumulator: reduce.initial.clone(),
+                        state: ReduceState::Failed,
+                        active_body_uids: Vec::new(),
+                        error: Some(format!("reduce '{}' over '{}': {detail}", node_id, reduce.over)),
+                    },
+                );
+                initialized.push(node_id.to_string());
+            }
+        }
+    }
+
+    initialized
+}
+
+/// Materializes the body nodes for the current reduce index exactly once.
+/// Body nodes remain hidden from the ordinary frontier until they are listed in
+/// the reduce checkpoint's active set.
+pub fn materialize_reduce_iterations(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+) -> Vec<String> {
+    let reduce_ids: Vec<String> = record.reduce_checkpoints.keys().cloned().collect();
+    let mut materialized = Vec::new();
+
+    for reduce_id in reduce_ids {
+        let Some(reduce_node) = def.nodes.get(&reduce_id) else {
+            continue;
+        };
+        let Some(reduce) = reduce_node.reduce.as_ref() else {
+            continue;
+        };
+        let Some(checkpoint) = record.reduce_checkpoints.get_mut(&reduce_id) else {
+            continue;
+        };
+        if checkpoint.state != ReduceState::Pending
+            || checkpoint.next_index >= checkpoint.total_items
+            || !checkpoint.active_body_uids.is_empty()
+        {
+            continue;
+        }
+
+        let index = checkpoint.next_index;
+        let mut body_uids = Vec::new();
+        for body_id in &reduce.body {
+            let uid = node_uid(body_id, Some(index as u32));
+            record.nodes.entry(uid.clone()).or_insert_with(pending_checkpoint);
+            body_uids.push(uid);
+        }
+
+        checkpoint.active_body_uids = body_uids.clone();
+        checkpoint.state = ReduceState::Running;
+        materialized.push(reduce_id);
+    }
+
+    materialized
+}
+
+/// Advances a completed sequential reduce iteration in memory.
+///
+/// The caller persists the resulting accumulator as the reduce node result.
+/// Returning `None` keeps incomplete and failed iterations untouched, which is
+/// important for retrying only the active body UIDs after a restart.
+pub fn advance_reduce_checkpoint(
+    checkpoint: &mut ReduceCheckpoint,
+    body_results: &[Value],
+) -> Option<Value> {
+    if checkpoint.state != ReduceState::Running || checkpoint.active_body_uids.is_empty() {
+        return None;
+    }
+    if body_results.iter().any(Value::is_null) {
+        return None;
+    }
+
+    let next_accumulator = body_results
+        .last()
+        .cloned()
+        .unwrap_or_else(|| checkpoint.accumulator.clone());
+    checkpoint.next_index = checkpoint.next_index.saturating_add(1);
+    checkpoint.accumulator = next_accumulator.clone();
+    checkpoint.active_body_uids.clear();
+    checkpoint.state = if checkpoint.next_index >= checkpoint.total_items {
+        ReduceState::Done
+    } else {
+        ReduceState::Pending
+    };
+    Some(next_accumulator)
+}
+
 fn fanout_dep_item_done(record: &WorkflowRunRecord, dep_id: &str, item_idx: usize) -> bool {
     if matches!(
         record.nodes.get(dep_id).map(|c| c.state),
@@ -275,6 +423,58 @@ fn fanout_dep_item_done(record: &WorkflowRunRecord, dep_id: &str, item_idx: usiz
         record.nodes.get(&dep_uid).map(|cp| cp.state),
         Some(NodeState::Done)
     )
+}
+
+fn reduce_body_item_ready(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    node_id: &str,
+) -> Vec<String> {
+    let Some(body) = def.nodes.get(node_id).and_then(|node| node.reduce_body.as_ref()) else {
+        return Vec::new();
+    };
+    let Some(checkpoint) = record.reduce_checkpoints.get(&body.reduce) else {
+        return Vec::new();
+    };
+    let mut ready = Vec::new();
+    for uid in &checkpoint.active_body_uids {
+        if uid.split('#').next() != Some(node_id) {
+            continue;
+        }
+        if record.nodes.get(uid).map(|cp| cp.state) != Some(NodeState::Pending) {
+            continue;
+        }
+        let index = uid
+            .split('#')
+            .nth(1)
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let deps_ready = def
+            .nodes
+            .get(node_id)
+            .map(|node| {
+                node.depends_on.iter().all(|dep| {
+                    if def
+                        .nodes
+                        .get(dep)
+                        .and_then(|candidate| candidate.reduce_body.as_ref())
+                        .is_some_and(|candidate| candidate.reduce == body.reduce)
+                    {
+                        matches!(
+                            record.nodes.get(&node_uid(dep, Some(index as u32))).map(|cp| cp.state),
+                            Some(NodeState::Done)
+                        )
+                    } else {
+                        matches!(record.nodes.get(dep).map(|cp| cp.state), Some(NodeState::Done))
+                    }
+                })
+            })
+            .unwrap_or(false);
+        if deps_ready {
+            ready.push(uid.clone());
+        }
+    }
+    ready
 }
 
 fn deps_done_for_fanout_item(
@@ -475,6 +675,16 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
     let mut frontier = Vec::new();
 
     for (node_id, node_def) in &def.nodes {
+        if node_def.reduce.is_some() {
+            continue;
+        }
+        // Reduce body nodes are materialized and scheduled by the reduce
+        // controller, never as ordinary DAG roots.
+        if node_def.reduce_body.is_some() {
+            frontier.extend(reduce_body_item_ready(def, record, node_id));
+            continue;
+        }
+
         if node_def.fanout.is_some() {
             // Fanout node: only emit already-materialized Pending items.
             if let Some(total_items) = record.fanout_src.get(node_id.as_str()) {
@@ -662,6 +872,22 @@ pub fn quiescence(def: &WorkflowDef, record: &WorkflowRunRecord) -> RunStatus {
 
     let mut all_done = true;
     for node_id in def.nodes.keys() {
+        let Some(node_def) = def.nodes.get(node_id.as_str()) else {
+            continue;
+        };
+        if node_def.reduce_body.is_some() {
+            continue;
+        }
+        if node_def.reduce.is_some() {
+            match record.reduce_checkpoints.get(node_id) {
+                Some(checkpoint) if checkpoint.state == ReduceState::Done => {}
+                Some(checkpoint) if checkpoint.state == ReduceState::Failed => {
+                    return RunStatus::Failed;
+                }
+                _ => all_done = false,
+            }
+            continue;
+        }
         let is_fanout = def
             .nodes
             .get(node_id.as_str())
@@ -797,6 +1023,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: Some("List the docs to read for: {{topic}}".to_string()),
@@ -823,6 +1051,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: Some("Read and summarize: {{item}}".to_string()),
@@ -854,6 +1084,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: Some("Synthesize from: {{results}}".to_string()),
@@ -896,6 +1128,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,
@@ -939,6 +1172,172 @@ mod tests {
         let (d, mut r) = (def(), record());
         r.nodes.insert("plan".into(), pending_checkpoint());
         assert_eq!(ready_frontier(&d, &r), vec!["plan".to_string()]);
+    }
+
+    #[test]
+    fn initializes_reduce_from_done_source_and_preserves_checkpoint_on_retry() {
+        let mut d = def();
+        d.nodes.get_mut("synthesize").unwrap().reduce = Some(ReduceSpec {
+            over: "node:plan.result.docs".to_string(),
+            mode: ReduceMode::Sequential,
+            initial: serde_json::json!({ "sum": 0 }),
+            item_return_type: None,
+            accumulator_return_type: None,
+            body: vec!["reduce-body".to_string()],
+        });
+
+        let mut r = record();
+        r.nodes.insert("plan".into(), done_checkpoint());
+        let mut results = BTreeMap::new();
+        results.insert(
+            "plan".to_string(),
+            serde_json::json!({ "docs": [1, 2, 3] }),
+        );
+
+        assert_eq!(initialize_ready_reductions(&d, &mut r, &results), vec!["synthesize"]);
+        let checkpoint = r.reduce_checkpoints.get("synthesize").unwrap();
+        assert_eq!(checkpoint.next_index, 0);
+        assert_eq!(checkpoint.total_items, 3);
+        assert_eq!(checkpoint.accumulator, serde_json::json!({ "sum": 0 }));
+        assert_eq!(checkpoint.state, ReduceState::Pending);
+
+        assert!(initialize_ready_reductions(&d, &mut r, &results).is_empty());
+        assert_eq!(r.reduce_checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn ready_frontier_excludes_reduce_body_nodes() {
+        let mut d = def();
+        d.nodes.insert(
+            "reduce-body".to_string(),
+            NodeDef {
+                label: None,
+                function: Some(FunctionSpec {
+                    id: "add-item".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                }),
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                reduce: None,
+                reduce_body: Some(ReduceBodySpec {
+                    reduce: "synthesize".to_string(),
+                }),
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        assert!(!ready_frontier(&d, &record()).contains(&"reduce-body".to_string()));
+    }
+
+    #[test]
+    fn materializes_only_the_active_reduce_iteration() {
+        let mut d = def();
+        d.nodes.get_mut("synthesize").unwrap().reduce = Some(ReduceSpec {
+            over: "node:plan.result.docs".to_string(),
+            mode: ReduceMode::Sequential,
+            initial: json!(0),
+            item_return_type: None,
+            accumulator_return_type: None,
+            body: vec!["reduce-body".to_string()],
+        });
+        d.nodes.insert(
+            "reduce-body".to_string(),
+            NodeDef {
+                label: None,
+                function: Some(FunctionSpec {
+                    id: "add-item".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                }),
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                reduce: None,
+                reduce_body: Some(ReduceBodySpec {
+                    reduce: "synthesize".to_string(),
+                }),
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        let mut r = record();
+        r.nodes.insert("plan".to_string(), done_checkpoint());
+        r.reduce_checkpoints.insert(
+            "synthesize".to_string(),
+            ReduceCheckpoint {
+                next_index: 0,
+                total_items: 2,
+                accumulator: json!(0),
+                state: ReduceState::Pending,
+                active_body_uids: Vec::new(),
+                error: None,
+            },
+        );
+
+        assert_eq!(materialize_reduce_iterations(&d, &mut r), vec!["synthesize"]);
+        assert_eq!(ready_frontier(&d, &r), vec!["reduce-body#0"]);
+        assert!(r.nodes.contains_key("reduce-body#0"));
+        assert!(!r.nodes.contains_key("reduce-body#1"));
+    }
+
+    #[test]
+    fn advances_reduce_sequentially_and_preserves_failed_iteration_for_retry() {
+        let mut checkpoint = ReduceCheckpoint {
+            next_index: 0,
+            total_items: 2,
+            accumulator: json!(0),
+            state: ReduceState::Running,
+            active_body_uids: vec!["reduce-body#0".to_string()],
+            error: None,
+        };
+
+        assert_eq!(
+            advance_reduce_checkpoint(&mut checkpoint, &[json!(4)]),
+            Some(json!(4))
+        );
+        assert_eq!(checkpoint.next_index, 1);
+        assert_eq!(checkpoint.accumulator, json!(4));
+        assert_eq!(checkpoint.state, ReduceState::Pending);
+        assert!(checkpoint.active_body_uids.is_empty());
+
+        checkpoint.active_body_uids = vec!["reduce-body#1".to_string()];
+        checkpoint.state = ReduceState::Running;
+        assert_eq!(advance_reduce_checkpoint(&mut checkpoint, &[Value::Null]), None);
+        assert_eq!(checkpoint.next_index, 1);
+        assert_eq!(checkpoint.accumulator, json!(4));
+        assert_eq!(checkpoint.state, ReduceState::Running);
+        assert_eq!(checkpoint.active_body_uids, vec!["reduce-body#1"]);
+
+        assert_eq!(
+            advance_reduce_checkpoint(&mut checkpoint, &[json!(9)]),
+            Some(json!(9))
+        );
+        assert_eq!(checkpoint.next_index, 2);
+        assert_eq!(checkpoint.accumulator, json!(9));
+        assert_eq!(checkpoint.state, ReduceState::Done);
+        assert!(checkpoint.active_body_uids.is_empty());
     }
 
     #[test]
@@ -1275,6 +1674,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1294,6 +1695,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1313,6 +1716,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: InputFrom::Many(vec!["node:b".to_string(), "node:c".to_string()]),
                     template: None,

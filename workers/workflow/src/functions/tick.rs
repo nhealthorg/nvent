@@ -12,7 +12,7 @@ use crate::{
     types::{
         FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeInputReturnType,
         NodeMemoryFailPolicy, NodeResultReturnType, NodeState, QueueReceiptRecord, RunStatus,
-        WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
+        ReduceState, WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
         WorkflowVarVersionRecord,
     },
 };
@@ -258,6 +258,9 @@ fn collect_prunable_memory_result_uids(
             }
             if let Some(fanout) = node.fanout.as_ref() {
                 push_node_ref_base(&fanout.over, &mut required_by_active);
+            }
+            if let Some(reduce) = node.reduce.as_ref() {
+                push_node_ref_base(&reduce.over, &mut required_by_active);
             }
         }
     }
@@ -536,6 +539,21 @@ fn resolve_dynamic_payload_value(
                     let base = fanout_item.cloned().unwrap_or(Value::Null);
                     return value_at_path(&base, &path);
                 }
+
+                if let Some(rest) = ref_source.strip_prefix("reduce:") {
+                    let mut parts = rest.split(':');
+                    let reduce_id = parts.next().unwrap_or_default();
+                    let field = parts.next().unwrap_or_default();
+                    if let Some(checkpoint) = record.reduce_checkpoints.get(reduce_id) {
+                        let value = match field {
+                            "accumulator" => checkpoint.accumulator.clone(),
+                            "index" => json!(checkpoint.next_index),
+                            "item" => fanout_item.cloned().unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        };
+                        return value_at_path(&value, &path);
+                    }
+                }
             }
 
             let mut out = Map::new();
@@ -572,6 +590,127 @@ fn resolve_dynamic_payload_value(
         ),
         _ => payload.clone(),
     }
+}
+
+fn reduce_body_item(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+    node_id: &str,
+) -> Option<Value> {
+    let reduce_id = def.nodes.get(node_id)?.reduce_body.as_ref()?.reduce.as_str();
+    let checkpoint = record.reduce_checkpoints.get(reduce_id)?;
+    let reduce = def.nodes.get(reduce_id)?.reduce.as_ref()?;
+    let items = dag::resolve_over_path(&reduce.over, results).ok()?;
+    items.get(checkpoint.next_index).cloned()
+}
+
+async fn advance_completed_reductions(
+    deps: &Deps,
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+) -> Result<Vec<String>, WorkflowError> {
+    let reduce_ids: Vec<String> = record.reduce_checkpoints.keys().cloned().collect();
+    let mut advanced = Vec::new();
+
+    for reduce_id in reduce_ids {
+        let Some(reduce) = def.nodes.get(&reduce_id).and_then(|node| node.reduce.as_ref()) else {
+            continue;
+        };
+        let Some(snapshot) = record.reduce_checkpoints.get(&reduce_id).cloned() else {
+            continue;
+        };
+        if snapshot.state != ReduceState::Running || snapshot.active_body_uids.is_empty() {
+            continue;
+        }
+
+        if let Some(failed_uid) = snapshot.active_body_uids.iter().find(|uid| {
+            matches!(record.nodes.get(*uid).map(|cp| cp.state), Some(NodeState::Failed | NodeState::Cancelled))
+        }) {
+            let error = record
+                .nodes
+                .get(failed_uid)
+                .and_then(|cp| cp.result_error.clone())
+                .unwrap_or_else(|| format!("reduce body node '{failed_uid}' failed"));
+            if let Some(checkpoint) = record.reduce_checkpoints.get_mut(&reduce_id) {
+                checkpoint.state = ReduceState::Failed;
+                checkpoint.error = Some(error.clone());
+                checkpoint.active_body_uids.clear();
+            }
+            if let Some(cp) = record.nodes.get_mut(&reduce_id) {
+                cp.state = NodeState::Failed;
+                cp.result_error = Some(error);
+                cp.completed_at = Some(deps.now_ms());
+            }
+            advanced.push(reduce_id);
+            continue;
+        }
+
+        if !snapshot.active_body_uids.iter().all(|uid| {
+            matches!(record.nodes.get(uid).map(|cp| cp.state), Some(NodeState::Done))
+        }) {
+            continue;
+        }
+
+        if let Some(checkpoint) = record.reduce_checkpoints.get_mut(&reduce_id) {
+            let body_results: Vec<Value> = reduce
+                .body
+                .iter()
+                .map(|body_id| {
+                    results
+                        .get(&format!("{}#{}", body_id, snapshot.next_index))
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                })
+                .collect();
+            let Some(next_accumulator) = dag::advance_reduce_checkpoint(checkpoint, &body_results)
+            else {
+                continue;
+            };
+            let completed = checkpoint.state == ReduceState::Done;
+
+            if completed {
+                state::put_node_result(&deps.iii, &record.run_id, &reduce_id, &next_accumulator).await?;
+                if let Some(cp) = record.nodes.get_mut(&reduce_id) {
+                    cp.state = NodeState::Done;
+                    cp.result_ref = Some(crate::ids::new_ref_id("node_result"));
+                    cp.completed_at = Some(deps.now_ms());
+                }
+            }
+            advanced.push(reduce_id);
+        }
+    }
+
+    Ok(advanced)
+}
+
+async fn complete_empty_reductions(
+    deps: &Deps,
+    record: &mut WorkflowRunRecord,
+) -> Result<Vec<String>, WorkflowError> {
+    let reduce_ids: Vec<String> = record.reduce_checkpoints.keys().cloned().collect();
+    let mut completed = Vec::new();
+    for reduce_id in reduce_ids {
+        let Some(checkpoint) = record.reduce_checkpoints.get(&reduce_id).cloned() else {
+            continue;
+        };
+        if checkpoint.state != ReduceState::Pending || checkpoint.total_items != 0 {
+            continue;
+        }
+        if let Some(current) = record.reduce_checkpoints.get_mut(&reduce_id) {
+            current.state = ReduceState::Done;
+        }
+        state::put_node_result(&deps.iii, &record.run_id, &reduce_id, &checkpoint.accumulator).await?;
+        let now = deps.now_ms();
+        if let Some(cp) = record.nodes.get_mut(&reduce_id) {
+            cp.state = NodeState::Done;
+            cp.result_ref = Some(crate::ids::new_ref_id("node_result"));
+            cp.completed_at = Some(now);
+        }
+        completed.push(reduce_id);
+    }
+    Ok(completed)
 }
 
 fn resolve_dynamic_template(
@@ -932,7 +1071,9 @@ pub(crate) async fn fire_node(
         .get(node_uid)
         .and_then(|c| c.pending_timeout_ms);
 
-    let fanout_item = if node_uid.contains('#') {
+    let fanout_item = if node.reduce_body.is_some() {
+        reduce_body_item(def, record, results, base_id)
+    } else if node_uid.contains('#') {
         let idx_str = node_uid.split('#').nth(1).unwrap_or("0");
         let idx: usize = idx_str.parse().unwrap_or(0);
         match fanout_item_mode(def, base_id) {
@@ -1540,6 +1681,15 @@ pub async fn handle(
     // 6. Load done results.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
 
+    let advanced_reductions = advance_completed_reductions(deps, &def, &mut record, &results).await?;
+    if !advanced_reductions.is_empty() {
+        tracing::debug!(
+            run_id = %record.run_id,
+            reductions = ?advanced_reductions,
+            "advanced completed reduce iterations"
+        );
+    }
+
     // 7. Expand any ready fanouts.
     let expanded_fanouts = dag::expand_ready_fanouts(&def, &mut record, &results);
     for node_id in expanded_fanouts {
@@ -1576,6 +1726,35 @@ pub async fn handle(
             }
         }
     }
+
+    // Freeze reduce sources exactly once after their upstream results are
+    // available. The checkpoint is persisted with the same run update as the
+    // surrounding tick, so redelivery cannot replace its accumulator.
+    let initialized_reductions = dag::initialize_ready_reductions(&def, &mut record, &results);
+    if !initialized_reductions.is_empty() {
+        tracing::debug!(
+            run_id = %record.run_id,
+            reductions = ?initialized_reductions,
+            "initialized durable reduce checkpoints"
+        );
+    }
+    let completed_empty_reductions = complete_empty_reductions(deps, &mut record).await?;
+    if !completed_empty_reductions.is_empty() {
+        tracing::debug!(
+            run_id = %record.run_id,
+            reductions = ?completed_empty_reductions,
+            "completed empty reductions"
+        );
+    }
+    let materialized_reductions = dag::materialize_reduce_iterations(&def, &mut record);
+    if !materialized_reductions.is_empty() {
+        tracing::debug!(
+            run_id = %record.run_id,
+            reductions = ?materialized_reductions,
+            "materialized active reduce iterations"
+        );
+    }
+    let results = state::load_done_results(&deps.iii, &mut record).await?;
 
     // 7b. Enforce liveness-based memory lifecycle cleanup.
     // Important ordering: detach result refs now, but only delete payload rows
@@ -1748,6 +1927,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1774,6 +1955,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -1805,6 +1988,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: None,
@@ -1847,6 +2032,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,
@@ -1894,6 +2080,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2221,6 +2409,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2251,6 +2441,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "node:load".into(),
                     template: None,
@@ -2277,6 +2469,8 @@ mod tests {
                 agent: None,
                 agent_options: None,
                 child_workflow: None,
+                reduce: None,
+                reduce_body: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
