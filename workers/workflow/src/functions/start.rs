@@ -760,6 +760,7 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
 
     for (node_id, node) in &def.nodes {
         if node.effective_function().id.trim().is_empty()
+            && node.reduce.is_none()
             && node.if_spec.is_none()
             && node.if_branch.is_none()
         {
@@ -1164,7 +1165,8 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 mod tests {
     use super::*;
     use crate::types::{
-        FanoutSpec, FunctionSpec, InputFrom, InputSpec, NodeDef, OutputRef, WorkflowDef,
+        FanoutSpec, FunctionSpec, InputFrom, InputSpec, NodeDef, OutputRef, ReduceMode, ReduceSpec,
+        WorkflowDef,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -1596,6 +1598,33 @@ mod tests {
             validate_def(&def).is_err(),
             "expected Err for empty function id, got Ok"
         );
+    }
+
+    #[test]
+    fn accepts_reduce_node_without_function_id() {
+        let mut def = well_formed_def();
+        def.nodes.insert(
+            "reduce".to_string(),
+            NodeDef {
+                function: None,
+                reduce: Some(ReduceSpec {
+                    over: "node:read".to_string(),
+                    mode: ReduceMode::Sequential,
+                    initial: json!([]),
+                    item_return_type: None,
+                    accumulator_return_type: None,
+                    body: vec!["summarize".to_string()],
+                }),
+                input: InputSpec {
+                    from: "node:read".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec!["read".to_string()],
+                ..make_node("unused", None, "node:read".into())
+            },
+        );
+        assert!(validate_def(&def).is_ok());
     }
 
     #[test]
