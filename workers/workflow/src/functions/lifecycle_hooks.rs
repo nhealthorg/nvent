@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use crate::functions::Deps;
 use crate::types::{RunStatus, WorkflowDef, WorkflowLifecycleHookSpec, WorkflowRunRecord};
 
+const LIFECYCLE_NODE_PREFIX: &str = "lifecycle:";
+
 fn hook_spec_for_start(def: &WorkflowDef) -> Option<&WorkflowLifecycleHookSpec> {
     def.metadata
         .as_ref()
@@ -66,6 +68,18 @@ fn merge_hook_payload(payload: Value, static_input: Option<&BTreeMap<String, Val
     Value::Object(merged)
 }
 
+fn wrap_hook_payload(payload: Value, run: &WorkflowRunRecord, event: &str) -> Value {
+    json!({
+        "_workflow": {
+            "run_id": run.run_id,
+            "node_uid": format!("{LIFECYCLE_NODE_PREFIX}{event}"),
+            "trace_id": run.workflow_trace_id,
+            "lifecycle": true,
+        },
+        "input": payload,
+    })
+}
+
 async fn trigger_hook(deps: &Deps, function_id: &str, payload: Value) {
     let res = deps
         .iii
@@ -104,7 +118,12 @@ pub async fn emit_start(deps: &Deps, def: &WorkflowDef, record: &WorkflowRunReco
         static_input,
     );
 
-    trigger_hook(deps, function_id, payload).await;
+    trigger_hook(
+        deps,
+        function_id,
+        wrap_hook_payload(payload, record, "on_start"),
+    )
+    .await;
 }
 
 pub async fn emit_terminal(
@@ -119,9 +138,14 @@ pub async fn emit_terminal(
         return;
     };
 
+    let event = if record.status == RunStatus::Completed {
+        "on_end"
+    } else {
+        "on_error"
+    };
     let payload = merge_hook_payload(
         json!({
-            "event": if record.status == RunStatus::Completed { "on_end" } else { "on_error" },
+            "event": event,
             "run_id": record.run_id,
             "status": record.status,
             "workflow_name": record.workflow_name,
@@ -132,7 +156,7 @@ pub async fn emit_terminal(
         static_input,
     );
 
-    trigger_hook(deps, function_id, payload).await;
+    trigger_hook(deps, function_id, wrap_hook_payload(payload, record, event)).await;
 }
 
 pub async fn emit_delete(
@@ -159,7 +183,12 @@ pub async fn emit_delete(
         static_input,
     );
 
-    trigger_hook(deps, function_id, payload).await;
+    trigger_hook(
+        deps,
+        function_id,
+        wrap_hook_payload(payload, record, "on_delete"),
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -180,6 +209,7 @@ mod tests {
 
         let spec = WorkflowLifecycleHookSpec::Target(WorkflowLifecycleHookTarget {
             function: "hook::start".to_string(),
+            namespace: None,
             input: Some(input),
         });
 
@@ -193,6 +223,22 @@ mod tests {
                 .and_then(|map| map.get("team"))
                 .and_then(|v| v.as_str()),
             Some("ops")
+        );
+    }
+
+    #[test]
+    fn hook_target_accepts_namespace_from_workflow_definition() {
+        let spec: WorkflowLifecycleHookSpec = serde_json::from_value(json!({
+            "function": "cohort::patient-extraction-start",
+            "namespace": "default",
+            "input": { "pipeline": "patient-extraction" },
+        }))
+        .expect("hook target with namespace must deserialize");
+
+        assert_eq!(spec.function_id(), "cohort::patient-extraction-start");
+        assert_eq!(
+            spec.static_input().and_then(|input| input.get("pipeline")),
+            Some(&json!("patient-extraction"))
         );
     }
 
@@ -216,5 +262,28 @@ mod tests {
         );
         assert_eq!(merged.get("team").and_then(|v| v.as_str()), Some("ops"));
         assert_eq!(merged.get("run_id").and_then(|v| v.as_str()), Some("run_1"));
+    }
+
+    #[test]
+    fn wrap_hook_payload_marks_a_workflow_lifecycle_execution() {
+        let run: WorkflowRunRecord = serde_json::from_value(json!({
+            "run_id": "run_1",
+            "workflow_name": "demo",
+            "status": "running",
+            "step": 0,
+            "def_ref": "def_1",
+            "input_ref": "input_1",
+            "created_at": 1,
+            "updated_at": 1,
+            "workflow_trace_id": "trace_1"
+        }))
+        .expect("minimal workflow run must deserialize");
+
+        let wrapped = wrap_hook_payload(json!({ "event": "on_start" }), &run, "on_start");
+        assert_eq!(wrapped["_workflow"]["run_id"], "run_1");
+        assert_eq!(wrapped["_workflow"]["node_uid"], "lifecycle:on_start");
+        assert_eq!(wrapped["_workflow"]["trace_id"], "trace_1");
+        assert_eq!(wrapped["_workflow"]["lifecycle"], true);
+        assert_eq!(wrapped["input"]["event"], "on_start");
     }
 }

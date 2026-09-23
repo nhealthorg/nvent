@@ -1,7 +1,7 @@
 <template>
   <div
     :class="heightClass"
-    class="w-full border rounded bg-white/5"
+    class="relative h-full w-full min-h-0 min-w-0 border rounded bg-white/5"
   >
     <ClientOnly>
       <div class="relative h-full">
@@ -26,18 +26,18 @@
           @node-click="onNodeClick"
         >
           <template #node-flow-loop-group="{ data }">
-            <div class="loop-group-node">
+            <div :class="['loop-group-node', { 'reduce-group-node': data?.groupKind === 'reduce' }]">
               <div class="loop-group-header">
                 <UIcon
-                  name="i-heroicons-arrow-path-rounded-square-20-solid"
+                  :name="data?.groupKind === 'reduce' ? 'i-lucide-list-ordered' : 'i-heroicons-arrow-path-rounded-square-20-solid'"
                   class="size-3.5"
                 />
                 <span>{{ data?.title || 'For Loop' }}</span>
                 <UBadge
                   size="xs"
-                  color="info"
+                  :color="data?.groupKind === 'reduce' ? 'warning' : 'info'"
                   variant="soft"
-                  :label="data?.mode || 'parallel'"
+                  :label="data?.groupKind === 'reduce' ? 'sequential' : (data?.mode || 'parallel')"
                 />
               </div>
               <div
@@ -54,6 +54,13 @@
               >
                 {{ data.pipeline }}
               </div>
+              <div
+                v-if="data?.groupKind === 'reduce'"
+                class="loop-group-progress"
+              >
+                <span>Accumulator progress</span>
+                <strong>{{ data?.reduceCheckpoint?.next_index ?? 0 }} / {{ data?.reduceCheckpoint?.total_items ?? '?' }}</strong>
+              </div>
             </div>
           </template>
 
@@ -65,6 +72,21 @@
               @action="onAction"
               @open-child-run="(runId) => emit('openChildRun', { runId, nodeId: id })"
               @view-child-runs="(runs) => emit('viewChildRuns', runs)"
+            />
+            <Handle
+              type="target"
+              :position="Position.Left"
+            />
+            <Handle
+              type="source"
+              :position="Position.Right"
+            />
+          </template>
+
+          <template #node-flow-control="{ id, data }">
+            <ControlNode
+              :id="id"
+              :data="data"
             />
             <Handle
               type="target"
@@ -139,6 +161,7 @@ import { computed, ref, watch, nextTick } from '#imports'
 import type { Node as VFNode, Edge as VFEdge } from '@vue-flow/core'
 import { Position, Handle } from '@vue-flow/core'
 import FlowNodeCard from './NodeCard.vue'
+import ControlNode from './ControlNode.vue'
 import FlowAwaitNode from './AwaitNode.vue'
 import { useFlowLayout } from '../../composables/useFlowLayout'
 
@@ -389,6 +412,16 @@ function resetLayout() {
   background: rgba(8, 47, 73, 0.35);
 }
 
+.reduce-group-node {
+  border-color: rgba(180, 83, 9, 0.5);
+  background: rgba(255, 247, 237, 0.62);
+}
+
+.dark .reduce-group-node {
+  border-color: rgba(251, 146, 60, 0.45);
+  background: rgba(67, 20, 7, 0.32);
+}
+
 .loop-group-header {
   display: flex;
   align-items: center;
@@ -400,6 +433,26 @@ function resetLayout() {
 
 .dark .loop-group-header {
   color: rgb(103 232 249);
+}
+
+.reduce-group-node .loop-group-header {
+  color: rgb(154 52 18);
+}
+
+.dark .reduce-group-node .loop-group-header {
+  color: rgb(253 186 116);
+}
+
+.loop-group-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid currentColor;
+  border-color: color-mix(in srgb, currentColor 20%, transparent);
+  font-size: 11px;
 }
 
 .loop-group-line {

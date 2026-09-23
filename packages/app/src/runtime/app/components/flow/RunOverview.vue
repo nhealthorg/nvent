@@ -50,28 +50,49 @@
       </div>
     </div>
 
-    <div class="px-2 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-zinc-900 shrink-0">
-      <div class="flex items-center gap-2 overflow-x-auto overflow-y-hidden pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-zinc-900 shrink-0">
+      <div class="flex items-center gap-1.5 min-w-0">
         <div
-          v-for="item in overviewFacts"
+          v-for="item in primaryOverviewFacts"
           :key="item.label"
           :title="item.title || item.value"
-          class="inline-flex min-h-8 flex-shrink-0 items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-50/90 dark:bg-zinc-950 px-2.5 py-1.5 text-xs shadow-sm"
+          class="inline-flex min-h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50/90 dark:bg-zinc-950 px-2 py-1.5 text-xs"
         >
-          <UIcon
-            :name="item.icon"
-            class="w-3.5 h-3.5 flex-shrink-0"
-            :class="item.iconClass"
-          />
-          <span class="text-gray-800 dark:text-gray-100 font-medium whitespace-nowrap">{{ item.value }}</span>
+          <UIcon :name="item.icon" class="w-3.5 h-3.5 shrink-0" :class="item.iconClass" />
+          <span class="truncate text-gray-800 dark:text-gray-100 font-medium">{{ item.value }}</span>
         </div>
+
+        <UPopover v-if="additionalOverviewFacts.length > 0" :content="{ align: 'end', side: 'bottom', sideOffset: 8 }">
+          <UButton
+            icon="i-lucide-ellipsis"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            square
+            aria-label="Show run details"
+          />
+          <template #content>
+            <div class="w-64 p-3">
+              <div class="mb-2 text-xs font-semibold text-gray-900 dark:text-gray-100">Run details</div>
+              <div class="space-y-2">
+                <div v-for="item in additionalOverviewFacts" :key="item.label" class="flex items-start gap-2 text-xs">
+                  <UIcon :name="item.icon" class="mt-0.5 h-3.5 w-3.5 shrink-0" :class="item.iconClass" />
+                  <div class="min-w-0">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ item.label }}</div>
+                    <div class="break-words text-gray-800 dark:text-gray-100">{{ item.value }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </UPopover>
       </div>
     </div>
 
     <!-- Scrollable Steps List -->
-    <div class="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6">
+    <div class="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 sm:px-4">
       <div
-        v-if="steps.length === 0"
+        v-if="steps.length === 0 && lifecycleEventItems.length === 0"
         class="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-500"
       >
         <UIcon
@@ -210,20 +231,11 @@ const overviewFacts = computed(() => {
     })
   }
 
-  // Keep the chip row compact for readability; collapse overflow into one chip.
-  if (facts.length <= 5) return facts
-
-  const visible = facts.slice(0, 5)
-  visible.push({
-    label: 'more',
-    value: `+${facts.length - 5} more`,
-    icon: 'i-lucide-ellipsis',
-    iconClass: 'text-gray-500',
-    title: 'Additional run facts are hidden to keep this row compact',
-  })
-
-  return visible
+  return facts
 })
+
+const primaryOverviewFacts = computed(() => overviewFacts.value.slice(0, 3))
+const additionalOverviewFacts = computed(() => overviewFacts.value.slice(3))
 
 // Handle cancel flow action
 const handleCancelFlow = () => {
@@ -280,6 +292,41 @@ const isValidAwaitStep = (stepKey: string): boolean => {
   return false
 }
 
+const lifecycleEventItems = computed(() => {
+  const hooks = props.flowDef?.metadata?.hooks
+  if (!hooks || typeof hooks !== 'object') return []
+
+  const labels: Record<string, string> = {
+    on_start: 'Workflow started',
+    on_end: 'Workflow completed',
+    on_error: 'Workflow failed',
+    on_delete: 'Workflow deleted',
+  }
+
+  return (['on_start', 'on_end', 'on_error', 'on_delete'] as const).flatMap((event) => {
+    const spec = hooks[event]
+    if (!spec) return []
+
+    const functionId = typeof spec === 'string' ? spec : spec?.function
+    if (!functionId) return []
+
+    const value = `lifecycle:${event}`
+    return [{
+      value,
+      label: labels[event],
+      step: {
+        key: value,
+        label: labels[event],
+        functionId,
+        lifecycleEvent: event,
+        nodeKind: 'workflow_event',
+        status: 'configured',
+      },
+      clickable: true,
+    }]
+  })
+})
+
 // Transform steps into radio items with "All Steps" option
 const radioItems = computed(() => {
   const allItem = {
@@ -332,6 +379,15 @@ const radioItems = computed(() => {
 
     const finalStep = {
       ...step,
+      loopChildren: isLoopGroup
+        ? filteredSteps
+          .filter(child => child.inLoopGroup && child.loopGroupId === step.loopGroupId)
+          .map(child => ({
+            value: child.key,
+            label: child.label || child.key,
+            step: child,
+          }))
+        : undefined,
       awaitConfig, // Add await config from flow definition
       // Extract awaitType from config if available
       awaitType: awaitConfig?.type || step.awaitType,
@@ -346,7 +402,71 @@ const radioItems = computed(() => {
     }
   })
 
-  return [allItem, ...stepItems]
+  const reduceItems = stepItems.filter(item => item.step?.nodeKind === 'reduce')
+  const reduceBodyItems = stepItems.filter(item => item.step?.nodeKind === 'reduce_body')
+  const groupedReduceItems = reduceItems.map((reduceItem) => ({
+    ...reduceItem,
+    clickable: false,
+    step: {
+      ...reduceItem.step,
+      nodeKind: 'reduce_group',
+      bodyItems: reduceBodyItems.filter(item => item.step?.reduceBody?.reduce === reduceItem.value),
+    },
+  }))
+  const reduceBodyValues = new Set(reduceBodyItems.map(item => item.value))
+  const reduceByValue = new Map(groupedReduceItems.map(item => [item.value, item]))
+
+  const reduceVisibleItems = stepItems.flatMap(item => {
+    if (reduceBodyValues.has(item.value)) return []
+    return reduceByValue.get(item.value) || item
+  })
+  const ifItems = reduceVisibleItems.filter(item => item.step?.nodeKind === 'if')
+  const branchItems = reduceVisibleItems.filter(item => item.step?.ifBranch?.if)
+  const branchValues = new Set(branchItems.map(item => item.value))
+  const groupedIfItems = ifItems.map((ifItem) => {
+    const nestedLoopGroups = new Map(
+      reduceVisibleItems
+        .filter(item => item.step?.isLoopGroup && item.step?.ifBranch?.if === ifItem.value)
+        .map(loopItem => [loopItem.value, {
+          ...loopItem,
+          step: {
+            ...loopItem.step,
+            loopChildren: stepItems
+              .filter(child => child.step?.inLoopGroup && child.step?.loopGroupId === loopItem.step.loopGroupId)
+              .map(child => ({ value: child.value, label: child.label, step: child.step })),
+          },
+        }]),
+    )
+    const branchItemsInOrder = (path: 'then' | 'else') => reduceVisibleItems
+      .filter(item => item.step?.ifBranch?.if === ifItem.value
+        && item.step?.ifBranch?.path === path
+        && !item.step?.inLoopGroup)
+      .map(item => nestedLoopGroups.get(item.value) || item)
+
+    return {
+      ...ifItem,
+      clickable: false,
+      step: {
+        ...ifItem.step,
+        nodeKind: 'if_group',
+        branches: {
+          then: branchItemsInOrder('then'),
+          else: branchItemsInOrder('else'),
+        },
+      },
+    }
+  })
+  const groupedIds = new Set(groupedIfItems.map(item => item.value))
+  const groupedByValue = new Map(groupedIfItems.map(item => [item.value, item]))
+
+  const visibleItems = reduceVisibleItems.flatMap(item => {
+    const ifGroup = groupedByValue.get(item.value)
+    if (ifGroup) return [ifGroup]
+    if (branchValues.has(item.value) || groupedIds.has(item.value)) return []
+    return [item]
+  })
+
+  return [allItem, ...visibleItems, ...lifecycleEventItems.value]
 })
 
 // Helper to format timestamps

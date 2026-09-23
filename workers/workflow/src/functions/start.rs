@@ -101,6 +101,9 @@ const ALLOWED_NODE_KEYS: &[&str] = &[
     "reduce",
     "reduceBody",
     "reduce_body",
+    "if",
+    "ifBranch",
+    "if_branch",
     "input",
     "depends_on",
     "fanout",
@@ -334,6 +337,8 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
     let has_agent = n.contains_key("agent");
     let has_child_workflow = n.contains_key("childWorkflow");
     let has_reduce = n.contains_key("reduce");
+    let has_if = n.contains_key("if");
+    let has_if_branch = n.contains_key("ifBranch") || n.contains_key("if_branch");
 
     if has_function {
         match n.get("function") {
@@ -381,8 +386,20 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             )),
             None => unreachable!(),
         }
-    } else if !has_agent && !has_reduce {
+    } else if !has_agent && !has_reduce && !has_if && !has_if_branch {
         p.push(format!("node `{id}`: missing `function` or `agent`"));
+    }
+
+    for field in ["if", "ifBranch", "if_branch"] {
+        let Some(value) = n.get(field) else {
+            continue;
+        };
+        if !value.is_object() {
+            p.push(format!(
+                "node `{id}`.{field} must be an object, not {}",
+                json_type(value)
+            ));
+        }
     }
 
     for (field, allowed) in [
@@ -406,7 +423,6 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
             }
         }
     }
-
 
     let has_input = n.get("input").map(|x| !x.is_null()).unwrap_or(false);
     if !has_input {
@@ -743,7 +759,10 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     }
 
     for (node_id, node) in &def.nodes {
-        if node.effective_function().id.trim().is_empty() {
+        if node.effective_function().id.trim().is_empty()
+            && node.if_spec.is_none()
+            && node.if_branch.is_none()
+        {
             return Err(WorkflowError::InvalidDef(format!(
                 "node '{}' has an empty function.id",
                 node_id
@@ -1095,6 +1114,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         nodes,
         fanout_src: BTreeMap::new(),
         reduce_checkpoints: BTreeMap::new(),
+        if_checkpoints: BTreeMap::new(),
         result_ref: Some(refs.result_ref),
         result_error: None,
         notify: req.notify,
@@ -1164,6 +1184,8 @@ mod tests {
             child_workflow: None,
             reduce: None,
             reduce_body: None,
+            if_spec: None,
+            if_branch: None,
             input: InputSpec {
                 from: input_from,
                 template: None,
@@ -1230,6 +1252,7 @@ mod tests {
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
             reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,

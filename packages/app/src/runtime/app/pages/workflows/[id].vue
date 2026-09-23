@@ -52,6 +52,19 @@ interface WorkflowRunStatusResponse {
     pending_items: number
     active_index?: number | null
   }>
+  reduce_checkpoints?: Record<string, {
+    next_index: number
+    total_items: number
+    accumulator: unknown
+    state: 'pending' | 'running' | 'done' | 'failed'
+    active_body_uids?: string[]
+    error?: string
+  }>
+  if_checkpoints?: Record<string, {
+    state: 'pending' | 'done' | 'failed'
+    selected?: 'then' | 'else'
+    error?: string
+  }>
   created_at: number
   updated_at: number
   result_ref?: string
@@ -401,6 +414,29 @@ const flowMeta = computed(() => {
       loopGroupSize: loopGroup?.nodeIds.length || 0,
       loopPipeline: loopGroup?.label,
       childWorkflow: node.childWorkflow,
+      nodeKind: node.function?.id === 'nworkflow::internal-var-set'
+        ? 'var'
+        : node.reduce_body
+        ? 'reduce_body'
+        : node.reduce
+          ? 'reduce'
+        : node.if
+          ? 'if'
+          : node.if_branch
+            ? 'if_branch'
+            : node.childWorkflow
+              ? 'child_workflow'
+              : node.fanout
+                ? 'fanout'
+                : 'task',
+      reduce: node.reduce,
+      reduceBody: node.reduce_body,
+      if: node.if,
+      ifBranch: node.if_branch,
+      ifSelected: node.if ? status.value?.if_checkpoints?.[id]?.selected : undefined,
+      ifBranchSelected: node.if_branch
+        ? status.value?.if_checkpoints?.[node.if_branch.if]?.selected === node.if_branch.path
+        : undefined,
     }
   })
 
@@ -426,6 +462,7 @@ const flowMeta = computed(() => {
     id: runId.value,
     entry,
     steps,
+    metadata: definition.value.metadata,
     loopGroups: loopGroups.value.groups,
     analyzed,
   }
@@ -448,7 +485,9 @@ const stepStates = computed(() => {
 
     out[id] = {
       status: uiStatus,
-      error: nodeStatus.result_error,
+      error: nodeStatus.result_error
+        || status.value?.reduce_checkpoints?.[id]?.error
+        || status.value?.if_checkpoints?.[id]?.error,
       result: nodeStatus.result_ref,
       result_mode_declared: nodeResultState.declaredMode,
       result_mode_effective: nodeResultState.effectiveMode,
@@ -460,6 +499,20 @@ const stepStates = computed(() => {
       worker_name: nodeStatus.worker_name,
       retries: nodeStatus.retries,
       child_run_id: nodeStatus.child_run_id,
+      reduce_checkpoint: status.value?.reduce_checkpoints?.[id],
+      if_checkpoint: status.value?.if_checkpoints?.[id],
+    }
+  })
+
+  Object.entries(definition.value?.nodes ?? {}).forEach(([id, nodeDef]: [string, any]) => {
+    if (!nodeDef?.if_branch) return
+    const selected = status.value?.if_checkpoints?.[nodeDef.if_branch.if]?.selected
+    if (selected && selected !== nodeDef.if_branch.path) {
+      out[id] = {
+        ...(out[id] || {}),
+        status: 'skipped',
+        skipped: true,
+      }
     }
   })
 
@@ -588,6 +641,10 @@ const stepList = computed(() => {
   for (const id of ordered) {
     const state = stepStates.value[id]
     const node = definition.value.nodes[id]
+    const reduceSpec = node?.reduce || node?.reduceSpec
+    const reduceBodySpec = node?.reduce_body || node?.reduceBody
+    const ifSpec = node?.if || node?.ifSpec
+    const ifBranchSpec = node?.if_branch || node?.ifBranch
     const group = loopGroups.value.byNodeId[id]
 
     if (group && !insertedGroups.has(group.id)) {
@@ -648,6 +705,9 @@ const stepList = computed(() => {
         loopResultStoreCount: loopResultCounts.store,
         loopResultMemoryCount: loopResultCounts.memory,
         loopResultPrunedCount: loopResultCounts.pruned,
+        ifBranch: group.nodeIds
+          .map(memberId => definition.value.nodes[memberId]?.if_branch || definition.value.nodes[memberId]?.ifBranch)
+          .find(Boolean),
       })
       insertedGroups.add(group.id)
     }
@@ -679,6 +739,31 @@ const stepList = computed(() => {
       functionId: node?.function?.id,
       childWorkflowId: node?.childWorkflow?.workflow,
       childRunId: state?.child_run_id,
+      nodeKind: node?.function?.id === 'nworkflow::internal-var-set'
+        ? 'var'
+        : reduceBodySpec
+        ? 'reduce_body'
+        : reduceSpec
+          ? 'reduce'
+        : ifSpec
+          ? 'if'
+          : ifBranchSpec
+            ? 'if_branch'
+            : node?.childWorkflow
+              ? 'child_workflow'
+              : node?.fanout
+                ? 'fanout'
+                : 'task',
+      reduceCheckpoint: state?.reduce_checkpoint,
+      reduceSpec,
+      reduceBody: reduceBodySpec,
+      ifCheckpoint: state?.if_checkpoint,
+      ifSelected: ifSpec ? status.value?.if_checkpoints?.[id]?.selected : undefined,
+      ifSpec,
+      ifBranch: ifBranchSpec,
+      ifBranchSelected: ifBranchSpec
+        ? status.value?.if_checkpoints?.[ifBranchSpec.if]?.selected === ifBranchSpec.path
+        : undefined,
       isChildWorkflow: Boolean(node?.childWorkflow),
       isVarStep: node?.function?.id === 'nworkflow::internal-var-set',
       isAgent: Boolean(node?.agent),
@@ -1478,7 +1563,89 @@ const formattedNodeResult = computed(() => {
     </div>
 
     <div class="flex-1 overflow-hidden">
-      <div class="h-full flex flex-col xl:flex-row overflow-hidden">
+      <div class="hidden xl:block h-full overflow-hidden">
+        <USplitter
+          id="workflow-run-layout"
+          auto-save-id="workflow-run-layout"
+          :items="[
+            { slot: 'diagram', minSize: 35, maxSize: 70, defaultSize: 50, class: 'min-w-0 h-full overflow-hidden' },
+            { slot: 'overview', minSize: 18, maxSize: 35, defaultSize: 25, class: 'min-w-0 h-full overflow-hidden' },
+            { slot: 'timeline', minSize: 18, maxSize: 35, defaultSize: 25, class: 'min-w-0 h-full overflow-hidden' },
+          ]"
+          :ui="{ handle: 'w-1.5 cursor-col-resize bg-zinc-200/70 dark:bg-zinc-800/70 hover:bg-primary/60 data-[state=drag]:bg-primary' }"
+          class="h-full"
+        >
+          <template #diagram>
+            <div class="relative h-full w-full min-w-0 overflow-hidden border-r border-zinc-200 dark:border-zinc-800">
+              <div v-if="pending && !status" class="absolute inset-0 z-10 flex items-center justify-center bg-white/50 dark:bg-zinc-900/50">
+                <div class="h-10 w-10 animate-spin rounded-full border-4 border-zinc-200 border-t-zinc-800" />
+              </div>
+              <div v-else-if="error" class="p-12 text-center">
+                <p class="font-medium text-red-500">Failed to load run status</p>
+                <p class="mt-2 text-sm text-zinc-500">{{ error }}</p>
+              </div>
+              <div v-else class="h-full w-full">
+                <NventFlowDiagram
+                  v-if="flowMeta"
+                  height-class="h-full"
+                  :show-controls="true"
+                  :show-background="true"
+                  :flow="flowMeta"
+                  :step-states="stepStates"
+                  :flow-status="normalizedStatus"
+                  @node-selected="selectedStep = $event.id"
+                  @open-child-run="openChildRun"
+                  @view-child-runs="viewChildRuns"
+                />
+                <div v-else class="flex h-full items-center justify-center text-zinc-500">No diagram data available</div>
+              </div>
+            </div>
+          </template>
+
+          <template #overview>
+            <div class="h-full w-full min-w-0 overflow-hidden border-r border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+              <NventFlowRunOverview
+                v-if="status"
+                :run-status="normalizedStatus"
+                :run-id="runId"
+                :steps="stepList"
+                :started-at="status.created_at"
+                :completed-at="status.updated_at"
+                :loop-overview="loopOverviewStats"
+                :result-overview="resultOverview"
+                :run-result-mode="runResultStorageMode"
+                :store-key="status.store_key"
+                :result="status.result"
+                :flow-def="flowMeta"
+                @select-step="selectedStep = $event"
+                @cancel-flow="cancelRun"
+                @restart-flow="() => {}"
+                @inspect-step-result="openResultSlideover"
+                @open-child-run="openChildRun"
+                @view-child-runs="viewChildRuns"
+              />
+            </div>
+          </template>
+
+          <template #timeline>
+            <div class="h-full w-full min-w-0 overflow-hidden bg-white dark:bg-zinc-950">
+              <NventFlowRunTimeline
+                :run-id="runId"
+                :run-status="normalizedStatus || 'unknown'"
+                :started-at="status?.created_at"
+                :completed-at="status?.updated_at"
+                :node-checkpoints="status?.nodes"
+                :selected-step="selectedStep"
+                :selected-step-node-ids="selectedStepNodeIds"
+                :loop-index-options="loopIndexOptions"
+                @open-child-run="openChildRun"
+              />
+            </div>
+          </template>
+        </USplitter>
+      </div>
+
+      <div class="flex h-full flex-col overflow-hidden xl:hidden">
         <div class="min-w-0 flex-1 relative overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800">
         <div v-if="pending && !status" class="absolute inset-0 flex items-center justify-center bg-white/50 z-10 dark:bg-zinc-900/50">
            <div class="w-10 h-10 border-4 border-zinc-200 border-t-zinc-800 rounded-full animate-spin"></div>
@@ -1501,6 +1668,7 @@ const formattedNodeResult = computed(() => {
             :flow="flowMeta"
             :step-states="stepStates"
             :flow-status="normalizedStatus"
+            @node-selected="selectedStep = $event.id"
             @open-child-run="openChildRun"
             @view-child-runs="viewChildRuns"
           />

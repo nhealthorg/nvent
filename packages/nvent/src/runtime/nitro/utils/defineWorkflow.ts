@@ -139,6 +139,12 @@ export interface AgentResult {
 }
 
 export interface WorkflowContext {
+  /** Build serializable conditions for durable ctx.if branches. */
+  cond: WorkflowConditionBuilder
+
+  /** Create a reference to the workflow input, optionally at a nested path. */
+  value: (path?: string) => WorkflowValueRef
+
   /**
    * Low-level node definition (full control over spec)
    */
@@ -166,6 +172,12 @@ export interface WorkflowContext {
     agent?: any
     agentOptions?: any
     childWorkflow?: { workflow: string }
+    if?: {
+      source: string | boolean
+      path?: string[]
+      predicate?: Record<string, unknown>
+    }
+    if_branch?: { if: string, path: 'then' | 'else' }
     reduce?: {
       over: string
       mode: 'sequential'
@@ -266,6 +278,13 @@ export interface WorkflowContext {
     options?: WorkflowReduceOptions,
   ) => Promise<TAccumulator>
 
+  /** Compile a durable truthiness branch with an optional else path. */
+  if: <T = any>(
+    condition: WorkflowValueRef | WorkflowCondition | boolean,
+    thenFn: (ctx: WorkflowContext) => T | Promise<T>,
+    elseFn?: (ctx: WorkflowContext) => T | Promise<T>,
+  ) => Promise<T>
+
   /**
    * Declare one logical parallel branch that can contain sequential steps.
    * Use with ctx.all to run several branches concurrently in the DAG.
@@ -318,6 +337,19 @@ export interface WorkflowReduceContext extends WorkflowContext {
   item: WorkflowLoopItemRef
   accumulator: WorkflowValueRef
   index: WorkflowValueRef
+}
+
+export interface WorkflowConditionBuilder {
+  eq: (left: WorkflowConditionOperand, right: WorkflowConditionOperand) => WorkflowCondition
+  ne: (left: WorkflowConditionOperand, right: WorkflowConditionOperand) => WorkflowCondition
+  gt: (left: WorkflowConditionOperand, right: WorkflowConditionOperand) => WorkflowCondition
+  gte: (left: WorkflowConditionOperand, right: WorkflowConditionOperand) => WorkflowCondition
+  lt: (left: WorkflowConditionOperand, right: WorkflowConditionOperand) => WorkflowCondition
+  lte: (left: WorkflowConditionOperand, right: WorkflowConditionOperand) => WorkflowCondition
+  and: (...conditions: WorkflowCondition[]) => WorkflowCondition
+  or: (...conditions: WorkflowCondition[]) => WorkflowCondition
+  not: (condition: WorkflowCondition) => WorkflowCondition
+  prop: (value: WorkflowValueRef, ...path: string[]) => WorkflowValueRef
 }
 
 export type WorkflowHookInput = Record<string, unknown>
@@ -432,6 +464,28 @@ export type WorkflowValueRef = {
   $source: 'node' | 'fanout_item' | 'run_input'
 }
 
+export type WorkflowConditionOperand = WorkflowValueRef | string | number | boolean | null
+
+export type WorkflowCondition = {
+  equals: [WorkflowConditionOperand, WorkflowConditionOperand]
+} | {
+  not_equals: [WorkflowConditionOperand, WorkflowConditionOperand]
+} | {
+  gt: [WorkflowConditionOperand, WorkflowConditionOperand]
+} | {
+  gte: [WorkflowConditionOperand, WorkflowConditionOperand]
+} | {
+  lt: [WorkflowConditionOperand, WorkflowConditionOperand]
+} | {
+  lte: [WorkflowConditionOperand, WorkflowConditionOperand]
+} | {
+  and: WorkflowCondition[]
+} | {
+  or: WorkflowCondition[]
+} | {
+  not: WorkflowCondition
+}
+
 function isWorkflowParallelBranch(value: unknown): value is WorkflowParallelBranch<any> {
   return Boolean(
     value
@@ -452,6 +506,47 @@ function isWorkflowValueRef(value: unknown): value is WorkflowValueRef {
     && (value as any)[WORKFLOW_VALUE_REF] === true
     && typeof (value as any).$ref === 'string',
   )
+}
+
+function isWorkflowCondition(value: unknown): value is WorkflowCondition {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  const key = keys[0]
+  if (keys.length !== 1 || !key || ![
+    'equals', 'not_equals', 'gt', 'gte', 'lt', 'lte', 'and', 'or', 'not',
+  ].includes(key)) return false
+  const operands = (value as any)[key]
+  if (['and', 'or'].includes(key)) {
+    return Array.isArray(operands) && operands.every(isWorkflowCondition)
+  }
+  if (key === 'not') return isWorkflowCondition(operands)
+  return Array.isArray(operands) && operands.length === 2
+}
+
+function serializeConditionOperand(value: WorkflowConditionOperand): unknown {
+  if (isWorkflowValueRef(value)) {
+    return {
+      $ref: value.$ref,
+      ...(value.$path?.length ? { $path: value.$path } : {}),
+    }
+  }
+  return value
+}
+
+function serializeWorkflowCondition(condition: WorkflowCondition): Record<string, unknown> {
+  if ('not' in condition) return { op: 'not', arg: serializeWorkflowCondition(condition.not) }
+  if ('and' in condition) return { op: 'and', args: condition.and.map(serializeWorkflowCondition) }
+  if ('or' in condition) return { op: 'or', args: condition.or.map(serializeWorkflowCondition) }
+
+  const [operator, operands] = Object.entries(condition)[0] as [
+    'equals' | 'not_equals' | 'gt' | 'gte' | 'lt' | 'lte',
+    [WorkflowConditionOperand, WorkflowConditionOperand],
+  ]
+  return {
+    op: operator,
+    left: serializeConditionOperand(operands[0]),
+    right: serializeConditionOperand(operands[1]),
+  }
 }
 
 function createWorkflowValueRef(source: 'node' | 'fanout_item' | 'run_input', ref: string, path: string[] = []): any {
@@ -481,6 +576,40 @@ function createWorkflowValueRef(source: 'node' | 'fanout_item' | 'run_input', re
       return createWorkflowValueRef(source, ref, [...path, String(prop)])
     },
   })
+}
+
+function appendWorkflowValuePath(value: WorkflowValueRef, path: string[]): WorkflowValueRef {
+  return createWorkflowValueRef(
+    value.$source,
+    value.$ref,
+    [...(value.$path ?? []), ...path],
+  ) as WorkflowValueRef
+}
+
+const workflowConditionBuilder: WorkflowConditionBuilder = {
+  eq: (left, right) => ({ equals: [left, right] }),
+  ne: (left, right) => ({ not_equals: [left, right] }),
+  gt: (left, right) => ({ gt: [left, right] }),
+  gte: (left, right) => ({ gte: [left, right] }),
+  lt: (left, right) => ({ lt: [left, right] }),
+  lte: (left, right) => ({ lte: [left, right] }),
+  and: (...conditions) => ({ and: conditions }),
+  or: (...conditions) => ({ or: conditions }),
+  not: condition => ({ not: condition }),
+  prop: (value, ...path) => {
+    if (path.length === 0 || path.some(segment => !segment)) {
+      throw new Error('ctx.cond.prop requires at least one non-empty path segment')
+    }
+    return appendWorkflowValuePath(value, path)
+  },
+}
+
+function createRunInputValueRef(path?: string): WorkflowValueRef {
+  const segments = (path ?? 'run_input')
+    .split('.')
+    .filter(Boolean)
+  if (segments[0] === 'run_input') segments.shift()
+  return createWorkflowValueRef('run_input', 'run_input', segments) as WorkflowValueRef
 }
 
 type CallOptions = {
@@ -903,6 +1032,7 @@ export function defineWorkflow<
       let autoNodeCounter = 0
       let controlFrontier: string[] = []
       let activeReduceId: string | null = null
+      let activeIfBranch: { if: string, path: 'then' | 'else' } | null = null
       let parallelCollector: string[] | null = null
       let parallelFixedFrontier: string[] | null = null
       const collectNodeRefs = (obj: any, refs: Set<string>) => {
@@ -1010,6 +1140,8 @@ export function defineWorkflow<
       }
 
       const ctx: WorkflowContext = {
+        cond: workflowConditionBuilder,
+        value: createRunInputValueRef,
         node: async (id, spec) => {
           const dataDepSet = new Set<string>()
           collectNodeRefs(spec, dataDepSet)
@@ -1031,6 +1163,8 @@ export function defineWorkflow<
             ...(spec.reduce ? { reduce: spec.reduce } : {}),
             ...(spec.reduce_body ? { reduce_body: spec.reduce_body } : {}),
             ...(activeReduceId && !spec.reduce ? { reduce_body: { reduce: activeReduceId } } : {}),
+            ...(spec.if ? { if: spec.if } : {}),
+            ...(activeIfBranch ? { if_branch: activeIfBranch } : {}),
             result: buildResultPolicy(spec.result),
             ...(spec.inputPolicy ? { inputPolicy: buildInputPolicy(spec.inputPolicy) } : {}),
           }
@@ -1281,6 +1415,55 @@ export function defineWorkflow<
               body,
             },
           }) as Promise<TAccumulator>
+        },
+
+        if: async <T = any>(
+          condition: WorkflowValueRef | WorkflowCondition | boolean,
+          thenFn: (branchCtx: WorkflowContext) => T | Promise<T>,
+          elseFn?: (branchCtx: WorkflowContext) => T | Promise<T>,
+        ): Promise<T> => {
+          const ifId = applyAutoNodeSuffix('if')
+          const conditionSpec = typeof condition === 'boolean'
+            ? { source: condition }
+            : isWorkflowCondition(condition)
+              ? { source: true, predicate: serializeWorkflowCondition(condition) }
+            : {
+                source: condition.$ref,
+                ...(condition.$path?.length ? { path: condition.$path } : {}),
+              }
+          const previousFrontier = [...controlFrontier]
+
+          await ctx.node(ifId, {
+            input: { from: 'run_input' },
+            if: conditionSpec,
+          })
+
+          const compileBranch = async (
+            path: 'then' | 'else',
+            fn?: (branchCtx: WorkflowContext) => T | Promise<T>,
+          ): Promise<{ result?: T, frontier: string[] }> => {
+            if (!fn) return { frontier: [] }
+            const savedBranch = activeIfBranch
+            const savedFrontier = [...controlFrontier]
+            activeIfBranch = { if: ifId, path }
+            controlFrontier = [ifId]
+            try {
+              const result = await fn(ctx)
+              return { result, frontier: [...controlFrontier] }
+            } finally {
+              activeIfBranch = savedBranch
+              controlFrontier = savedFrontier
+            }
+          }
+
+          const thenBranch = await compileBranch('then', thenFn)
+          const elseBranch = await compileBranch('else', elseFn)
+          const thenFrontier = thenBranch.frontier
+          const elseFrontier = elseBranch.frontier
+          const branchFrontier = [...new Set([...thenFrontier, ...elseFrontier])]
+          controlFrontier = branchFrontier.length > 0 ? branchFrontier : previousFrontier
+
+          return (thenBranch.result ?? elseBranch.result) as T
         },
 
         branch: <T = any>(fn: (c: WorkflowContext) => T | Promise<T>): WorkflowParallelBranch<T> => ({

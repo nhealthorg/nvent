@@ -29,6 +29,46 @@
             variant="soft"
             icon="i-lucide-workflow"
           />
+          <UBadge
+            v-if="data?.nodeKind === 'var'"
+            label="VAR"
+            size="xs"
+            color="violet"
+            variant="soft"
+            icon="i-heroicons-variable-20-solid"
+          />
+          <UBadge
+            v-else-if="data?.nodeKind === 'reduce'"
+            label="ACCUMULATOR"
+            size="xs"
+            color="amber"
+            variant="soft"
+            icon="i-lucide-list-ordered"
+          />
+          <UBadge
+            v-else-if="data?.nodeKind === 'reduce_body'"
+            label="REDUCE BODY"
+            size="xs"
+            color="amber"
+            variant="soft"
+            icon="i-lucide-between-horizontal-start"
+          />
+          <UBadge
+            v-else-if="data?.nodeKind === 'if'"
+            label="IF"
+            size="xs"
+            color="sky"
+            variant="soft"
+            icon="i-lucide-git-branch"
+          />
+          <UBadge
+            v-else-if="data?.nodeKind === 'if_branch'"
+            :label="String(data.ifBranch?.path || '').toUpperCase()"
+            size="xs"
+            :color="data.ifBranchSelected === false ? 'neutral' : 'sky'"
+            variant="soft"
+            icon="i-lucide-git-branch"
+          />
         </div>
         <div class="flex items-center gap-2">
           <span
@@ -60,6 +100,65 @@
     </template>
 
     <div class="px-3 py-2 text-xs space-y-1">
+      <div
+        v-if="data?.nodeKind === 'if'"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon name="i-lucide-git-branch" class="size-3" />
+          Branch
+        </span>
+        <UBadge
+          :label="data.ifSelected ? `${data.ifSelected} selected` : 'pending'"
+          size="xs"
+          :color="data.ifSelected ? 'success' : 'neutral'"
+          variant="soft"
+        />
+      </div>
+      <div
+        v-if="data?.nodeKind === 'if_branch' && data.ifBranchSelected === false"
+        class="flex items-center gap-1 text-gray-500 dark:text-gray-400"
+      >
+        <UIcon name="i-lucide-skip-forward" class="size-3" />
+        Branch skipped
+      </div>
+      <div
+        v-if="data?.nodeKind === 'var'"
+        class="flex items-center justify-between"
+      >
+        <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <UIcon name="i-heroicons-variable-20-solid" class="size-3" />
+          Workflow variable
+        </span>
+        <span class="truncate ml-2 font-mono" :title="data?.label">{{ data?.label || data?.workerId || '-' }}</span>
+      </div>
+      <template v-if="data?.nodeKind === 'reduce'">
+        <div class="flex items-center justify-between">
+          <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
+            <UIcon name="i-lucide-list-ordered" class="size-3" />
+            Progress
+          </span>
+          <span class="font-mono">
+            {{ data.reduceCheckpoint?.next_index ?? 0 }} / {{ data.reduceCheckpoint?.total_items ?? '?' }}
+          </span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-gray-500 dark:text-gray-400">Accumulator</span>
+          <UBadge
+            :label="data.reduceCheckpoint?.state || 'pending'"
+            size="xs"
+            :color="data.reduceCheckpoint?.state === 'failed' ? 'error' : data.reduceCheckpoint?.state === 'done' ? 'success' : 'warning'"
+            variant="soft"
+          />
+        </div>
+        <div
+          v-if="data.reduceCheckpoint?.error"
+          class="truncate text-red-500 dark:text-red-400"
+          :title="data.reduceCheckpoint.error"
+        >
+          {{ data.reduceCheckpoint.error }}
+        </div>
+      </template>
       <div
         v-if="data?.isChildWorkflow"
         class="flex items-center justify-between"
@@ -134,7 +233,10 @@
           :title="data.childRunId"
         >{{ shortId(data.childRunId) }}</span>
       </div>
-      <div class="flex items-center justify-between">
+      <div
+        v-if="!['var', 'if', 'if_branch', 'reduce', 'reduce_body'].includes(data?.nodeKind || '')"
+        class="flex items-center justify-between"
+      >
         <span class="text-gray-500 dark:text-gray-400 flex items-center gap-1">
           <UIcon
             name="i-heroicons-queue-list-20-solid"
@@ -408,15 +510,26 @@ const headerClass = computed(() => props.kind === 'entry'
     ? 'px-3 py-2 bg-gradient-to-br from-violet-800 to-indigo-700 text-violet-50 rounded-t'
   : props.data?.isAgent || props.data?.agent
     ? 'px-3 py-2 bg-gradient-to-br from-indigo-800 to-purple-700 text-indigo-50 rounded-t'
-    : props.data?.isLoop
+      : props.data?.nodeKind === 'var'
+        ? 'px-3 py-2 bg-gradient-to-br from-violet-800 to-fuchsia-700 text-violet-50 rounded-t'
+        : props.data?.nodeKind === 'reduce' || props.data?.nodeKind === 'reduce_body'
+      ? 'px-3 py-2 bg-gradient-to-br from-amber-800 to-orange-700 text-amber-50 rounded-t'
+      : props.data?.nodeKind === 'if' || props.data?.nodeKind === 'if_branch'
+        ? 'px-3 py-2 bg-gradient-to-br from-sky-800 to-cyan-700 text-sky-50 rounded-t'
+        : props.data?.isLoop
       ? 'px-3 py-2 bg-gradient-to-br from-cyan-800 to-sky-700 text-cyan-50 rounded-t'
-      : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
+        : 'px-3 py-2 bg-gradient-to-br from-gray-800 to-gray-700 text-gray-100 rounded-t')
 
   function shortId(value: string): string {
     return value.length > 12 ? `${value.slice(0, 8)}...${value.slice(-3)}` : value
   }
 
 const displayName = computed(() => {
+  if (props.data?.nodeKind === 'var') return 'Workflow variable'
+  if (props.data?.nodeKind === 'if') return 'If / Else'
+  if (props.data?.nodeKind === 'reduce') return 'Accumulator'
+  if (props.data?.nodeKind === 'reduce_body') return 'Reduce body'
+
   const label = typeof props.data?.label === 'string' ? props.data.label.trim() : ''
   if (label) return label
 

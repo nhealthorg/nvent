@@ -58,6 +58,15 @@ export interface StepNodeData {
   childRunId?: string
   childRuns?: Array<{ index: number, runId: string, status: string }>
   isChildWorkflow?: boolean
+  nodeKind?: 'task' | 'fanout' | 'reduce' | 'reduce_body' | 'if' | 'if_branch' | 'var' | 'child_workflow'
+  reduce?: any
+  reduceBody?: any
+  reduceCheckpoint?: any
+  if?: any
+  ifBranch?: { if: string, path: 'then' | 'else' }
+  ifSelected?: 'then' | 'else'
+  ifBranchSelected?: boolean
+  ifCheckpoint?: any
   [key: string]: any
 }
 
@@ -115,6 +124,8 @@ export function useFlowLayout(props: {
         return 'error'
       case 'canceled':
         return 'canceled'
+      case 'skipped':
+        return 'idle'
       default:
         return 'idle'
     }
@@ -179,6 +190,15 @@ export function useFlowLayout(props: {
           loopOver: f.entry.loopOver,
           loopMode: f.entry.loopMode,
           __nodeHeight: entryHeight,
+          nodeKind: f.entry.nodeKind,
+          reduce: f.entry.reduce,
+          reduceBody: f.entry.reduceBody,
+          if: f.entry.if,
+          ifBranch: f.entry.ifBranch,
+          ifSelected: f.entry.ifSelected,
+          ifBranchSelected: f.entry.ifBranchSelected,
+          reduceCheckpoint: entryState?.reduce_checkpoint,
+          ifCheckpoint: entryState?.if_checkpoint,
         },
         type: 'flow-entry',
         style: { minWidth: `${nodeWidth}px`, zIndex: 20 },
@@ -212,7 +232,10 @@ export function useFlowLayout(props: {
     const steps = f.steps || {}
     if (f.analyzed?.levels) {
       const startLevel = f.entry ? 1 : 0
-      const levels = f.analyzed.levels.slice(startLevel).filter((l: string[]) => l.length > 0)
+      const levels = f.analyzed.levels
+        .slice(startLevel)
+        .map((level: string[]) => level.filter(name => steps[name]?.nodeKind !== 'reduce'))
+        .filter((l: string[]) => l.length > 0)
 
       levels.forEach((levelSteps: string[]) => {
         const hasAwait = levelSteps.some(name => steps[name]?.awaitBefore)
@@ -264,9 +287,22 @@ export function useFlowLayout(props: {
                 childRunId: s?.child_run_id,
                 childRuns: s?.child_runs,
                 isChildWorkflow: Boolean(step?.childWorkflow),
+                nodeKind: step?.nodeKind,
+                reduce: step?.reduce,
+                reduceBody: step?.reduceBody,
+                if: step?.if,
+                ifBranch: step?.ifBranch,
+                ifSelected: step?.ifSelected,
+                ifBranchSelected: step?.ifBranchSelected,
+                reduceCheckpoint: s?.reduce_checkpoint,
+                ifCheckpoint: s?.if_checkpoint,
             },
-            type: 'flow-step',
-            style: { minWidth: `${nodeWidth}px`, zIndex: 20 },
+            type: step?.nodeKind === 'var' || step?.nodeKind === 'if' || step?.nodeKind === 'if_branch'
+              ? 'flow-control'
+              : 'flow-step',
+            style: step?.nodeKind === 'var' || step?.nodeKind === 'if' || step?.nodeKind === 'if_branch'
+              ? { width: '280px', minWidth: '280px', zIndex: 20 }
+              : { minWidth: `${nodeWidth}px`, zIndex: 20 },
             sourcePosition: Position.Right,
             targetPosition: Position.Left,
           })
@@ -322,6 +358,39 @@ export function useFlowLayout(props: {
       })
     }
 
+    const reduceGroups = Object.entries(steps)
+      .filter(([, step]: [string, any]) => step?.nodeKind === 'reduce' && Array.isArray(step?.reduce?.body))
+      .map(([id, step]: [string, any]) => ({
+        id,
+        body: step.reduce.body as string[],
+        over: step.reduce.over,
+      }))
+
+    for (const group of reduceGroups) {
+      const members = out.filter(n => n.id.startsWith('step:') && group.body.includes(n.id.replace('step:', '')))
+      if (!members.length) continue
+      const minX = Math.min(...members.map(n => n.position.x))
+      const maxX = Math.max(...members.map(n => n.position.x + nodeWidth))
+      const minY = Math.min(...members.map(n => n.position.y))
+      const maxY = Math.max(...members.map(n => n.position.y + ((n.data as any)?.__nodeHeight || 210)))
+
+      out.unshift({
+        id: `reduce-group:${group.id}`,
+        position: { x: minX - 40, y: minY - 50 },
+        data: {
+          title: 'REDUCE',
+          groupKind: 'reduce',
+          over: group.over,
+          pipeline: group.body.join(' -> '),
+          reduceCheckpoint: states[group.id]?.reduce_checkpoint,
+          status: mapStatusToNodeStatus(states[group.id]?.status),
+          error: states[group.id]?.error,
+        } as any,
+        type: 'flow-loop-group',
+        style: { width: `${maxX - minX + 80}px`, height: `${maxY - minY + 100}px`, zIndex: 1, pointerEvents: 'none' },
+      })
+    }
+
     return out
   })
 
@@ -334,7 +403,28 @@ export function useFlowLayout(props: {
     const added = new Set<string>()
     const out: FlowEdge[] = []
 
+    function reduceBody(nodeName: string): string[] {
+      const body = steps[nodeName]?.reduce?.body
+      return Array.isArray(body) ? body : []
+    }
+
+    function visibleSourceId(nodeId: string): string {
+      if (!nodeId.startsWith('step:')) return nodeId
+      const name = nodeId.slice('step:'.length)
+      const body = reduceBody(name)
+      return body.length > 0 ? `step:${body[body.length - 1]}` : nodeId
+    }
+
+    function visibleTargetId(nodeId: string): string {
+      if (!nodeId.startsWith('step:')) return nodeId
+      const name = nodeId.slice('step:'.length)
+      const body = reduceBody(name)
+      return body.length > 0 ? `step:${body[0]}` : nodeId
+    }
+
     function addEdge(source: string, target: string, label?: string) {
+      source = visibleSourceId(source)
+      target = visibleTargetId(target)
       const id = `${source}->${target}${label ? `:${label}` : ''}`
       if (added.has(id)) return
 
@@ -398,7 +488,7 @@ export function useFlowLayout(props: {
               addEdge(source, awaitNodeId)
               addEdge(awaitNodeId, target)
             } else {
-              addEdge(source, target)
+              addEdge(source, target, targetStep?.ifBranch?.path)
             }
           }
         }

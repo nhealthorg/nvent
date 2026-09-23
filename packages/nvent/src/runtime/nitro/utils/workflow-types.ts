@@ -70,6 +70,23 @@ export interface WorkflowReduceBodySpec {
   reduce: string
 }
 
+export interface WorkflowIfSpec {
+  source: string | boolean
+  path?: string[]
+  predicate?: {
+    op: 'equals' | 'not_equals' | 'gt' | 'gte' | 'lt' | 'lte' | 'and' | 'or' | 'not'
+    left?: unknown
+    right?: unknown
+    args?: unknown[]
+    arg?: unknown
+  }
+}
+
+export interface WorkflowIfBranchSpec {
+  if: string
+  path: 'then' | 'else'
+}
+
 export interface WorkflowNodeDef {
   label?: string
   function?: WorkflowFunctionSpec
@@ -77,6 +94,8 @@ export interface WorkflowNodeDef {
   fanout?: WorkflowFanoutSpec
   reduce?: WorkflowReduceSpec
   reduce_body?: WorkflowReduceBodySpec
+  if?: WorkflowIfSpec
+  if_branch?: WorkflowIfBranchSpec
 }
 
 export interface WorkflowDef {
@@ -138,6 +157,19 @@ export interface WorkflowStatusResponse {
   node_results?: Record<string, string>
   queue_receipts?: QueueReceiptRecord[]
   loop_stats?: Record<string, LoopStats>
+  reduce_checkpoints?: Record<string, {
+    next_index: number
+    total_items: number
+    accumulator: unknown
+    state: 'pending' | 'running' | 'done' | 'failed'
+    active_body_uids?: string[]
+    error?: string
+  }>
+  if_checkpoints?: Record<string, {
+    state: 'pending' | 'done' | 'failed'
+    selected?: 'then' | 'else'
+    error?: string
+  }>
   result_ref?: string
   store_key?: string
   output_result_mode_declared: ResultMode

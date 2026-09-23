@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "nuxt": "4.5.2",
-    "@nuxt/ui": "*",
+    "@nuxt/ui": "4.11.2",
     "nvent": "workspace:*",
     "@nvent-addon/app": "workspace:*"
   }

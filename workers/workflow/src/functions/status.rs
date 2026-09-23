@@ -8,8 +8,8 @@ use crate::{
     error::WorkflowError,
     state,
     types::{
-        NodeCheckpoint, NodeMemoryFailPolicy, NodeResultReturnType, NodeResultSpec, NodeState,
-        QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
+        IfCheckpoint, NodeCheckpoint, NodeMemoryFailPolicy, NodeResultReturnType, NodeResultSpec,
+        NodeState, QueueReceiptRecord, ReduceCheckpoint, RunStatus, WorkflowDef, WorkflowRunRecord,
     },
 };
 
@@ -70,6 +70,12 @@ pub struct StatusResponse {
     /// Per-loop execution metrics keyed by fanout node id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub loop_stats: BTreeMap<String, LoopStats>,
+    /// Durable sequential reduce progress keyed by reduce node id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reduce_checkpoints: BTreeMap<String, ReduceCheckpoint>,
+    /// Durable conditional branch decisions keyed by if node id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub if_checkpoints: BTreeMap<String, IfCheckpoint>,
     /// Reference key for terminal run output in internal state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_ref: Option<String>,
@@ -361,6 +367,8 @@ pub async fn handle(
         node_results,
         queue_receipts,
         loop_stats,
+        reduce_checkpoints: record.reduce_checkpoints,
+        if_checkpoints: record.if_checkpoints,
         result_ref: record.result_ref,
         store_key,
         output_result_mode_declared: output_mode.declared_mode,
@@ -443,6 +451,8 @@ mod tests {
             node_results,
             queue_receipts,
             loop_stats: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: Some("r_abc123".to_string()),
             store_key: Some("r_abc123".to_string()),
             output_result_mode_declared: NodeResultReturnType::Store,
@@ -466,6 +476,8 @@ mod tests {
         assert_eq!(decoded.node_errors, resp.node_errors);
         assert_eq!(decoded.node_results, resp.node_results);
         assert_eq!(decoded.queue_receipts, resp.queue_receipts);
+        assert_eq!(decoded.reduce_checkpoints, resp.reduce_checkpoints);
+        assert_eq!(decoded.if_checkpoints, resp.if_checkpoints);
         assert_eq!(decoded.result_ref, resp.result_ref);
         assert_eq!(decoded.store_key, resp.store_key);
         assert_eq!(
@@ -508,6 +520,8 @@ mod tests {
             node_results: BTreeMap::new(),
             queue_receipts: Vec::new(),
             loop_stats: BTreeMap::new(),
+            reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: None,
             store_key: None,
             output_result_mode_declared: NodeResultReturnType::Memory,
@@ -555,6 +569,14 @@ mod tests {
             "loop_stats omitted when empty"
         );
         assert!(
+            serialized.get("reduce_checkpoints").is_none(),
+            "reduce_checkpoints omitted when empty"
+        );
+        assert!(
+            serialized.get("if_checkpoints").is_none(),
+            "if_checkpoints omitted when empty"
+        );
+        assert!(
             serialized.get("node_errors").is_none(),
             "node_errors omitted when empty"
         );
@@ -591,6 +613,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -637,6 +661,7 @@ mod tests {
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
             reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,

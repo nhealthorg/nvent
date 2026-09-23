@@ -1152,10 +1152,11 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 is_workflow = isinstance(data, dict) and '_workflow' in data
                 wf = data.get('_workflow') if is_workflow else None
                 has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
-                
+                is_lifecycle_hook = has_workflow_meta and wf.get('lifecycle') is True
+
                 if has_workflow_meta:
                     print(f"[nvent/workflow] executing node {wf['node_uid']} in run {wf['run_id']} via {_fn_id}", flush=True)
-                
+
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
                 
@@ -1200,8 +1201,33 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         )
                         if workflow_logger:
                             await workflow_logger.flush()
+                        if not is_lifecycle_hook:
+                            try:
+                                # Wake orchestrator and include failure payload directly
+                                await _client.trigger_async({
+                                    'function_id': 'nworkflow::node-completed',
+                                    'payload': {
+                                        'run_id': wf['run_id'],
+                                        'node_uid': wf['node_uid'],
+                                        'attempt': int(wf.get('attempt', 0) or 0),
+                                        'trace_id': _current_trace_id_hex(),
+                                        'function_id': _fn_id,
+                                        'runtime': 'python',
+                                        'result_error': str(e),
+                                    },
+                                })
+                            except Exception as e2:
+                                print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
+                    raise e
+
+                # Auto-emit workflow completion if _workflow metadata is present
+                if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
+                    if not is_lifecycle_hook:
                         try:
-                            # Wake orchestrator and include failure payload directly
+                            print(f"[nvent/workflow] node {wf['node_uid']} completed, emitting completion event", flush=True)
+
+                            # Emit completion event
                             await _client.trigger_async({
                                 'function_id': 'nworkflow::node-completed',
                                 'payload': {
@@ -1211,36 +1237,13 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
-                                    'result_error': str(e),
+                                    'result': result,
                                 },
                             })
-                        except Exception as e2:
-                            print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
-                    raise e
-                
-                # Auto-emit workflow completion if _workflow metadata is present
-                if has_workflow_meta:
-                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
-                    try:
-                        print(f"[nvent/workflow] node {wf['node_uid']} completed, emitting completion event", flush=True)
 
-                        # Emit completion event
-                        await _client.trigger_async({
-                            'function_id': 'nworkflow::node-completed',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'attempt': int(wf.get('attempt', 0) or 0),
-                                'trace_id': _current_trace_id_hex(),
-                                'function_id': _fn_id,
-                                'runtime': 'python',
-                                'result': result,
-                            },
-                        })
-                        
-                        print(f"[nvent/workflow] completion event emitted for {wf['node_uid']}", flush=True)
-                    except Exception as e:
-                        print(f"[nvent/workflow] completion failed: {e}", flush=True)
+                            print(f"[nvent/workflow] completion event emitted for {wf['node_uid']}", flush=True)
+                        except Exception as e:
+                            print(f"[nvent/workflow] completion failed: {e}", flush=True)
                 
                 return result
             return _wrapped
@@ -1272,6 +1275,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                 is_workflow = isinstance(data, dict) and '_workflow' in data
                 wf = data.get('_workflow') if is_workflow else None
                 has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
+                is_lifecycle_hook = has_workflow_meta and wf.get('lifecycle') is True
                 
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
@@ -1319,8 +1323,31 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         )
                         if workflow_logger:
                             await workflow_logger.flush()
-                        try:
+                        if not is_lifecycle_hook:
+                            try:
                             # Wake orchestrator and include failure payload directly
+                                await _client.trigger_async({
+                                    'function_id': 'nworkflow::node-completed',
+                                    'payload': {
+                                        'run_id': wf['run_id'],
+                                        'node_uid': wf['node_uid'],
+                                        'attempt': int(wf.get('attempt', 0) or 0),
+                                        'trace_id': _current_trace_id_hex(),
+                                        'function_id': _fn_id,
+                                        'runtime': 'python',
+                                        'result_error': str(e),
+                                    },
+                                })
+                            except Exception as e2:
+                                print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
+                    raise e
+
+                # Auto-emit workflow completion if _workflow metadata is present
+                if has_workflow_meta:
+                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
+                    if not is_lifecycle_hook:
+                        try:
+                            # Emit completion event
                             await _client.trigger_async({
                                 'function_id': 'nworkflow::node-completed',
                                 'payload': {
@@ -1330,32 +1357,11 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                                     'trace_id': _current_trace_id_hex(),
                                     'function_id': _fn_id,
                                     'runtime': 'python',
-                                    'result_error': str(e),
+                                    'result': result,
                                 },
                             })
-                        except Exception as e2:
-                            print(f"[nvent/workflow] error reporting failed: {e2}", flush=True)
-                    raise e
-                
-                # Auto-emit workflow completion if _workflow metadata is present
-                if has_workflow_meta:
-                    await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
-                    try:
-                        # Emit completion event
-                        await _client.trigger_async({
-                            'function_id': 'nworkflow::node-completed',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'attempt': int(wf.get('attempt', 0) or 0),
-                                'trace_id': _current_trace_id_hex(),
-                                'function_id': _fn_id,
-                                'runtime': 'python',
-                                'result': result,
-                            },
-                        })
-                    except Exception as e:
-                        print(f"[nvent] workflow completion failed: {e}", flush=True)
+                        except Exception as e:
+                            print(f"[nvent] workflow completion failed: {e}", flush=True)
                 
                 return result
             return _wrapped
@@ -1426,6 +1432,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 is_workflow = isinstance(data, dict) and '_workflow' in data
                 wf = data.get('_workflow') if is_workflow else None
                 has_workflow_meta = isinstance(wf, dict) and 'run_id' in wf and 'node_uid' in wf
+                is_lifecycle_hook = has_workflow_meta and wf.get('lifecycle') is True
                 
                 # Extract actual input (unwrap from workflow envelope)
                 actual_input = data.get('input') if has_workflow_meta else data
@@ -1469,7 +1476,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     if workflow_logger:
                         await workflow_logger.flush()
                     # Signal failure to workflow orchestrator if meta is present
-                    if has_workflow_meta:
+                    if has_workflow_meta and not is_lifecycle_hook:
                         try:
                             # Wake orchestrator and include failure payload directly
                             await _client.trigger_async({
@@ -1491,22 +1498,23 @@ def _register_legacy(client, mod, default_id: str) -> None:
                 # Auto-emit workflow completion if _workflow metadata is present
                 if has_workflow_meta:
                     await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
-                    try:
-                        # Emit completion event
-                        await _client.trigger_async({
-                            'function_id': 'nworkflow::node-completed',
-                            'payload': {
-                                'run_id': wf['run_id'],
-                                'node_uid': wf['node_uid'],
-                                'attempt': int(wf.get('attempt', 0) or 0),
-                                'trace_id': _current_trace_id_hex(),
-                                'function_id': _fn_id,
-                                'runtime': 'python',
-                                'result': result,
-                            },
-                        })
-                    except Exception as e:
-                        print(f"[nvent] workflow completion failed: {e}", flush=True)
+                    if not is_lifecycle_hook:
+                        try:
+                            # Emit completion event
+                            await _client.trigger_async({
+                                'function_id': 'nworkflow::node-completed',
+                                'payload': {
+                                    'run_id': wf['run_id'],
+                                    'node_uid': wf['node_uid'],
+                                    'attempt': int(wf.get('attempt', 0) or 0),
+                                    'trace_id': _current_trace_id_hex(),
+                                    'function_id': _fn_id,
+                                    'runtime': 'python',
+                                    'result': result,
+                                },
+                            })
+                        except Exception as e:
+                            print(f"[nvent] workflow completion failed: {e}", flush=True)
                 
                 return result
             return _wrapped

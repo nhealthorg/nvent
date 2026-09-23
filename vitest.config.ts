@@ -18,11 +18,23 @@ export default defineConfig({
       await defineVitestProject({
         test: {
           name: 'e2e',
-          include: ['test/e2e/*.test.ts'],
+          include: ['test/e2e/base-*.test.ts'],
           environment: 'nuxt',
           environmentOptions: {
             nuxt: {
               rootDir: fileURLToPath(new URL('./test/fixtures/base', import.meta.url)),
+            },
+          },
+        },
+      }),
+      await defineVitestProject({
+        test: {
+          name: 'playground-e2e',
+          include: ['test/e2e/playground-*.test.ts'],
+          environment: 'nuxt',
+          environmentOptions: {
+            nuxt: {
+              rootDir: fileURLToPath(new URL('./playground', import.meta.url)),
             },
           },
         },

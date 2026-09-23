@@ -165,6 +165,8 @@ pub struct WorkflowLifecycleHookTarget {
     #[serde(alias = "functionId")]
     pub function: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<BTreeMap<String, Value>>,
 }
 
@@ -463,6 +465,15 @@ pub struct NodeDef {
         alias = "reduce_body"
     )]
     pub reduce_body: Option<ReduceBodySpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub if_spec: Option<IfSpec>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "ifBranch",
+        alias = "if_branch"
+    )]
+    pub if_branch: Option<IfBranchSpec>,
     pub input: InputSpec,
     /// Prerequisite node ids. This node fires only once ALL of them are Done —
     /// this is the barrier / join. Empty means it can start immediately.
@@ -488,6 +499,62 @@ pub struct NodeDef {
 #[serde(deny_unknown_fields)]
 pub struct ReduceBodySpec {
     pub reduce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IfSpec {
+    pub source: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<IfPredicate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum IfPredicate {
+    Equals { left: Value, right: Value },
+    NotEquals { left: Value, right: Value },
+    Gt { left: Value, right: Value },
+    Gte { left: Value, right: Value },
+    Lt { left: Value, right: Value },
+    Lte { left: Value, right: Value },
+    And { args: Vec<IfPredicate> },
+    Or { args: Vec<IfPredicate> },
+    Not { arg: Box<IfPredicate> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct IfBranchSpec {
+    #[serde(rename = "if")]
+    pub if_node: String,
+    pub path: IfBranchPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum IfBranchPath {
+    Then,
+    Else,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IfState {
+    Pending,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IfCheckpoint {
+    pub state: IfState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<IfBranchPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -798,6 +865,8 @@ pub struct WorkflowRunRecord {
     /// Durable sequential reduce state keyed by the reduce node id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reduce_checkpoints: BTreeMap<String, ReduceCheckpoint>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub if_checkpoints: BTreeMap<String, IfCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -971,6 +1040,7 @@ mod tests {
             },
             fanout_src: BTreeMap::new(),
             reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,
@@ -1147,6 +1217,8 @@ mod tests {
             }),
             reduce: None,
             reduce_body: None,
+            if_spec: None,
+            if_branch: None,
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
@@ -1179,6 +1251,8 @@ mod tests {
             }),
             reduce: None,
             reduce_body: None,
+            if_spec: None,
+            if_branch: None,
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
@@ -1205,6 +1279,8 @@ mod tests {
             }),
             reduce: None,
             reduce_body: None,
+            if_spec: None,
+            if_branch: None,
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
@@ -1265,6 +1341,7 @@ mod tests {
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
             reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,

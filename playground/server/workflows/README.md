@@ -89,8 +89,22 @@ const join = await ctx.node('join', {
 ## Current Limitations
 
 - No inline data transformation (use dedicated functions for transforms)
-- No conditional branching yet (if/else)
 - Input must match the exact shape expected by the called function
+
+## Cohort Extraction Demo
+
+`server/workflows/cohort/patient-extraction.ts` is a test-only approximation of the documented cohort use case. It demonstrates:
+
+- loading deterministic patient records
+- resolving one baseline before parameter extraction
+- branching with `ctx.if(...)` when the baseline is missing
+- running parameter extraction in nested child workflows
+- reducing child results into one canonical result list
+- a final snapshot with artifact and provenance metadata
+
+The demo can be started through `POST /api/test/cohort-pipeline` with `{ "patientId": "patient-001" }`. Poll `GET /api/test/cohort-pipeline/{runId}` until the run is completed.
+
+The demo is intentionally not a production cohort implementation. The domain-specific implementation belongs in the separate project.
 
 ## E2E Workflow For New Features
 

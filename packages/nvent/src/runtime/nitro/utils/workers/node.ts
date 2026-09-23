@@ -519,6 +519,8 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
       const isWorkflow = input && typeof input === 'object' && '_workflow' in input
       const workflow = isWorkflow ? (input as any)._workflow : null
       const hasWorkflowMeta = workflow?.run_id && workflow?.node_uid
+      const isLifecycleHook = hasWorkflowMeta && workflow?.lifecycle === true
+      const reportsNodeCompletion = hasWorkflowMeta && !isLifecycleHook
       
       
       // Extract actual input (unwrap from workflow envelope)
@@ -569,7 +571,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
         }
         await contextLogger.flush()
 
-        if (hasWorkflowMeta) {
+        if (reportsNodeCompletion) {
           try {
             // Emit completion event to wake the orchestrator
             await iii.trigger({
@@ -597,18 +599,20 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
           await emitWorkflowTraceEvent(iii, fn.id, workflow, 'workflow.node.completed')
 
           // Emit completion event (fast-path tick wake)
-          await iii.trigger({
-            function_id: 'nworkflow::node-completed',
-            payload: {
-              run_id: workflow.run_id,
-              node_uid: workflow.node_uid,
-              attempt: Number(workflow.attempt ?? 0),
-              trace_id: trace.getActiveSpan()?.spanContext().traceId,
-              function_id: fn.id,
-              runtime: 'nodejs',
-              result,
-            },
-          })
+          if (reportsNodeCompletion) {
+            await iii.trigger({
+              function_id: 'nworkflow::node-completed',
+              payload: {
+                run_id: workflow.run_id,
+                node_uid: workflow.node_uid,
+                attempt: Number(workflow.attempt ?? 0),
+                trace_id: trace.getActiveSpan()?.spanContext().traceId,
+                function_id: fn.id,
+                runtime: 'nodejs',
+                result,
+              },
+            })
+          }
           
         } catch (err) {
           // Log but don't throw - result is still returned

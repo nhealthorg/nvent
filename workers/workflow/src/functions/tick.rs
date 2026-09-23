@@ -10,9 +10,9 @@ use crate::{
     observability::ObservabilityAdapter,
     state,
     types::{
-        FunctionSpec, InputFrom, NodeCheckpoint, NodeDef, NodeInputReturnType,
-        NodeMemoryFailPolicy, NodeResultReturnType, NodeState, QueueReceiptRecord, RunStatus,
-        ReduceState, WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
+        FunctionSpec, IfBranchPath, InputFrom, NodeCheckpoint, NodeDef, NodeInputReturnType,
+        NodeMemoryFailPolicy, NodeResultReturnType, NodeState, QueueReceiptRecord, ReduceState,
+        RunStatus, WorkflowDef, WorkflowRunRecord, WorkflowVarDelta, WorkflowVarRecord,
         WorkflowVarVersionRecord,
     },
 };
@@ -598,10 +598,16 @@ fn reduce_body_item(
     results: &BTreeMap<String, Value>,
     node_id: &str,
 ) -> Option<Value> {
-    let reduce_id = def.nodes.get(node_id)?.reduce_body.as_ref()?.reduce.as_str();
+    let reduce_id = def
+        .nodes
+        .get(node_id)?
+        .reduce_body
+        .as_ref()?
+        .reduce
+        .as_str();
     let checkpoint = record.reduce_checkpoints.get(reduce_id)?;
     let reduce = def.nodes.get(reduce_id)?.reduce.as_ref()?;
-    let items = dag::resolve_over_path(&reduce.over, results).ok()?;
+    let items = dag::resolve_reduce_over_path(def, record, &reduce.over, results).ok()?;
     items.get(checkpoint.next_index).cloned()
 }
 
@@ -615,7 +621,11 @@ async fn advance_completed_reductions(
     let mut advanced = Vec::new();
 
     for reduce_id in reduce_ids {
-        let Some(reduce) = def.nodes.get(&reduce_id).and_then(|node| node.reduce.as_ref()) else {
+        let Some(reduce) = def
+            .nodes
+            .get(&reduce_id)
+            .and_then(|node| node.reduce.as_ref())
+        else {
             continue;
         };
         let Some(snapshot) = record.reduce_checkpoints.get(&reduce_id).cloned() else {
@@ -626,7 +636,10 @@ async fn advance_completed_reductions(
         }
 
         if let Some(failed_uid) = snapshot.active_body_uids.iter().find(|uid| {
-            matches!(record.nodes.get(*uid).map(|cp| cp.state), Some(NodeState::Failed | NodeState::Cancelled))
+            matches!(
+                record.nodes.get(*uid).map(|cp| cp.state),
+                Some(NodeState::Failed | NodeState::Cancelled)
+            )
         }) {
             let error = record
                 .nodes
@@ -648,7 +661,10 @@ async fn advance_completed_reductions(
         }
 
         if !snapshot.active_body_uids.iter().all(|uid| {
-            matches!(record.nodes.get(uid).map(|cp| cp.state), Some(NodeState::Done))
+            matches!(
+                record.nodes.get(uid).map(|cp| cp.state),
+                Some(NodeState::Done)
+            )
         }) {
             continue;
         }
@@ -671,7 +687,8 @@ async fn advance_completed_reductions(
             let completed = checkpoint.state == ReduceState::Done;
 
             if completed {
-                state::put_node_result(&deps.iii, &record.run_id, &reduce_id, &next_accumulator).await?;
+                state::put_node_result(&deps.iii, &record.run_id, &reduce_id, &next_accumulator)
+                    .await?;
                 if let Some(cp) = record.nodes.get_mut(&reduce_id) {
                     cp.state = NodeState::Done;
                     cp.result_ref = Some(crate::ids::new_ref_id("node_result"));
@@ -701,7 +718,13 @@ async fn complete_empty_reductions(
         if let Some(current) = record.reduce_checkpoints.get_mut(&reduce_id) {
             current.state = ReduceState::Done;
         }
-        state::put_node_result(&deps.iii, &record.run_id, &reduce_id, &checkpoint.accumulator).await?;
+        state::put_node_result(
+            &deps.iii,
+            &record.run_id,
+            &reduce_id,
+            &checkpoint.accumulator,
+        )
+        .await?;
         let now = deps.now_ms();
         if let Some(cp) = record.nodes.get_mut(&reduce_id) {
             cp.state = NodeState::Done;
@@ -1681,7 +1704,8 @@ pub async fn handle(
     // 6. Load done results.
     let results = state::load_done_results(&deps.iii, &mut record).await?;
 
-    let advanced_reductions = advance_completed_reductions(deps, &def, &mut record, &results).await?;
+    let advanced_reductions =
+        advance_completed_reductions(deps, &def, &mut record, &results).await?;
     if !advanced_reductions.is_empty() {
         tracing::debug!(
             run_id = %record.run_id,
@@ -1737,6 +1761,77 @@ pub async fn handle(
             reductions = ?initialized_reductions,
             "initialized durable reduce checkpoints"
         );
+    }
+    let condition_input = state::get_run_input(&deps.iii, &record.run_id)
+        .await?
+        .or(state::get_run_input_store(&deps.iii, &record.input_ref).await?)
+        .unwrap_or(Value::Null);
+    let initialized_ifs = dag::initialize_ready_ifs(&def, &mut record, &results, &condition_input);
+    if !initialized_ifs.is_empty() {
+        tracing::debug!(
+            run_id = %record.run_id,
+            conditionals = ?initialized_ifs,
+            "initialized durable conditional branches"
+        );
+        let now = deps.now_ms();
+        for if_id in &initialized_ifs {
+            let Some(checkpoint) = record.if_checkpoints.get(if_id) else {
+                continue;
+            };
+            let Some(selected) = checkpoint.selected else {
+                continue;
+            };
+            crate::observability::adapter()
+                .write_trace(
+                    &deps.iii,
+                    &state::WorkflowRunTraceRecord {
+                        id: format!("tr_if_{}_{}", now, crate::ids::new_trace_id()),
+                        run_id: record.run_id.clone(),
+                        node_uid: Some(if_id.clone()),
+                        function_id: None,
+                        runtime: Some("rust".to_string()),
+                        event_name: "workflow.branch.condition_evaluated".to_string(),
+                        ts_unix_ms: now,
+                        attributes: Some(json!({
+                            "workflow.if.node": if_id,
+                            "workflow.if.selected": format!("{:?}", selected),
+                            "workflow.if.result": selected == IfBranchPath::Then,
+                        })),
+                        trace_id: record.workflow_trace_id.clone(),
+                        span_id: None,
+                    },
+                )
+                .await?;
+            for (branch_id, branch_node) in &def.nodes {
+                let Some(branch) = &branch_node.if_branch else {
+                    continue;
+                };
+                if branch.if_node != *if_id || branch.path == selected {
+                    continue;
+                }
+                crate::observability::adapter()
+                    .write_trace(
+                        &deps.iii,
+                        &state::WorkflowRunTraceRecord {
+                            id: format!("tr_if_{}_{}", now, crate::ids::new_trace_id()),
+                            run_id: record.run_id.clone(),
+                            node_uid: Some(branch_id.clone()),
+                            function_id: None,
+                            runtime: Some("rust".to_string()),
+                            event_name: "workflow.branch.skipped".to_string(),
+                            ts_unix_ms: now,
+                            attributes: Some(json!({
+                                "workflow.if.node": if_id,
+                                "workflow.if.selected": format!("{:?}", selected),
+                                "workflow.if.skipped": format!("{:?}", branch.path),
+                            })),
+                            trace_id: record.workflow_trace_id.clone(),
+                            span_id: None,
+                        },
+                    )
+                    .await?;
+            }
+        }
     }
     let completed_empty_reductions = complete_empty_reductions(deps, &mut record).await?;
     if !completed_empty_reductions.is_empty() {
@@ -1929,6 +2024,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -1957,6 +2054,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "fanout_item".into(),
                     template: None,
@@ -1990,6 +2089,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "node:read".into(),
                     template: None,
@@ -2033,6 +2134,7 @@ mod tests {
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
             reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
             result_ref: None,
             result_error: None,
             notify: None,
@@ -2082,6 +2184,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2411,6 +2515,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
@@ -2443,6 +2549,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "node:load".into(),
                     template: None,
@@ -2471,6 +2579,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,

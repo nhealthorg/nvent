@@ -295,6 +295,133 @@ describe('defineWorkflow compilation', () => {
     expect(plan.nodes.join.depends_on).toEqual(['branch-a-step-2', 'branch-b-step-2'])
   })
 
+  it('compiles a durable if/else with both branch paths marked', async () => {
+    const workflow = defineWorkflow({
+      name: 'durable-if-else',
+      async handler(input: { enabled: boolean }, ctx) {
+        const decision = await ctx.call('load-decision', input)
+        await ctx.if(
+          decision,
+          branch => branch.call('then-step', decision),
+          branch => branch.call('else-step', decision),
+        )
+        return ctx.call('after-if', input)
+      },
+    })
+
+    const plan = await workflow.compile({ enabled: true })
+
+    expect(plan.nodes.if.if).toEqual({ source: 'node:load-decision' })
+    expect(plan.nodes['then-step'].if_branch).toEqual({ if: 'if', path: 'then' })
+    expect(plan.nodes['else-step'].if_branch).toEqual({ if: 'if', path: 'else' })
+    expect(plan.nodes['then-step'].depends_on).toEqual(['if'])
+    expect(plan.nodes['else-step'].depends_on).toEqual(['if'])
+    expect(plan.nodes['after-if'].depends_on).toEqual(['then-step', 'else-step'])
+  })
+
+  it('serializes an equals predicate with node references', async () => {
+    const workflow = defineWorkflow({
+      name: 'durable-if-equals',
+      async handler(input: { status: string }, ctx) {
+        const decision = await ctx.call('load-decision', input)
+        await ctx.if(
+          { equals: [decision.status, 'ready'] },
+          branch => branch.call('then-step', decision),
+        )
+        return ctx.call('after-if', input)
+      },
+    })
+
+    const plan = await workflow.compile({ status: 'ready' })
+
+    expect(plan.nodes.if.if).toEqual({
+      source: true,
+      predicate: {
+        op: 'equals',
+        left: { $ref: 'node:load-decision', $path: ['status'] },
+        right: 'ready',
+      },
+    })
+  })
+
+  it('serializes numeric and logical predicates', async () => {
+    const workflow = defineWorkflow({
+      name: 'durable-if-logic',
+      async handler(input: { score: number }, ctx) {
+        const decision = await ctx.call('load-decision', input)
+        await ctx.if(
+          {
+            and: [
+              { gte: [decision.score, 7] },
+              { not: { equals: [decision.active, false] } },
+            ],
+          },
+          branch => branch.call('then-step', decision),
+        )
+        return ctx.call('after-if', input)
+      },
+    })
+
+    const plan = await workflow.compile({ score: 8 })
+
+    expect(plan.nodes.if.if).toEqual({
+      source: true,
+      predicate: {
+        op: 'and',
+        args: [
+          {
+            op: 'gte',
+            left: { $ref: 'node:load-decision', $path: ['score'] },
+            right: 7,
+          },
+          {
+            op: 'not',
+            arg: {
+              op: 'equals',
+              left: { $ref: 'node:load-decision', $path: ['active'] },
+              right: false,
+            },
+          },
+        ],
+      },
+    })
+  })
+
+  it('serializes condition helpers and run-input references', async () => {
+    const workflow = defineWorkflow({
+      name: 'durable-if-helper-api',
+      async handler(_input: { mode: string; count: number }, ctx) {
+        const condition = ctx.cond.and(
+          ctx.cond.eq(ctx.value('mode'), 'fast'),
+          ctx.cond.gt(ctx.cond.prop(ctx.value('run_input'), 'count'), 0),
+        )
+        await ctx.if(condition, branch => branch.call('then-step'))
+        return ctx.call('after-if')
+      },
+    })
+
+    const plan = await workflow.compile({ mode: 'fast', count: 2 })
+
+    expect(plan.nodes.if.if).toEqual({
+      source: true,
+      predicate: {
+        op: 'and',
+        args: [
+          {
+            op: 'equals',
+            left: { $ref: 'run_input', $path: ['mode'] },
+            right: 'fast',
+          },
+          {
+            op: 'gt',
+            left: { $ref: 'run_input', $path: ['count'] },
+            right: 0,
+          },
+        ],
+      },
+    })
+  })
+
   it('allows nested all inside a branch and still merges at branch tip', async () => {
     const workflow = defineWorkflow({
       name: 'nested-all-inside-branch',

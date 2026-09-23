@@ -10,6 +10,18 @@ type PlanIssue = {
   value: unknown
 }
 
+function isWorkflowPredicateShape(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const predicate = value as Record<string, unknown>
+  if (['equals', 'not_equals', 'gt', 'gte', 'lt', 'lte'].includes(String(predicate.op))) {
+    return 'left' in predicate && 'right' in predicate
+  }
+  if (predicate.op === 'and' || predicate.op === 'or') {
+    return Array.isArray(predicate.args) && predicate.args.every(isWorkflowPredicateShape)
+  }
+  return predicate.op === 'not' && isWorkflowPredicateShape(predicate.arg)
+}
+
 function toFallbackFrom(node: any): string {
   const deps = Array.isArray(node?.depends_on)
     ? node.depends_on.filter((dep: unknown) => typeof dep === 'string')
@@ -98,8 +110,10 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
     const agent = (node as any).agent
     const childWorkflow = (node as any).childWorkflow
     const reduce = (node as any).reduce
+    const ifSpec = (node as any).if
+    const ifBranch = (node as any).if_branch
 
-    if (!fn && !agent && !childWorkflow && !reduce) {
+    if (!fn && !agent && !childWorkflow && !reduce && !ifSpec && !ifBranch) {
       issues.push({
         path: `definition.nodes.${nodeId}`,
         message: 'node definition must specify either function, agent, or childWorkflow',
@@ -185,6 +199,43 @@ export function collectWorkflowPlanSerializationIssues(plan: WorkflowPlanLike): 
             value: reduce.body,
           })
         }
+      }
+    } else if (ifSpec) {
+      if (typeof ifSpec !== 'object' || Array.isArray(ifSpec)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.if`,
+          message: 'if must be an object',
+          value: ifSpec,
+        })
+      } else if (typeof ifSpec.source !== 'string' && typeof ifSpec.source !== 'boolean') {
+        issues.push({
+          path: `definition.nodes.${nodeId}.if.source`,
+          message: 'if.source must be a string or boolean',
+          value: ifSpec.source,
+        })
+      } else if (ifSpec.predicate != null) {
+        const predicate = ifSpec.predicate
+        if (!isWorkflowPredicateShape(predicate)) {
+          issues.push({
+            path: `definition.nodes.${nodeId}.if.predicate`,
+            message: 'if.predicate has an invalid operator or operand shape',
+            value: predicate,
+          })
+        }
+      }
+    } else if (ifBranch) {
+      if (typeof ifBranch !== 'object' || Array.isArray(ifBranch)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.if_branch`,
+          message: 'if_branch must be an object',
+          value: ifBranch,
+        })
+      } else if (!['then', 'else'].includes(ifBranch.path)) {
+        issues.push({
+          path: `definition.nodes.${nodeId}.if_branch.path`,
+          message: 'if_branch.path must be then or else',
+          value: ifBranch.path,
+        })
       }
     }
 

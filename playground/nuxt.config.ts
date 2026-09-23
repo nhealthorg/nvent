@@ -69,22 +69,6 @@ export default defineNuxtConfig({
           idempotencyTtlMs: 30 * 24 * 60 * 60 * 1000, // 30 days
         },
       },
-      queue: {
-        adapter: {
-          type: 'redis',
-          redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
-        },
-        queueConfigs: {
-          default: {
-            concurrency: 4,
-          },
-          heartbeat: {
-            type: 'standard',
-            concurrency: 5,
-            maxRetries: 1,
-          },
-        }
-      },
       state: {
         adapter: {
           type: 'redis',

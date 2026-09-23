@@ -8,6 +8,48 @@
       :class="itemClasses(item)"
       @click="item.clickable !== false ? $emit('update:modelValue', item.value) : undefined"
     >
+      <RunIfBlock
+        v-if="item.step?.nodeKind === 'if_group'"
+        :step="item.step"
+        :model-value="props.modelValue"
+        @select="$emit('update:modelValue', $event)"
+      />
+      <RunLoopBlock
+        v-else-if="item.step?.isLoopGroup"
+        :step="item.step"
+        :model-value="props.modelValue"
+        @select="$emit('update:modelValue', $event)"
+      />
+      <RunReduceBlock
+        v-else-if="item.step?.nodeKind === 'reduce_group'"
+        :step="item.step"
+        :model-value="props.modelValue"
+        @select="$emit('update:modelValue', $event)"
+      />
+      <RunControlBlock
+        v-else-if="isControlStep(item.step)"
+        :step="item.step"
+      />
+      <div
+        v-else-if="item.step?.nodeKind === 'workflow_event'"
+        class="flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5"
+      >
+        <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-300/70 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-400">
+          <UIcon name="i-lucide-radio" class="h-3.5 w-3.5" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="flex items-center gap-2">
+            <span class="truncate text-xs font-medium text-slate-700 dark:text-slate-200">
+              {{ item.step.label }}
+            </span>
+            <UBadge size="xs" color="neutral" variant="outline" class="shrink-0">Event</UBadge>
+          </span>
+          <span class="block truncate font-mono text-[10px] text-slate-400 dark:text-slate-500" :title="item.step.functionId">
+            {{ item.step.functionId }}
+          </span>
+        </span>
+      </div>
+      <template v-else-if="!item.step?.isLoopGroup">
       <!-- Status Icon or All Icon -->
       <div
         class="flex-shrink-0"
@@ -651,6 +693,7 @@
           </div>
         </div>
       </div>
+      </template>
     </component>
   </div>
 </template>
@@ -660,6 +703,10 @@ import { computed, ref } from 'vue'
 import { tv } from 'tailwind-variants'
 import { twMerge } from 'tailwind-merge'
 import type { ClassValue } from 'tailwind-variants'
+import RunControlBlock from './RunControlBlock.vue'
+import RunIfBlock from './RunIfBlock.vue'
+import RunReduceBlock from './RunReduceBlock.vue'
+import RunLoopBlock from './RunLoopBlock.vue'
 import {
   formatDuration,
   formatScheduledTime,
@@ -731,8 +778,8 @@ const copyToClipboard = async (text: string) => {
 
 // Default UI configuration
 const defaultUi = {
-  root: 'space-y-3',
-  itemBase: 'relative w-full flex items-start border rounded-lg text-sm p-3.5 transition-colors text-left',
+  root: 'space-y-2',
+  itemBase: 'relative w-full flex items-start border rounded-lg text-sm p-2.5 transition-colors text-left',
   itemClickable: 'hover:bg-gray-50 dark:hover:bg-gray-900/50 cursor-pointer',
   itemNonClickable: 'bg-blue-50/50 dark:bg-blue-900/10 opacity-75 cursor-default',
   item: 'border-gray-200 dark:border-gray-800',
@@ -767,15 +814,25 @@ const itemVariants = computed(() => tv({
 // Compute classes for each item
 const itemClasses = (item: any) => {
   const isClickable = item.clickable !== false
-  return itemVariants.value({
+  const classes = itemVariants.value({
     selected: isClickable && props.modelValue === item.value,
     clickable: isClickable,
   })
+  const isControl = ['if_group', 'reduce_group', 'var', 'workflow_event'].includes(item?.step?.nodeKind)
+  return isControl
+    ? twMerge(classes, item?.step?.nodeKind === 'workflow_event'
+      ? 'border-dashed border-slate-300/80 bg-slate-50/50 p-2 dark:border-slate-700/80 dark:bg-slate-900/20'
+      : 'p-0 border-0 bg-transparent shadow-none opacity-100')
+    : classes
 }
 
 const visibleItems = computed(() => {
   return props.items.filter((item) => !shouldHideTopLevelItem(item))
 })
+
+function isControlStep(step: any): boolean {
+  return step?.nodeKind === 'var' || step?.nodeKind === 'if' || step?.nodeKind === 'if_branch'
+}
 
 function shouldHideTopLevelItem(item: any): boolean {
   return Boolean(item?.step?.inLoopGroup)

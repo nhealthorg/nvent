@@ -353,6 +353,8 @@ mod tests {
                 child_workflow: None,
                 reduce: None,
                 reduce_body: None,
+                if_spec: None,
+                if_branch: None,
                 input: InputSpec {
                     from: "run_input".into(),
                     template: None,
