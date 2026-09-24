@@ -201,6 +201,19 @@ export interface WorkflowRunRecord {
   store_key?: string
   nodes: Record<string, NodeCheckpoint>
   fanout_src: Record<string, number>
+  reduce_checkpoints?: Record<string, {
+    next_index: number
+    total_items: number
+    accumulator: unknown
+    state: 'pending' | 'running' | 'done' | 'failed'
+    active_body_uids?: string[]
+    error?: string
+  }>
+  if_checkpoints?: Record<string, {
+    state: 'pending' | 'done' | 'failed'
+    selected?: 'then' | 'else'
+    error?: string
+  }>
   stream_ids: string[]
   state_keys_map: Record<string, boolean>
   workflow_trace_id?: string

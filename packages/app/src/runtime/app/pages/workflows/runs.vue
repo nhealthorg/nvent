@@ -271,16 +271,22 @@ function getNodesProgress(run: WorkflowRunRecord) {
   const nodeEntries = Object.entries(run.nodes || {}) as Array<[string, NodeCheckpoint]>
   if (nodeEntries.length === 0) return { finished: 0, total: 0, percent: 0 }
 
+  // A skipped conditional branch is represented as cancelled in the durable
+  // record, but it is not work that belongs in the progress denominator.
+  const effectiveEntries = nodeEntries.filter(([, node]) =>
+    node.result_error !== 'conditional branch skipped'
+  )
+
   // Loop fanout creates node ids like "step#0", while the base id can remain non-terminal.
   // Exclude base nodes when itemized children exist to avoid under-reporting progress.
   const loopBaseIds = new Set(
-    nodeEntries
+    effectiveEntries
       .filter(([id]) => id.includes('#'))
       .map(([id]) => id.split('#')[0])
       .filter((id): id is string => Boolean(id))
   )
 
-  const effectiveNodes = nodeEntries
+  const effectiveNodes = effectiveEntries
     .filter(([id]) => !(loopBaseIds.has(id) && !id.includes('#')))
     .map(([, node]) => node)
 
