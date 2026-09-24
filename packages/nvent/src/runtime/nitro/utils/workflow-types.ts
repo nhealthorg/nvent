@@ -201,6 +201,7 @@ export interface WorkflowRunRecord {
   store_key?: string
   nodes: Record<string, NodeCheckpoint>
   fanout_src: Record<string, number>
+  skipped_nodes?: string[]
   reduce_checkpoints?: Record<string, {
     next_index: number
     total_items: number

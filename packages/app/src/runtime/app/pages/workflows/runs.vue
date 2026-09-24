@@ -271,10 +271,9 @@ function getNodesProgress(run: WorkflowRunRecord) {
   const nodeEntries = Object.entries(run.nodes || {}) as Array<[string, NodeCheckpoint]>
   if (nodeEntries.length === 0) return { finished: 0, total: 0, percent: 0 }
 
-  // A skipped conditional branch is represented as cancelled in the durable
-  // record, but it is not work that belongs in the progress denominator.
-  const effectiveEntries = nodeEntries.filter(([, node]) =>
-    node.result_error !== 'conditional branch skipped'
+  const skippedNodes = new Set(run.skipped_nodes || [])
+  const effectiveEntries = nodeEntries.filter(([id]) =>
+    !skippedNodes.has(id)
   )
 
   // Loop fanout creates node ids like "step#0", while the base id can remain non-terminal.

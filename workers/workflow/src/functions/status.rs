@@ -660,6 +660,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            skipped_nodes: Default::default(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
             result_ref: None,

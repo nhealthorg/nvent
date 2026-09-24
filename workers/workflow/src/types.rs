@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -862,6 +862,9 @@ pub struct WorkflowRunRecord {
     /// node_id -> frozen fanout item count (payload lives in internal state store)
     #[serde(default)]
     pub fanout_src: BTreeMap<String, usize>,
+    /// Node uids skipped because their conditional branch was not selected.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub skipped_nodes: BTreeSet<String>,
     /// Durable sequential reduce state keyed by the reduce node id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reduce_checkpoints: BTreeMap<String, ReduceCheckpoint>,
@@ -1039,6 +1042,7 @@ mod tests {
                 m
             },
             fanout_src: BTreeMap::new(),
+            skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
             result_ref: None,
@@ -1340,6 +1344,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
             result_ref: None,

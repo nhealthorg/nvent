@@ -4,7 +4,7 @@
 /// `reconcile::classify_terminal` directly over an in-memory
 /// `WorkflowRunRecord` + `BTreeMap<String, Value>` results map, simulating
 /// the tick loop.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 use workflow::{
@@ -178,6 +178,7 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         queue_receipts: Vec::new(),
         nodes: BTreeMap::new(),
         fanout_src: BTreeMap::new(),
+        skipped_nodes: BTreeSet::new(),
         reduce_checkpoints: BTreeMap::new(),
         if_checkpoints: BTreeMap::new(),
         result_ref: None,

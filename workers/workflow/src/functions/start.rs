@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1114,6 +1114,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         queue_receipts: Vec::new(),
         nodes,
         fanout_src: BTreeMap::new(),
+        skipped_nodes: BTreeSet::new(),
         reduce_checkpoints: BTreeMap::new(),
         if_checkpoints: BTreeMap::new(),
         result_ref: Some(refs.result_ref),
@@ -1253,6 +1254,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
             result_ref: None,

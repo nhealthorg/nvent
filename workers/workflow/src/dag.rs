@@ -583,6 +583,7 @@ pub fn initialize_ready_ifs(
                             worker_name: None,
                         },
                     );
+                    record.skipped_nodes.insert(branch_id.clone());
                 }
             }
         }
@@ -741,6 +742,20 @@ fn reduce_body_item_ready(
                         .is_some()
                     {
                         fanout_dep_item_done(record, dep, index)
+                    } else if def
+                        .nodes
+                        .get(dep)
+                        .is_some_and(|candidate| candidate.if_spec.is_some())
+                    {
+                        // Conditional nodes are internal control nodes. They are
+                        // marked Done after selecting a branch but intentionally
+                        // do not persist a result payload, so requiring a
+                        // result_ref here would deadlock reduce bodies behind an
+                        // if-node.
+                        record
+                            .nodes
+                            .get(dep)
+                            .is_some_and(|checkpoint| checkpoint.state == NodeState::Done)
                     } else {
                         checkpoint_done_with_result(record, dep)
                     }
@@ -1460,6 +1475,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
             result_ref: None,
@@ -1587,6 +1603,67 @@ mod tests {
         let mut r = record();
         r.fanout_src.insert("read".to_string(), 1);
         r.nodes.insert("read#0".to_string(), done_checkpoint());
+        r.nodes
+            .insert("synthesize#0".to_string(), pending_checkpoint());
+        r.reduce_checkpoints.insert(
+            "reduce".to_string(),
+            ReduceCheckpoint {
+                next_index: 0,
+                total_items: 1,
+                accumulator: json!([]),
+                state: ReduceState::Running,
+                active_body_uids: vec!["synthesize#0".to_string()],
+                error: None,
+            },
+        );
+
+        assert!(ready_frontier(&d, &r).contains(&"synthesize#0".to_string()));
+    }
+
+    #[test]
+    fn reduce_body_runs_after_completed_if_without_result_payload() {
+        let mut d = def();
+        d.nodes.get_mut("synthesize").unwrap().reduce_body = Some(ReduceBodySpec {
+            reduce: "reduce".to_string(),
+        });
+        d.nodes.get_mut("synthesize").unwrap().depends_on = vec!["if".to_string()];
+        d.nodes.insert(
+            "if".to_string(),
+            NodeDef {
+                label: None,
+                function: None,
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                reduce: None,
+                reduce_body: None,
+                if_spec: Some(IfSpec {
+                    source: Value::Bool(true),
+                    path: Vec::new(),
+                    predicate: None,
+                }),
+                if_branch: None,
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: Vec::new(),
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        let mut r = record();
+        r.nodes.insert(
+            "if".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                result_ref: None,
+                ..done_checkpoint()
+            },
+        );
         r.nodes
             .insert("synthesize#0".to_string(), pending_checkpoint());
         r.reduce_checkpoints.insert(
@@ -1799,6 +1876,7 @@ mod tests {
         );
         assert_eq!(r.if_checkpoints["if"].selected, Some(IfBranchPath::Else));
         assert_eq!(r.nodes["then"].state, NodeState::Cancelled);
+        assert!(r.skipped_nodes.contains("then"));
         assert_eq!(ready_frontier(&d, &r), vec!["else"]);
         assert!(initialize_ready_ifs(&d, &mut r, &results, &Value::Null).is_empty());
 
