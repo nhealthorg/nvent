@@ -585,7 +585,12 @@ function createWorkflowValueRef(source: 'node' | 'fanout_item' | 'run_input', re
 }
 
 function createWorkflowIfResultRef(result: WorkflowValueRef, ifNode: string): WorkflowValueRef {
-  return Object.assign(result, { [WORKFLOW_IF_RESULT]: ifNode })
+  const ref = createWorkflowValueRef(
+    'node',
+    `node:${ifNode}`,
+    [...(result.$path ?? [])],
+  ) as WorkflowValueRef
+  return Object.assign(ref, { [WORKFLOW_IF_RESULT]: ifNode })
 }
 
 function appendWorkflowValuePath(value: WorkflowValueRef, path: string[]): WorkflowValueRef {

@@ -1152,13 +1152,25 @@ fn gather_one(
     results: &BTreeMap<String, Value>,
 ) -> Value {
     if let Some(dep) = from.strip_prefix("node:") {
+        // An if-node is a logical result selector. Resolve it before reading
+        // the selected branch result.
+        let dep = if record.if_checkpoints.contains_key(dep) {
+            resolve_output_node(def, record, dep)
+        } else {
+            dep.to_string()
+        };
         // Check if dep is a fanout node.
-        if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some() {
+        if def
+            .nodes
+            .get(&dep)
+            .and_then(|n| n.fanout.as_ref())
+            .is_some()
+        {
             // Fan-in: iterate 0..N in NUMERIC order (not BTreeMap/lexical order).
-            let n = fanned_uids(record, dep).len();
+            let n = fanned_uids(record, &dep).len();
             let arr: Vec<Value> = (0..n)
                 .map(|i| {
-                    let uid = node_uid(dep, Some(i as u32));
+                    let uid = node_uid(&dep, Some(i as u32));
                     match results.get(&uid).cloned() {
                         Some(value) => value,
                         None => {
@@ -1182,7 +1194,7 @@ fn gather_one(
             Value::Array(arr)
         } else {
             // Normal node: return its single result.
-            results.get(dep).cloned().unwrap_or(Value::Null)
+            results.get(&dep).cloned().unwrap_or(Value::Null)
         }
     } else {
         // run_input / literal / fanout_item → delegate to the template layer.
@@ -1749,6 +1761,60 @@ mod tests {
         );
 
         assert_eq!(resolve_output_node(&d, &r, "if"), "synthesize");
+    }
+
+    #[test]
+    fn gathers_input_from_selected_if_branch_leaf() {
+        let mut d = def();
+        let mut then_node = d.nodes.remove("synthesize").unwrap();
+        then_node.if_branch = Some(IfBranchSpec {
+            if_node: "if".to_string(),
+            path: IfBranchPath::Then,
+        });
+        let mut else_node = then_node.clone();
+        else_node.if_branch = Some(IfBranchSpec {
+            if_node: "if".to_string(),
+            path: IfBranchPath::Else,
+        });
+        d.nodes.insert("then_result".to_string(), then_node);
+        d.nodes.insert("else_result".to_string(), else_node);
+        d.nodes.insert(
+            "if".to_string(),
+            NodeDef {
+                if_spec: Some(IfSpec {
+                    source: json!(true),
+                    path: Vec::new(),
+                    predicate: None,
+                }),
+                ..d.nodes["plan"].clone()
+            },
+        );
+        let mut materialize = d.nodes["plan"].clone();
+        materialize.input.from = "node:if".into();
+        materialize.input.template = None;
+        materialize.depends_on = vec![
+            "if".to_string(),
+            "then_result".to_string(),
+            "else_result".to_string(),
+        ];
+        d.nodes.insert("materialize".to_string(), materialize);
+
+        let mut r = record();
+        r.if_checkpoints.insert(
+            "if".to_string(),
+            IfCheckpoint {
+                state: IfState::Done,
+                selected: Some(IfBranchPath::Else),
+                error: None,
+            },
+        );
+        let mut results = BTreeMap::new();
+        results.insert("else_result".to_string(), json!({"selected": true}));
+
+        assert_eq!(
+            gather_input(&d, &r, &json!({}), "materialize", &results),
+            json!({"selected": true})
+        );
     }
 
     #[test]

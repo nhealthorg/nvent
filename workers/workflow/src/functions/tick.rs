@@ -569,7 +569,13 @@ fn resolve_dynamic_payload_value(
                     .unwrap_or_default();
 
                 if ref_source.starts_with("node:") {
-                    let dep = ref_source.strip_prefix("node:").unwrap_or(ref_source);
+                    let mut dep = ref_source
+                        .strip_prefix("node:")
+                        .unwrap_or(ref_source)
+                        .to_string();
+                    if record.if_checkpoints.contains_key(&dep) {
+                        dep = dag::resolve_output_node(def, record, &dep);
+                    }
                     let iteration_value = reduce_iteration_index(node_id).and_then(|index| {
                         let current_reduce = def
                             .nodes
@@ -579,10 +585,14 @@ fn resolve_dynamic_payload_value(
                         let same_reduce_body = current_reduce.is_some()
                             && def
                                 .nodes
-                                .get(dep)
+                                .get(&dep)
                                 .and_then(|node| node.reduce_body.as_ref())
                                 .is_some_and(|body| Some(body.reduce.as_str()) == current_reduce);
-                        let fanout = def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some();
+                        let fanout = def
+                            .nodes
+                            .get(&dep)
+                            .and_then(|n| n.fanout.as_ref())
+                            .is_some();
                         (same_reduce_body || fanout).then(|| {
                             results
                                 .get(&format!("{dep}#{index}"))
@@ -592,8 +602,13 @@ fn resolve_dynamic_payload_value(
                     });
                     let dep_value = if let Some(value) = iteration_value {
                         value
-                    } else if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some() {
-                        let n = record.fanout_src.get(dep).copied().unwrap_or(0);
+                    } else if def
+                        .nodes
+                        .get(&dep)
+                        .and_then(|n| n.fanout.as_ref())
+                        .is_some()
+                    {
+                        let n = record.fanout_src.get(&dep).copied().unwrap_or(0);
                         let arr = (0..n)
                             .map(|i| {
                                 let uid = format!("{}#{}", dep, i);
@@ -602,7 +617,7 @@ fn resolve_dynamic_payload_value(
                             .collect::<Vec<_>>();
                         Value::Array(arr)
                     } else {
-                        results.get(dep).cloned().unwrap_or(Value::Null)
+                        results.get(&dep).cloned().unwrap_or(Value::Null)
                     };
                     return value_at_path(&dep_value, &path);
                 }

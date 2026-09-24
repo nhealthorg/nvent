@@ -977,6 +977,11 @@ const stepList = computed(() => {
         reduceResultPrunedCount: resultCounts.pruned,
         reduceBodyResultUids: reduceBodyResultUidsByGroup[id] || [],
         canInspectResult: (reduceBodyResultUidsByGroup[id] || []).length > 0,
+        ifBranch: ifBranchSpec,
+        ifBranchSelected: ifBranchSpec
+          ? status.value?.if_checkpoints?.[ifBranchSpec.if]?.selected ===
+            ifBranchSpec.path
+          : undefined,
       });
       insertedGroups.add(`reduce-group:${id}`);
       continue;
