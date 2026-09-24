@@ -1,167 +1,199 @@
 <script setup lang="ts">
-import { computed, ref, useComponentRouter, onMounted, onUnmounted, watch } from '#imports'
-import type { Ref } from 'vue'
-import { useWorkflowAnalysis } from '../../composables/useWorkflowAnalysis'
+import {
+  computed,
+  ref,
+  useComponentRouter,
+  onMounted,
+  onUnmounted,
+  watch,
+} from "#imports";
+import type { Ref } from "vue";
+import { useWorkflowAnalysis } from "../../composables/useWorkflowAnalysis";
 
-const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis()
-const { push, route } = useComponentRouter()
+const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis();
+const { push, route } = useComponentRouter();
 
 const props = defineProps<{
-  runId?: string
-}>()
+  runId?: string;
+}>();
 
-const runId = computed(() => props.runId || (route.value.params.id as string))
+const runId = computed(() => props.runId || (route.value.params.id as string));
 
-const isStateSlideoverOpen = ref(false)
-const isStreamSlideoverOpen = ref(false)
-const isCancelSlideoverOpen = ref(false)
-const isDeleteModalOpen = ref(false)
-const isChildRunsSlideoverOpen = ref(false)
-const childRunsSlideoverRuns = ref<Array<{ index: number, runId: string, status: string, error?: string, retries?: number, pendingAt?: number, completedAt?: number }>>([])
-const cancelPending = ref(false)
-const cancelError = ref<string | null>(null)
-const cancelResult = ref<WorkflowStopResponse | null>(null)
-const deletePending = ref(false)
-const deleteError = ref<string | null>(null)
+const isStateSlideoverOpen = ref(false);
+const isStreamSlideoverOpen = ref(false);
+const isCancelSlideoverOpen = ref(false);
+const isDeleteModalOpen = ref(false);
+const isChildRunsSlideoverOpen = ref(false);
+const childRunsSlideoverRuns = ref<
+  Array<{
+    index: number;
+    runId: string;
+    status: string;
+    error?: string;
+    retries?: number;
+    pendingAt?: number;
+    completedAt?: number;
+  }>
+>([]);
+const cancelPending = ref(false);
+const cancelError = ref<string | null>(null);
+const cancelResult = ref<WorkflowStopResponse | null>(null);
+const deletePending = ref(false);
+const deleteError = ref<string | null>(null);
 
 interface WorkflowRunStatusResponse {
-  status: string
-  parent_run_id?: string
-  parent_node_uid?: string
-  root_run_id?: string
-  root_stream_scope_id?: string
-  definition: any
-  nodes: Record<string, any>
-  node_results?: Record<string, string>
-  node_result_modes?: Record<string, {
-    declared_mode: 'memory' | 'store' | 'stream'
-    effective_mode: 'memory' | 'store' | 'stream'
-    on_memory_fail?: 'store' | 'error'
-  }>
-  node_result_states?: Record<string, 'ready' | 'pruned' | 'pending'>
-  loop_stats?: Record<string, {
-    mode: 'parallel' | 'sequential' | 'batch' | string
-    over: string
-    expanded: boolean
-    batch_size?: number | null
-    total_items: number
-    completed_items: number
-    running_items: number
-    failed_items: number
-    cancelled_items: number
-    pending_items: number
-    active_index?: number | null
-  }>
-  reduce_checkpoints?: Record<string, {
-    next_index: number
-    total_items: number
-    accumulator: unknown
-    state: 'pending' | 'running' | 'done' | 'failed'
-    active_body_uids?: string[]
-    error?: string
-  }>
-  if_checkpoints?: Record<string, {
-    state: 'pending' | 'done' | 'failed'
-    selected?: 'then' | 'else'
-    error?: string
-  }>
-  created_at: number
-  updated_at: number
-  result_ref?: string
-  store_key?: string
-  output_result_mode_declared?: 'memory' | 'store' | 'stream'
-  output_result_mode_effective?: 'memory' | 'store' | 'stream'
-  output_on_memory_fail?: 'store' | 'error'
+  status: string;
+  parent_run_id?: string;
+  parent_node_uid?: string;
+  root_run_id?: string;
+  root_stream_scope_id?: string;
+  definition: any;
+  nodes: Record<string, any>;
+  node_results?: Record<string, string>;
+  node_result_modes?: Record<
+    string,
+    {
+      declared_mode: "memory" | "store" | "stream";
+      effective_mode: "memory" | "store" | "stream";
+      on_memory_fail?: "store" | "error";
+    }
+  >;
+  node_result_states?: Record<string, "ready" | "pruned" | "pending">;
+  loop_stats?: Record<
+    string,
+    {
+      mode: "parallel" | "sequential" | "batch" | string;
+      over: string;
+      expanded: boolean;
+      batch_size?: number | null;
+      total_items: number;
+      completed_items: number;
+      running_items: number;
+      failed_items: number;
+      cancelled_items: number;
+      pending_items: number;
+      active_index?: number | null;
+    }
+  >;
+  reduce_checkpoints?: Record<
+    string,
+    {
+      next_index: number;
+      total_items: number;
+      accumulator: unknown;
+      state: "pending" | "running" | "done" | "failed";
+      active_body_uids?: string[];
+      error?: string;
+    }
+  >;
+  if_checkpoints?: Record<
+    string,
+    {
+      state: "pending" | "done" | "failed";
+      selected?: "then" | "else";
+      error?: string;
+    }
+  >;
+  created_at: number;
+  updated_at: number;
+  result_ref?: string;
+  store_key?: string;
+  output_result_mode_declared?: "memory" | "store" | "stream";
+  output_result_mode_effective?: "memory" | "store" | "stream";
+  output_on_memory_fail?: "store" | "error";
   queue_receipts?: Array<{
-    run_id: string
-    node_uid: string
-    queue: string
-    receipt_id: string
-    enqueued_at?: number
-  }>
-  result?: any
-  result_error?: string
+    run_id: string;
+    node_uid: string;
+    queue: string;
+    receipt_id: string;
+    enqueued_at?: number;
+  }>;
+  result?: any;
+  result_error?: string;
 }
 
-type ResultMode = 'memory' | 'store' | 'stream'
+type ResultMode = "memory" | "store" | "stream";
 
 interface WorkflowStopResponse {
-  stopping: boolean
-  stopped_sessions?: number
-  queue_fragments_detected?: number
-  checked_queues?: string[]
-  tracked_receipt_count?: number
-  tracked_receipt_ids?: string[]
-  queue_cleanup_attempted?: number
-  queue_cleanup_succeeded?: number
-  queue_cleanup_errors?: Record<string, string>
+  stopping: boolean;
+  stopped_sessions?: number;
+  queue_fragments_detected?: number;
+  checked_queues?: string[];
+  tracked_receipt_count?: number;
+  tracked_receipt_ids?: string[];
+  queue_cleanup_attempted?: number;
+  queue_cleanup_succeeded?: number;
+  queue_cleanup_errors?: Record<string, string>;
 }
 
 interface WorkflowNodeResultResponse {
-  node_uid: string
-  result: unknown
+  node_uid: string;
+  result: unknown;
 }
 
 interface UseWorkflowRunDetailResult {
-  status: Ref<WorkflowRunStatusResponse | null>
-  statusPending: Ref<boolean>
-  statusError: Ref<unknown>
-  refreshStatus: (options?: { silent?: boolean }) => Promise<void>
-  refreshAll: () => Promise<void>
+  status: Ref<WorkflowRunStatusResponse | null>;
+  statusPending: Ref<boolean>;
+  statusError: Ref<unknown>;
+  refreshStatus: (options?: { silent?: boolean }) => Promise<void>;
+  refreshAll: () => Promise<void>;
 }
 
-function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult {
-  const status = ref<WorkflowRunStatusResponse | null>(null)
-  const statusPending = ref(false)
-  const statusError = ref<unknown>(null)
-  let inFlight: Promise<void> | null = null
+function useWorkflowRunDetail(
+  runIdRef: Ref<string>,
+): UseWorkflowRunDetailResult {
+  const status = ref<WorkflowRunStatusResponse | null>(null);
+  const statusPending = ref(false);
+  const statusError = ref<unknown>(null);
+  let inFlight: Promise<void> | null = null;
 
   async function refreshStatus(options?: { silent?: boolean }) {
     if (inFlight) {
-      await inFlight
-      return
+      await inFlight;
+      return;
     }
 
-    const silent = Boolean(options?.silent)
+    const silent = Boolean(options?.silent);
     const run = async () => {
       if (!silent) {
-        statusPending.value = true
+        statusPending.value = true;
       }
-      statusError.value = null
+      statusError.value = null;
       try {
-        status.value = await $fetch<WorkflowRunStatusResponse>('/api/_workflows/status', {
-          params: { run_id: runIdRef.value },
-        })
-      }
-      catch (error) {
-        statusError.value = error
-      }
-      finally {
+        status.value = await $fetch<WorkflowRunStatusResponse>(
+          "/api/_workflows/status",
+          {
+            params: { run_id: runIdRef.value },
+          },
+        );
+      } catch (error) {
+        statusError.value = error;
+      } finally {
         if (!silent) {
-          statusPending.value = false
+          statusPending.value = false;
         }
       }
-    }
+    };
 
-    inFlight = run()
+    inFlight = run();
     try {
-      await inFlight
+      await inFlight;
     } finally {
-      inFlight = null
+      inFlight = null;
     }
   }
 
   async function refreshAll() {
-    await refreshStatus()
+    await refreshStatus();
   }
 
   onMounted(() => {
-    void refreshAll()
-  })
+    void refreshAll();
+  });
 
   watch(runIdRef, () => {
-    void refreshAll()
-  })
+    void refreshAll();
+  });
 
   return {
     status,
@@ -169,7 +201,7 @@ function useWorkflowRunDetail(runIdRef: Ref<string>): UseWorkflowRunDetailResult
     statusError,
     refreshStatus,
     refreshAll,
-  }
+  };
 }
 
 const {
@@ -178,283 +210,334 @@ const {
   statusError: error,
   refreshStatus: refresh,
   refreshAll: refreshAllData,
-} = useWorkflowRunDetail(runId)
+} = useWorkflowRunDetail(runId);
 
-const definition = computed(() => status.value?.definition)
+const definition = computed(() => status.value?.definition);
 
-function resultStateForNodeCheckpoint(nodeUid: string, checkpoint: any): {
-  declaredMode: ResultMode
-  effectiveMode: ResultMode
-  onMemoryFail?: 'store' | 'error'
-  resultAvailable: boolean
-  resultState: 'ready' | 'pruned' | 'pending'
+function resultStateForNodeCheckpoint(
+  nodeUid: string,
+  checkpoint: any,
+): {
+  declaredMode: ResultMode;
+  effectiveMode: ResultMode;
+  onMemoryFail?: "store" | "error";
+  resultAvailable: boolean;
+  resultState: "ready" | "pruned" | "pending";
 } {
-  const backendMode = status.value?.node_result_modes?.[nodeUid]
-  const backendState = status.value?.node_result_states?.[nodeUid]
-  const resultAvailable = Boolean(checkpoint?.result_ref)
-  const hasRef = Boolean(checkpoint?.result_ref)
-  const resultState: 'ready' | 'pruned' | 'pending' = backendState || (hasRef ? 'ready' : 'pending')
+  const backendMode = status.value?.node_result_modes?.[nodeUid];
+  const backendState = status.value?.node_result_states?.[nodeUid];
+  const resultAvailable = Boolean(checkpoint?.result_ref);
+  const hasRef = Boolean(checkpoint?.result_ref);
+  const resultState: "ready" | "pruned" | "pending" =
+    backendState || (hasRef ? "ready" : "pending");
 
   return {
-    declaredMode: backendMode?.declared_mode || 'memory',
-    effectiveMode: backendMode?.effective_mode || 'memory',
+    declaredMode: backendMode?.declared_mode || "memory",
+    effectiveMode: backendMode?.effective_mode || "memory",
     onMemoryFail: backendMode?.on_memory_fail,
     resultAvailable,
     resultState,
-  }
+  };
 }
 
-let refreshInterval: ReturnType<typeof setInterval> | null = null
+let refreshInterval: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   refreshInterval = setInterval(() => {
-    if (status.value?.status === 'running' || status.value?.status === 'awaiting_nodes' || status.value?.status === 'awaiting') {
-      refresh({ silent: true })
+    if (
+      status.value?.status === "running" ||
+      status.value?.status === "awaiting_nodes" ||
+      status.value?.status === "awaiting"
+    ) {
+      refresh({ silent: true });
     }
-  }, 1000)
-})
+  }, 1000);
+});
 
 onUnmounted(() => {
-  if (refreshInterval) clearInterval(refreshInterval)
-})
+  if (refreshInterval) clearInterval(refreshInterval);
+});
 
 const normalizedStatus = computed(() => {
-  const currentStatus = status.value?.status
-  if (currentStatus === 'done') return 'completed'
-  if (currentStatus === 'error') return 'failed'
-  if (currentStatus === 'awaiting_nodes' || currentStatus === 'awaiting') return 'running'
-  return currentStatus
-})
+  const currentStatus = status.value?.status;
+  if (currentStatus === "done") return "completed";
+  if (currentStatus === "error") return "failed";
+  if (currentStatus === "awaiting_nodes" || currentStatus === "awaiting")
+    return "running";
+  return currentStatus;
+});
 
 type LoopGroupInfo = {
-  id: string
-  mode: 'parallel' | 'sequential' | 'batch'
-  batchSize: number | undefined
-  over: string
-  itemInputMode: 'memory' | 'store'
-  itemResultMode: 'memory' | 'store' | 'mixed'
-  nodeIds: string[]
-  label: string
-}
+  id: string;
+  mode: "parallel" | "sequential" | "batch";
+  batchSize: number | undefined;
+  over: string;
+  itemInputMode: "memory" | "store";
+  itemResultMode: "memory" | "store" | "mixed";
+  nodeIds: string[];
+  label: string;
+};
 
-function topoSortSubset(nodeIds: string[], nodeDefs: Record<string, any>, fallbackOrder: string[]): string[] {
-  const subset = new Set(nodeIds)
-  const indegree = new Map<string, number>()
-  const forward = new Map<string, string[]>()
+function topoSortSubset(
+  nodeIds: string[],
+  nodeDefs: Record<string, any>,
+  fallbackOrder: string[],
+): string[] {
+  const subset = new Set(nodeIds);
+  const indegree = new Map<string, number>();
+  const forward = new Map<string, string[]>();
 
   for (const id of nodeIds) {
-    indegree.set(id, 0)
-    forward.set(id, [])
+    indegree.set(id, 0);
+    forward.set(id, []);
   }
 
   for (const id of nodeIds) {
-    const deps = Array.isArray(nodeDefs[id]?.depends_on) ? nodeDefs[id].depends_on : []
+    const deps = Array.isArray(nodeDefs[id]?.depends_on)
+      ? nodeDefs[id].depends_on
+      : [];
     for (const dep of deps) {
-      if (!subset.has(dep)) continue
-      forward.get(dep)?.push(id)
-      indegree.set(id, (indegree.get(id) || 0) + 1)
+      if (!subset.has(dep)) continue;
+      forward.get(dep)?.push(id);
+      indegree.set(id, (indegree.get(id) || 0) + 1);
     }
   }
 
-  const rank = new Map<string, number>()
-  fallbackOrder.forEach((id, idx) => rank.set(id, idx))
+  const rank = new Map<string, number>();
+  fallbackOrder.forEach((id, idx) => rank.set(id, idx));
 
-  const ready: string[] = nodeIds.filter(id => (indegree.get(id) || 0) === 0)
-  ready.sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER))
+  const ready: string[] = nodeIds.filter((id) => (indegree.get(id) || 0) === 0);
+  ready.sort(
+    (a, b) =>
+      (rank.get(a) ?? Number.MAX_SAFE_INTEGER) -
+      (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
+  );
 
-  const out: string[] = []
+  const out: string[] = [];
   while (ready.length > 0) {
-    const id = ready.shift()!
-    out.push(id)
+    const id = ready.shift()!;
+    out.push(id);
     for (const nextId of forward.get(id) || []) {
-      indegree.set(nextId, (indegree.get(nextId) || 0) - 1)
+      indegree.set(nextId, (indegree.get(nextId) || 0) - 1);
       if ((indegree.get(nextId) || 0) === 0) {
-        ready.push(nextId)
+        ready.push(nextId);
       }
     }
-    ready.sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER))
+    ready.sort(
+      (a, b) =>
+        (rank.get(a) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
+    );
   }
 
-  if (out.length === nodeIds.length) return out
-  return [...nodeIds].sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER))
+  if (out.length === nodeIds.length) return out;
+  return [...nodeIds].sort(
+    (a, b) =>
+      (rank.get(a) ?? Number.MAX_SAFE_INTEGER) -
+      (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
+  );
 }
 
 const loopGroups = computed<{
-  groups: LoopGroupInfo[]
-  byNodeId: Record<string, LoopGroupInfo>
+  groups: LoopGroupInfo[];
+  byNodeId: Record<string, LoopGroupInfo>;
 }>(() => {
-  const nodeDefs: Record<string, any> = definition.value?.nodes || {}
-  const nodeIds = Object.keys(nodeDefs)
-  if (nodeIds.length === 0) return { groups: [], byNodeId: {} }
+  const nodeDefs: Record<string, any> = definition.value?.nodes || {};
+  const nodeIds = Object.keys(nodeDefs);
+  if (nodeIds.length === 0) return { groups: [], byNodeId: {} };
 
-  const fallbackOrder = sortNodesByLevel(nodeDefs)
-  const loopNodeIds = nodeIds.filter((id) => Boolean(nodeDefs[id]?.fanout))
-  if (loopNodeIds.length === 0) return { groups: [], byNodeId: {} }
+  const fallbackOrder = sortNodesByLevel(nodeDefs);
+  const loopNodeIds = nodeIds.filter((id) => Boolean(nodeDefs[id]?.fanout));
+  if (loopNodeIds.length === 0) return { groups: [], byNodeId: {} };
 
-  const sigByNode = new Map<string, string>()
+  const sigByNode = new Map<string, string>();
   for (const id of loopNodeIds) {
-    const fanout = nodeDefs[id]?.fanout || {}
-    const over = String(fanout.over || '')
-    const mode = fanout.mode === 'sequential'
-      ? 'sequential'
-      : (fanout.mode === 'batch' ? 'batch' : 'parallel')
-    const batchSize = Number(fanout.batchSize)
-    const sigBatchSize = Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 0
-    sigByNode.set(id, `${over}::${mode}::${sigBatchSize}`)
+    const fanout = nodeDefs[id]?.fanout || {};
+    const over = String(fanout.over || "");
+    const mode =
+      fanout.mode === "sequential"
+        ? "sequential"
+        : fanout.mode === "batch"
+          ? "batch"
+          : "parallel";
+    const batchSize = Number(fanout.batchSize);
+    const sigBatchSize =
+      Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 0;
+    sigByNode.set(id, `${over}::${mode}::${sigBatchSize}`);
   }
 
-  const adjacency = new Map<string, Set<string>>()
-  for (const id of loopNodeIds) adjacency.set(id, new Set())
+  const adjacency = new Map<string, Set<string>>();
+  for (const id of loopNodeIds) adjacency.set(id, new Set());
 
   for (const id of loopNodeIds) {
-    const deps = Array.isArray(nodeDefs[id]?.depends_on) ? nodeDefs[id].depends_on : []
+    const deps = Array.isArray(nodeDefs[id]?.depends_on)
+      ? nodeDefs[id].depends_on
+      : [];
     for (const dep of deps) {
-      if (!adjacency.has(dep)) continue
-      if (sigByNode.get(id) !== sigByNode.get(dep)) continue
-      adjacency.get(id)?.add(dep)
-      adjacency.get(dep)?.add(id)
+      if (!adjacency.has(dep)) continue;
+      if (sigByNode.get(id) !== sigByNode.get(dep)) continue;
+      adjacency.get(id)?.add(dep);
+      adjacency.get(dep)?.add(id);
     }
   }
 
-  const visited = new Set<string>()
-  const components: string[][] = []
+  const visited = new Set<string>();
+  const components: string[][] = [];
 
   for (const start of loopNodeIds) {
-    if (visited.has(start)) continue
-    const queue = [start]
-    visited.add(start)
-    const component: string[] = []
+    if (visited.has(start)) continue;
+    const queue = [start];
+    visited.add(start);
+    const component: string[] = [];
 
     while (queue.length > 0) {
-      const id = queue.shift()!
-      component.push(id)
+      const id = queue.shift()!;
+      component.push(id);
       for (const nextId of adjacency.get(id) || []) {
-        if (visited.has(nextId)) continue
-        visited.add(nextId)
-        queue.push(nextId)
+        if (visited.has(nextId)) continue;
+        visited.add(nextId);
+        queue.push(nextId);
       }
     }
 
-    components.push(component)
+    components.push(component);
   }
 
   const groups = components.flatMap((component, index) => {
-    const first = component[0]
-    if (!first) return []
+    const first = component[0];
+    if (!first) return [];
 
-    const fanout = nodeDefs[first]?.fanout || {}
-    const mode: 'parallel' | 'sequential' | 'batch' = fanout.mode === 'sequential'
-      ? 'sequential'
-      : (fanout.mode === 'batch' ? 'batch' : 'parallel')
-    const batchSizeValue = Number(fanout.batchSize)
-    const over = String(fanout.over || '')
-    const orderedNodes = topoSortSubset(component, nodeDefs, fallbackOrder)
-    const itemInputMode: 'memory' | 'store' = fanout.itemReturnType === 'store' ? 'store' : 'memory'
+    const fanout = nodeDefs[first]?.fanout || {};
+    const mode: "parallel" | "sequential" | "batch" =
+      fanout.mode === "sequential"
+        ? "sequential"
+        : fanout.mode === "batch"
+          ? "batch"
+          : "parallel";
+    const batchSizeValue = Number(fanout.batchSize);
+    const over = String(fanout.over || "");
+    const orderedNodes = topoSortSubset(component, nodeDefs, fallbackOrder);
+    const itemInputMode: "memory" | "store" =
+      fanout.itemReturnType === "store" ? "store" : "memory";
     const perNodeResultModes = orderedNodes.map((nodeId) => {
-      const returnType = String(nodeDefs[nodeId]?.result?.returnType || 'memory')
-      return returnType === 'store' ? 'store' : 'memory'
-    })
-    const hasStoreResults = perNodeResultModes.includes('store')
-    const hasMemoryResults = perNodeResultModes.includes('memory')
-    const itemResultMode: 'memory' | 'store' | 'mixed' = hasStoreResults && hasMemoryResults
-      ? 'mixed'
-      : (hasStoreResults ? 'store' : 'memory')
+      const returnType = String(
+        nodeDefs[nodeId]?.result?.returnType || "memory",
+      );
+      return returnType === "store" ? "store" : "memory";
+    });
+    const hasStoreResults = perNodeResultModes.includes("store");
+    const hasMemoryResults = perNodeResultModes.includes("memory");
+    const itemResultMode: "memory" | "store" | "mixed" =
+      hasStoreResults && hasMemoryResults
+        ? "mixed"
+        : hasStoreResults
+          ? "store"
+          : "memory";
 
     const group: LoopGroupInfo = {
       id: `loop-${index + 1}`,
       mode,
-      batchSize: Number.isFinite(batchSizeValue) && batchSizeValue > 0 ? batchSizeValue : undefined,
+      batchSize:
+        Number.isFinite(batchSizeValue) && batchSizeValue > 0
+          ? batchSizeValue
+          : undefined,
       over,
       itemInputMode,
       itemResultMode,
       nodeIds: orderedNodes,
-      label: orderedNodes.join(' -> '),
-    }
-    return [group]
-  }) as unknown as LoopGroupInfo[]
+      label: orderedNodes.join(" -> "),
+    };
+    return [group];
+  }) as unknown as LoopGroupInfo[];
 
   groups.sort((a: LoopGroupInfo, b: LoopGroupInfo) => {
-      const firstA = fallbackOrder.indexOf(a.nodeIds[0] || '')
-      const firstB = fallbackOrder.indexOf(b.nodeIds[0] || '')
-      return firstA - firstB
-    })
+    const firstA = fallbackOrder.indexOf(a.nodeIds[0] || "");
+    const firstB = fallbackOrder.indexOf(b.nodeIds[0] || "");
+    return firstA - firstB;
+  });
 
-  const byNodeId: Record<string, LoopGroupInfo> = {}
+  const byNodeId: Record<string, LoopGroupInfo> = {};
   for (const group of groups) {
     for (const nodeId of group.nodeIds) {
-      byNodeId[nodeId] = group
+      byNodeId[nodeId] = group;
     }
   }
 
-  return { groups, byNodeId }
-})
+  return { groups, byNodeId };
+});
 
 const flowMeta = computed(() => {
-  if (!definition.value?.nodes) return null
+  if (!definition.value?.nodes) return null;
 
-  const analyzed = analyzeWorkflow(definition.value.nodes)
-  const steps: Record<string, any> = {}
+  const analyzed = analyzeWorkflow(definition.value.nodes);
+  const steps: Record<string, any> = {};
 
-  Object.entries(definition.value.nodes).forEach(([id, node]: [string, any]) => {
-    const loopGroup = loopGroups.value.byNodeId[id]
-    steps[id] = {
-      name: id,
-      label: node.label,
-      workerId: node.function?.id,
-      runtime: node.function?.runtime,
-      dependsOn: node.depends_on || [],
-      queue: node.function?.queue || 'default',
-      engineRetryMax: node.function?.engine_retry?.max_attempts,
-      runtype: (node as any).runtype || 'task',
-      emits: (node as any).emits || [],
-      isLoop: Boolean(loopGroup),
-      loopOver: loopGroup?.over,
-      loopMode: loopGroup?.mode || 'parallel',
-      loopBatchSize: loopGroup?.batchSize,
-      loopGroupId: loopGroup?.id,
-      loopGroupSize: loopGroup?.nodeIds.length || 0,
-      loopPipeline: loopGroup?.label,
-      childWorkflow: node.childWorkflow,
-      nodeKind: node.function?.id === 'nworkflow::internal-var-set'
-        ? 'var'
-        : node.reduce_body
-        ? 'reduce_body'
-        : node.reduce
-          ? 'reduce'
-        : node.if
-          ? 'if'
-          : node.if_branch
-            ? 'if_branch'
-            : node.childWorkflow
-              ? 'child_workflow'
-              : node.fanout
-                ? 'fanout'
-                : 'task',
-      reduce: node.reduce,
-      reduceBody: node.reduce_body,
-      if: node.if,
-      ifBranch: node.if_branch,
-      ifSelected: node.if ? status.value?.if_checkpoints?.[id]?.selected : undefined,
-      ifBranchSelected: node.if_branch
-        ? status.value?.if_checkpoints?.[node.if_branch.if]?.selected === node.if_branch.path
-        : undefined,
-    }
-  })
+  Object.entries(definition.value.nodes).forEach(
+    ([id, node]: [string, any]) => {
+      const loopGroup = loopGroups.value.byNodeId[id];
+      steps[id] = {
+        name: id,
+        label: node.label,
+        workerId: node.function?.id,
+        runtime: node.function?.runtime,
+        dependsOn: node.depends_on || [],
+        queue: node.function?.queue || "default",
+        engineRetryMax: node.function?.engine_retry?.max_attempts,
+        runtype: (node as any).runtype || "task",
+        emits: (node as any).emits || [],
+        isLoop: Boolean(loopGroup),
+        loopOver: loopGroup?.over,
+        loopMode: loopGroup?.mode || "parallel",
+        loopBatchSize: loopGroup?.batchSize,
+        loopGroupId: loopGroup?.id,
+        loopGroupSize: loopGroup?.nodeIds.length || 0,
+        loopPipeline: loopGroup?.label,
+        childWorkflow: node.childWorkflow,
+        nodeKind:
+          node.function?.id === "nworkflow::internal-var-set"
+            ? "var"
+            : node.reduce_body
+              ? "reduce_body"
+              : node.reduce
+                ? "reduce"
+                : node.if
+                  ? "if"
+                  : node.if_branch
+                    ? "if_branch"
+                    : node.childWorkflow
+                      ? "child_workflow"
+                      : node.fanout
+                        ? "fanout"
+                        : "task",
+        reduce: node.reduce,
+        reduceBody: node.reduce_body,
+        if: node.if,
+        ifBranch: node.if_branch,
+        ifSelected: node.if
+          ? status.value?.if_checkpoints?.[id]?.selected
+          : undefined,
+        ifBranchSelected: node.if_branch
+          ? status.value?.if_checkpoints?.[node.if_branch.if]?.selected ===
+            node.if_branch.path
+          : undefined,
+      };
+    },
+  );
 
-  let entry
+  let entry;
   if (analyzed.levels[0]?.length === 1) {
-    const entryId = analyzed.levels[0][0]
+    const entryId = analyzed.levels[0][0];
     if (entryId) {
-      const node = definition.value.nodes[entryId]
+      const node = definition.value.nodes[entryId];
       entry = {
         step: entryId,
         label: node.label,
-        queue: node.function?.queue || 'default',
+        queue: node.function?.queue || "default",
         engineRetryMax: node.function?.engine_retry?.max_attempts,
         workerId: node.function?.id,
-        runtime: node.function?.runtime as 'nodejs' | 'python' | undefined,
-        runtype: (node as any).runtype || 'task',
+        runtime: node.function?.runtime as "nodejs" | "python" | undefined,
+        runtype: (node as any).runtype || "task",
         emits: (node as any).emits || [],
-      }
+      };
     }
   }
 
@@ -465,29 +548,37 @@ const flowMeta = computed(() => {
     metadata: definition.value.metadata,
     loopGroups: loopGroups.value.groups,
     analyzed,
-  }
-})
+  };
+});
 
 const stepStates = computed(() => {
-  const out: Record<string, any> = {}
-  const nodeStates = status.value?.nodes ?? {}
+  const out: Record<string, any> = {};
+  const nodeStates = status.value?.nodes ?? {};
 
   Object.entries(nodeStates).forEach(([id, nodeStatus]: [string, any]) => {
-    let uiStatus = nodeStatus.state || nodeStatus
-    if (typeof uiStatus === 'string') {
-      if (uiStatus === 'done') uiStatus = 'completed'
-      else if (uiStatus === 'error' || uiStatus === 'failed') uiStatus = 'failed'
-      else if (uiStatus === 'cancelled' || uiStatus === 'canceled') uiStatus = 'canceled'
-      else if (uiStatus === 'active' || uiStatus === 'queued' || uiStatus === 'running') uiStatus = 'running'
+    let uiStatus = nodeStatus.state || nodeStatus;
+    if (typeof uiStatus === "string") {
+      if (uiStatus === "done") uiStatus = "completed";
+      else if (uiStatus === "error" || uiStatus === "failed")
+        uiStatus = "failed";
+      else if (uiStatus === "cancelled" || uiStatus === "canceled")
+        uiStatus = "canceled";
+      else if (
+        uiStatus === "active" ||
+        uiStatus === "queued" ||
+        uiStatus === "running"
+      )
+        uiStatus = "running";
     }
 
-    const nodeResultState = resultStateForNodeCheckpoint(id, nodeStatus)
+    const nodeResultState = resultStateForNodeCheckpoint(id, nodeStatus);
 
     out[id] = {
       status: uiStatus,
-      error: nodeStatus.result_error
-        || status.value?.reduce_checkpoints?.[id]?.error
-        || status.value?.if_checkpoints?.[id]?.error,
+      error:
+        nodeStatus.result_error ||
+        status.value?.reduce_checkpoints?.[id]?.error ||
+        status.value?.if_checkpoints?.[id]?.error,
       result: nodeStatus.result_ref,
       result_mode_declared: nodeResultState.declaredMode,
       result_mode_effective: nodeResultState.effectiveMode,
@@ -501,184 +592,481 @@ const stepStates = computed(() => {
       child_run_id: nodeStatus.child_run_id,
       reduce_checkpoint: status.value?.reduce_checkpoints?.[id],
       if_checkpoint: status.value?.if_checkpoints?.[id],
-    }
-  })
+    };
+  });
 
-  Object.entries(definition.value?.nodes ?? {}).forEach(([id, nodeDef]: [string, any]) => {
-    if (!nodeDef?.if_branch) return
-    const selected = status.value?.if_checkpoints?.[nodeDef.if_branch.if]?.selected
-    if (selected && selected !== nodeDef.if_branch.path) {
-      out[id] = {
-        ...(out[id] || {}),
-        status: 'skipped',
-        skipped: true,
+  Object.entries(definition.value?.nodes ?? {}).forEach(
+    ([id, nodeDef]: [string, any]) => {
+      if (!nodeDef?.if_branch) return;
+      const selected =
+        status.value?.if_checkpoints?.[nodeDef.if_branch.if]?.selected;
+      if (selected && selected !== nodeDef.if_branch.path) {
+        out[id] = {
+          ...(out[id] || {}),
+          status: "skipped",
+          skipped: true,
+        };
       }
-    }
-  })
+    },
+  );
 
   // For fanout/loop nodes, aggregate child `node#i` checkpoints into the base step
   // so overview and diagram show one logical loop step state.
-  Object.entries(definition.value?.nodes ?? {}).forEach(([baseId, nodeDef]: [string, any]) => {
-    if (!nodeDef?.fanout) return
+  Object.entries(definition.value?.nodes ?? {}).forEach(
+    ([baseId, nodeDef]: [string, any]) => {
+      if (!nodeDef?.fanout) return;
 
-    const children = Object.entries(nodeStates).filter(([id]) => id.startsWith(`${baseId}#`))
-    if (children.length === 0) return
+      const children = Object.entries(nodeStates).filter(([id]) =>
+        id.startsWith(`${baseId}#`),
+      );
+      if (children.length === 0) return;
 
-    const childStates = children.map(([, cp]: any) => String(cp?.state || '').toLowerCase())
-    const childErrors = children
-      .map(([, cp]: any) => cp?.result_error)
-      .filter((msg: any) => typeof msg === 'string' && msg.length > 0)
-    const retries = children.reduce((sum, [, cp]: any) => sum + Number(cp?.retries || 0), 0)
-    const childResultStates = children.map(([uid, cp]: any) => resultStateForNodeCheckpoint(uid, cp))
+      const childStates = children.map(([, cp]: any) =>
+        String(cp?.state || "").toLowerCase(),
+      );
+      const childErrors = children
+        .map(([, cp]: any) => cp?.result_error)
+        .filter((msg: any) => typeof msg === "string" && msg.length > 0);
+      const retries = children.reduce(
+        (sum, [, cp]: any) => sum + Number(cp?.retries || 0),
+        0,
+      );
+      const childResultStates = children.map(([uid, cp]: any) =>
+        resultStateForNodeCheckpoint(uid, cp),
+      );
 
-    let aggregated: 'running' | 'completed' | 'failed' | 'canceled' | 'idle' = 'idle'
-    if (childStates.some(s => s === 'failed' || s === 'error')) aggregated = 'failed'
-    else if (childStates.some(s => s === 'running' || s === 'active' || s === 'queued' || s === 'pending')) aggregated = 'running'
-    else if (childStates.some(s => s === 'cancelled' || s === 'canceled')) aggregated = 'canceled'
-    else if (childStates.length > 0 && childStates.every(s => s === 'done' || s === 'completed')) aggregated = 'completed'
+      let aggregated: "running" | "completed" | "failed" | "canceled" | "idle" =
+        "idle";
+      if (childStates.some((s) => s === "failed" || s === "error"))
+        aggregated = "failed";
+      else if (
+        childStates.some(
+          (s) =>
+            s === "running" ||
+            s === "active" ||
+            s === "queued" ||
+            s === "pending",
+        )
+      )
+        aggregated = "running";
+      else if (childStates.some((s) => s === "cancelled" || s === "canceled"))
+        aggregated = "canceled";
+      else if (
+        childStates.length > 0 &&
+        childStates.every((s) => s === "done" || s === "completed")
+      )
+        aggregated = "completed";
 
-    const childPending = children
-      .map(([, cp]: any) => Number(cp?.pending_at || 0))
-      .filter(v => v > 0)
-    const childCompleted = children
-      .map(([, cp]: any) => Number(cp?.completed_at || 0))
-      .filter(v => v > 0)
+      const childPending = children
+        .map(([, cp]: any) => Number(cp?.pending_at || 0))
+        .filter((v) => v > 0);
+      const childCompleted = children
+        .map(([, cp]: any) => Number(cp?.completed_at || 0))
+        .filter((v) => v > 0);
 
-    // Expose one clickable entry per fanned-out child_workflow run so the
-    // diagram/overview can navigate into individual loop iterations instead
-    // of only showing the aggregated loop status.
-    const childRuns = nodeDef?.childWorkflow
-      ? children
-        .map(([uid, cp]: any) => {
-          const match = /#(\d+)$/.exec(uid)
-          return {
-            index: match ? Number(match[1]) : 0,
-            runId: cp?.child_run_id as string | undefined,
-            status: String(cp?.state || '').toLowerCase(),
-            error: typeof cp?.result_error === 'string' ? cp.result_error : undefined,
-            retries: Number(cp?.retries || 0),
-            pendingAt: Number(cp?.pending_at || 0) || undefined,
-            completedAt: Number(cp?.completed_at || 0) || undefined,
-          }
-        })
-        .filter((entry): entry is { index: number, runId: string, status: string, error: string | undefined, retries: number, pendingAt: number | undefined, completedAt: number | undefined } => typeof entry.runId === 'string' && entry.runId.length > 0)
-        .sort((a, b) => a.index - b.index)
-      : undefined
+      // Expose one clickable entry per fanned-out child_workflow run so the
+      // diagram/overview can navigate into individual loop iterations instead
+      // of only showing the aggregated loop status.
+      const childRuns = nodeDef?.childWorkflow
+        ? children
+            .map(([uid, cp]: any) => {
+              const match = /#(\d+)$/.exec(uid);
+              return {
+                index: match ? Number(match[1]) : 0,
+                runId: cp?.child_run_id as string | undefined,
+                status: String(cp?.state || "").toLowerCase(),
+                error:
+                  typeof cp?.result_error === "string"
+                    ? cp.result_error
+                    : undefined,
+                retries: Number(cp?.retries || 0),
+                pendingAt: Number(cp?.pending_at || 0) || undefined,
+                completedAt: Number(cp?.completed_at || 0) || undefined,
+              };
+            })
+            .filter(
+              (
+                entry,
+              ): entry is {
+                index: number;
+                runId: string;
+                status: string;
+                error: string | undefined;
+                retries: number;
+                pendingAt: number | undefined;
+                completedAt: number | undefined;
+              } => typeof entry.runId === "string" && entry.runId.length > 0,
+            )
+            .sort((a, b) => a.index - b.index)
+        : undefined;
 
-    out[baseId] = {
-      ...(out[baseId] || {}),
-      status: aggregated,
-      retries,
-      error: childErrors[0],
-      result_mode_declared: childResultStates[0]?.declaredMode || out[baseId]?.result_mode_declared,
-      result_mode_effective: childResultStates[0]?.effectiveMode || out[baseId]?.result_mode_effective,
-      result_on_memory_fail: childResultStates[0]?.onMemoryFail || out[baseId]?.result_on_memory_fail,
-      result_available: childResultStates.some(item => item.resultAvailable),
-      result_state: childResultStates.some(item => item.resultAvailable)
-        ? 'ready'
-        : childResultStates.some(item => item.resultState === 'pruned')
-          ? 'pruned'
-          : 'pending',
-      pending_at: childPending.length > 0 ? Math.min(...childPending) : out[baseId]?.pending_at,
-      completed_at: childCompleted.length > 0 ? Math.max(...childCompleted) : out[baseId]?.completed_at,
-      ...(childRuns?.length ? { child_runs: childRuns } : {}),
-    }
-  })
+      out[baseId] = {
+        ...(out[baseId] || {}),
+        status: aggregated,
+        retries,
+        error: childErrors[0],
+        result_mode_declared:
+          childResultStates[0]?.declaredMode ||
+          out[baseId]?.result_mode_declared,
+        result_mode_effective:
+          childResultStates[0]?.effectiveMode ||
+          out[baseId]?.result_mode_effective,
+        result_on_memory_fail:
+          childResultStates[0]?.onMemoryFail ||
+          out[baseId]?.result_on_memory_fail,
+        result_available: childResultStates.some(
+          (item) => item.resultAvailable,
+        ),
+        result_state: childResultStates.some((item) => item.resultAvailable)
+          ? "ready"
+          : childResultStates.some((item) => item.resultState === "pruned")
+            ? "pruned"
+            : "pending",
+        pending_at:
+          childPending.length > 0
+            ? Math.min(...childPending)
+            : out[baseId]?.pending_at,
+        completed_at:
+          childCompleted.length > 0
+            ? Math.max(...childCompleted)
+            : out[baseId]?.completed_at,
+        ...(childRuns?.length ? { child_runs: childRuns } : {}),
+      };
+    },
+  );
 
-  return out
-})
+  // Reduce body definitions are templates. The worker executes their concrete
+  // iterations as `node#<index>` checkpoints, so expose the aggregate state on
+  // the template node used by the diagram and run overview.
+  Object.entries(definition.value?.nodes ?? {}).forEach(
+    ([baseId, nodeDef]: [string, any]) => {
+      const reduceBody = nodeDef?.reduce_body || nodeDef?.reduceBody;
+      if (!reduceBody?.reduce) return;
+
+      const children = Object.entries(nodeStates).filter(([id]) =>
+        id.startsWith(`${baseId}#`),
+      );
+      if (children.length === 0) return;
+
+      const childStates = children.map(([, cp]: any) =>
+        String(cp?.state || "").toLowerCase(),
+      );
+      let aggregated: "running" | "completed" | "failed" | "canceled" | "idle" =
+        "idle";
+      if (childStates.some((state) => state === "failed" || state === "error"))
+        aggregated = "failed";
+      else if (
+        childStates.some(
+          (state) =>
+            state === "running" ||
+            state === "active" ||
+            state === "queued" ||
+            state === "pending",
+        )
+      )
+        aggregated = "running";
+      else if (
+        childStates.some(
+          (state) => state === "cancelled" || state === "canceled",
+        )
+      )
+        aggregated = "canceled";
+      else if (
+        childStates.every((state) => state === "done" || state === "completed")
+      )
+        aggregated = "completed";
+
+      const childResultStates = children.map(([uid, cp]: any) =>
+        resultStateForNodeCheckpoint(uid, cp),
+      );
+      const reduceCheckpoint =
+        status.value?.reduce_checkpoints?.[reduceBody.reduce];
+      const activeBodyUids = new Set(reduceCheckpoint?.active_body_uids || []);
+      const activeIterations = children
+        .map(([uid]) => uid.match(/#(\d+)$/)?.[1])
+        .filter((index): index is string => typeof index === "string")
+        .map(Number)
+        .filter((index) => activeBodyUids.has(`${baseId}#${index}`));
+
+      out[baseId] = {
+        ...(out[baseId] || {}),
+        status: aggregated,
+        error:
+          children.map(([, cp]: any) => cp?.result_error).find(Boolean) ||
+          out[baseId]?.error,
+        result_mode_declared:
+          childResultStates[0]?.declaredMode ||
+          out[baseId]?.result_mode_declared,
+        result_mode_effective:
+          childResultStates[0]?.effectiveMode ||
+          out[baseId]?.result_mode_effective,
+        result_on_memory_fail:
+          childResultStates[0]?.onMemoryFail ||
+          out[baseId]?.result_on_memory_fail,
+        result_available: childResultStates.some(
+          (item) => item.resultAvailable,
+        ),
+        result_state: childResultStates.some((item) => item.resultAvailable)
+          ? "ready"
+          : childResultStates.some((item) => item.resultState === "pruned")
+            ? "pruned"
+            : "pending",
+        reduce_iteration_count: children.length,
+        reduce_active_iteration:
+          activeIterations.length > 0 ? Math.min(...activeIterations) : null,
+        reduce_body_uids: children
+          .map(([uid]) => uid)
+          .sort((left, right) =>
+            left.localeCompare(right, undefined, { numeric: true }),
+          ),
+        reduce_checkpoint: reduceCheckpoint,
+      };
+    },
+  );
+
+  return out;
+});
 
 const stepList = computed(() => {
-  if (!definition.value?.nodes) return []
+  if (!definition.value?.nodes) return [];
 
-  const ordered = sortNodesByLevel(definition.value.nodes)
-  const nodeStates = status.value?.nodes ?? {}
-  const nodeStateEntries = Object.entries(nodeStates) as Array<[string, any]>
-  const groupsById = Object.fromEntries(loopGroups.value.groups.map(group => [group.id, group])) as Record<string, LoopGroupInfo>
+  const ordered = sortNodesByLevel(definition.value.nodes);
+  const nodeStates = status.value?.nodes ?? {};
+  const nodeStateEntries = Object.entries(nodeStates) as Array<[string, any]>;
+  const groupsById = Object.fromEntries(
+    loopGroups.value.groups.map((group) => [group.id, group]),
+  ) as Record<string, LoopGroupInfo>;
   const groupIdByNodeId = Object.fromEntries(
-    Object.entries(loopGroups.value.byNodeId).map(([nodeId, group]) => [nodeId, group.id]),
-  ) as Record<string, string>
+    Object.entries(loopGroups.value.byNodeId).map(([nodeId, group]) => [
+      nodeId,
+      group.id,
+    ]),
+  ) as Record<string, string>;
 
-  const groupResultCounts: Record<string, { total: number, store: number, memory: number, pruned: number }> = {}
-  const loopChildResultUidsByBase: Record<string, string[]> = {}
+  const groupResultCounts: Record<
+    string,
+    { total: number; store: number; memory: number; pruned: number }
+  > = {};
+  const loopChildResultUidsByBase: Record<string, string[]> = {};
+  const reduceBodyResultUidsByGroup: Record<string, string[]> = {};
+  const reduceResultCounts: Record<
+    string,
+    { store: number; memory: number; pruned: number }
+  > = {};
 
   for (const [uid, cp] of nodeStateEntries) {
-    const base = uid.split('#')[0] || ''
-    const groupId = groupIdByNodeId[base]
+    const base = uid.split("#")[0] || "";
+    const groupId = groupIdByNodeId[base];
+    const reduceBody =
+      definition.value.nodes[base]?.reduce_body ||
+      definition.value.nodes[base]?.reduceBody;
+    const reduceGroupId = reduceBody?.reduce;
+    if (reduceGroupId) {
+      if (!reduceResultCounts[reduceGroupId])
+        reduceResultCounts[reduceGroupId] = { store: 0, memory: 0, pruned: 0 };
+      const resultState = resultStateForNodeCheckpoint(uid, cp);
+      if (resultState.effectiveMode === "store" && resultState.resultAvailable)
+        reduceResultCounts[reduceGroupId].store += 1;
+      if (resultState.effectiveMode === "memory" && resultState.resultAvailable)
+        reduceResultCounts[reduceGroupId].memory += 1;
+      if (resultState.resultState === "pruned")
+        reduceResultCounts[reduceGroupId].pruned += 1;
+      if (cp?.result_ref) {
+        if (!reduceBodyResultUidsByGroup[reduceGroupId])
+          reduceBodyResultUidsByGroup[reduceGroupId] = [];
+        reduceBodyResultUidsByGroup[reduceGroupId].push(uid);
+      }
+      continue;
+    }
     if (!groupId) {
       if (cp?.result_ref) {
-        if (!loopChildResultUidsByBase[base]) loopChildResultUidsByBase[base] = []
-        loopChildResultUidsByBase[base].push(uid)
+        if (!loopChildResultUidsByBase[base])
+          loopChildResultUidsByBase[base] = [];
+        loopChildResultUidsByBase[base].push(uid);
       }
-      continue
+      continue;
     }
 
     if (!groupResultCounts[groupId]) {
-      groupResultCounts[groupId] = { total: 0, store: 0, memory: 0, pruned: 0 }
+      groupResultCounts[groupId] = { total: 0, store: 0, memory: 0, pruned: 0 };
     }
-    groupResultCounts[groupId].total += Number(Boolean(cp?.result_ref))
+    groupResultCounts[groupId].total += Number(Boolean(cp?.result_ref));
 
-    const resultState = resultStateForNodeCheckpoint(uid, cp)
-    if (resultState.effectiveMode === 'store') {
-      groupResultCounts[groupId].store += Number(resultState.resultAvailable)
-    } else if (resultState.effectiveMode === 'memory') {
-      groupResultCounts[groupId].memory += Number(resultState.resultAvailable)
-      groupResultCounts[groupId].pruned += Number(resultState.resultState === 'pruned')
+    const resultState = resultStateForNodeCheckpoint(uid, cp);
+    if (resultState.effectiveMode === "store") {
+      groupResultCounts[groupId].store += Number(resultState.resultAvailable);
+    } else if (resultState.effectiveMode === "memory") {
+      groupResultCounts[groupId].memory += Number(resultState.resultAvailable);
+      groupResultCounts[groupId].pruned += Number(
+        resultState.resultState === "pruned",
+      );
     }
 
     if (cp?.result_ref) {
-      if (!loopChildResultUidsByBase[base]) loopChildResultUidsByBase[base] = []
-      loopChildResultUidsByBase[base].push(uid)
+      if (!loopChildResultUidsByBase[base])
+        loopChildResultUidsByBase[base] = [];
+      loopChildResultUidsByBase[base].push(uid);
     }
   }
 
   for (const uidList of Object.values(loopChildResultUidsByBase)) {
-    uidList.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    uidList.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }
-  const insertedGroups = new Set<string>()
-  const out: any[] = []
+  for (const uidList of Object.values(reduceBodyResultUidsByGroup)) {
+    uidList.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+  const insertedGroups = new Set<string>();
+  const out: any[] = [];
 
   for (const id of ordered) {
-    const state = stepStates.value[id]
-    const node = definition.value.nodes[id]
-    const reduceSpec = node?.reduce || node?.reduceSpec
-    const reduceBodySpec = node?.reduce_body || node?.reduceBody
-    const ifSpec = node?.if || node?.ifSpec
-    const ifBranchSpec = node?.if_branch || node?.ifBranch
-    const group = loopGroups.value.byNodeId[id]
+    const state = stepStates.value[id];
+    const node = definition.value.nodes[id];
+    const reduceSpec = node?.reduce || node?.reduceSpec;
+    const reduceBodySpec = node?.reduce_body || node?.reduceBody;
+    const ifSpec = node?.if || node?.ifSpec;
+    const ifBranchSpec = node?.if_branch || node?.ifBranch;
+    const group = loopGroups.value.byNodeId[id];
+
+    if (reduceSpec) {
+      const checkpoint = status.value?.reduce_checkpoints?.[id];
+      const resultCounts = reduceResultCounts[id] || {
+        store: 0,
+        memory: 0,
+        pruned: 0,
+      };
+      const activeBodyUids = new Set(checkpoint?.active_body_uids || []);
+      const activeIteration = (reduceSpec.body || [])
+        .flatMap((bodyId: string) =>
+          Object.keys(nodeStates).filter((uid) => uid.startsWith(`${bodyId}#`)),
+        )
+        .map((uid) => uid.match(/#(\d+)$/)?.[1])
+        .filter((index): index is string => typeof index === "string")
+        .map(Number)
+        .filter((index) =>
+          [...activeBodyUids].some((uid) => uid.endsWith(`#${index}`)),
+        );
+      const bodyItems = (reduceSpec.body || []).map((bodyId: string) => ({
+        value: bodyId,
+        label: definition.value.nodes[bodyId]?.label || bodyId,
+        step: stepStates.value[bodyId] || { status: "idle" },
+      }));
+      out.push({
+        key: `reduce-group:${id}`,
+        label: node?.label,
+        status:
+          checkpoint?.state === "done" || checkpoint?.state === "completed"
+            ? "completed"
+            : checkpoint?.state === "failed"
+              ? "failed"
+              : checkpoint?.state === "running" ||
+                  checkpoint?.state === "pending"
+                ? "running"
+                : state?.status || "idle",
+        nodeKind: "reduce_group",
+        reduceId: id,
+        reduceSpec,
+        reduceCheckpoint: checkpoint,
+        bodyItems,
+        reduceIterationCount: Number(checkpoint?.total_items || 0),
+        reduceCompletedIterations: Number(checkpoint?.next_index || 0),
+        reduceActiveIteration:
+          activeIteration.length > 0 ? Math.min(...activeIteration) : null,
+        reduceResultMode: node?.reduce?.accumulatorReturnType || "memory",
+        reduceResultStoreCount: resultCounts.store,
+        reduceResultMemoryCount: resultCounts.memory,
+        reduceResultPrunedCount: resultCounts.pruned,
+        reduceBodyResultUids: reduceBodyResultUidsByGroup[id] || [],
+        canInspectResult: (reduceBodyResultUidsByGroup[id] || []).length > 0,
+      });
+      insertedGroups.add(`reduce-group:${id}`);
+      continue;
+    }
+
+    if (reduceBodySpec) continue;
 
     if (group && !insertedGroups.has(group.id)) {
       const groupLoopNodeStats = group.nodeIds
-        .map(memberId => status.value?.loop_stats?.[memberId])
-        .filter(Boolean) as Array<NonNullable<WorkflowRunStatusResponse['loop_stats']>[string]>
+        .map((memberId) => status.value?.loop_stats?.[memberId])
+        .filter(Boolean) as Array<
+        NonNullable<WorkflowRunStatusResponse["loop_stats"]>[string]
+      >;
 
-      const totalItems = groupLoopNodeStats.reduce((max, entry) => Math.max(max, Number(entry.total_items || 0)), 0)
-      const completedItemsPipeline = groupLoopNodeStats.reduce((min, entry) => {
-        const value = Number(entry.completed_items || 0)
-        return min === null ? value : Math.min(min, value)
-      }, null as number | null) ?? 0
-      const completedItemsAny = groupLoopNodeStats.reduce((max, entry) => Math.max(max, Number(entry.completed_items || 0)), 0)
-      const runningItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.running_items || 0), 0)
-      const failedItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.failed_items || 0), 0)
-      const pendingItems = groupLoopNodeStats.reduce((sum, entry) => sum + Number(entry.pending_items || 0), 0)
+      const totalItems = groupLoopNodeStats.reduce(
+        (max, entry) => Math.max(max, Number(entry.total_items || 0)),
+        0,
+      );
+      const completedItemsPipeline =
+        groupLoopNodeStats.reduce(
+          (min, entry) => {
+            const value = Number(entry.completed_items || 0);
+            return min === null ? value : Math.min(min, value);
+          },
+          null as number | null,
+        ) ?? 0;
+      const completedItemsAny = groupLoopNodeStats.reduce(
+        (max, entry) => Math.max(max, Number(entry.completed_items || 0)),
+        0,
+      );
+      const runningItems = groupLoopNodeStats.reduce(
+        (sum, entry) => sum + Number(entry.running_items || 0),
+        0,
+      );
+      const failedItems = groupLoopNodeStats.reduce(
+        (sum, entry) => sum + Number(entry.failed_items || 0),
+        0,
+      );
+      const pendingItems = groupLoopNodeStats.reduce(
+        (sum, entry) => sum + Number(entry.pending_items || 0),
+        0,
+      );
       const activeIndexCandidates = groupLoopNodeStats
-        .map(entry => Number(entry.active_index))
-        .filter(v => Number.isFinite(v) && v >= 0)
-      const activeIndex = activeIndexCandidates.length > 0 ? Math.min(...activeIndexCandidates) : null
+        .map((entry) => Number(entry.active_index))
+        .filter((v) => Number.isFinite(v) && v >= 0);
+      const activeIndex =
+        activeIndexCandidates.length > 0
+          ? Math.min(...activeIndexCandidates)
+          : null;
 
       const memberStates = group.nodeIds
-        .map(memberId => stepStates.value[memberId])
-        .filter(Boolean)
-      const statuses = memberStates.map((memberState: any) => String(memberState?.status || '').toLowerCase())
-      const loopResultCounts = groupResultCounts[group.id] || { total: 0, store: 0, memory: 0, pruned: 0 }
+        .map((memberId) => stepStates.value[memberId])
+        .filter(Boolean);
+      const statuses = memberStates.map((memberState: any) =>
+        String(memberState?.status || "").toLowerCase(),
+      );
+      const loopResultCounts = groupResultCounts[group.id] || {
+        total: 0,
+        store: 0,
+        memory: 0,
+        pruned: 0,
+      };
 
-      let groupStatus = 'idle'
-      if (statuses.some(s => s === 'failed' || s === 'error')) groupStatus = 'failed'
-      else if (statuses.some(s => s === 'running' || s === 'queued' || s === 'active' || s === 'pending')) groupStatus = 'running'
-      else if (statuses.length > 0 && statuses.every(s => s === 'completed' || s === 'done')) groupStatus = 'completed'
+      let groupStatus = "idle";
+      if (statuses.some((s) => s === "failed" || s === "error"))
+        groupStatus = "failed";
+      else if (
+        statuses.some(
+          (s) =>
+            s === "running" ||
+            s === "queued" ||
+            s === "active" ||
+            s === "pending",
+        )
+      )
+        groupStatus = "running";
+      else if (
+        statuses.length > 0 &&
+        statuses.every((s) => s === "completed" || s === "done")
+      )
+        groupStatus = "completed";
 
-      const groupRetries = memberStates.reduce((sum: number, memberState: any) => sum + Number(memberState?.retries || 0), 0)
-      const groupChildRuns = memberStates.flatMap((memberState: any) => memberState?.child_runs || [])
+      const groupRetries = memberStates.reduce(
+        (sum: number, memberState: any) =>
+          sum + Number(memberState?.retries || 0),
+        0,
+      );
+      const groupChildRuns = memberStates.flatMap(
+        (memberState: any) => memberState?.child_runs || [],
+      );
 
       out.push({
         key: `loop-group:${group.id}`,
@@ -706,18 +1094,22 @@ const stepList = computed(() => {
         loopResultMemoryCount: loopResultCounts.memory,
         loopResultPrunedCount: loopResultCounts.pruned,
         ifBranch: group.nodeIds
-          .map(memberId => definition.value.nodes[memberId]?.if_branch || definition.value.nodes[memberId]?.ifBranch)
+          .map(
+            (memberId) =>
+              definition.value.nodes[memberId]?.if_branch ||
+              definition.value.nodes[memberId]?.ifBranch,
+          )
           .find(Boolean),
-      })
-      insertedGroups.add(group.id)
+      });
+      insertedGroups.add(group.id);
     }
 
-    const loopChildResultUids = loopChildResultUidsByBase[id] || []
+    const loopChildResultUids = loopChildResultUidsByBase[id] || [];
 
     out.push({
       key: id,
       label: node?.label,
-      status: state?.status || 'idle',
+      status: state?.status || "idle",
       error: state?.error,
       result: state?.result,
       resultModeDeclared: state?.result_mode_declared,
@@ -729,79 +1121,86 @@ const stepList = computed(() => {
       childRuns: state?.child_runs,
       isLoop: false,
       loopOver: group?.over,
-      loopMode: group?.mode || 'parallel',
+      loopMode: group?.mode || "parallel",
       loopBatchSize: group?.batchSize,
       loopGroupId: group?.id,
       loopSize: group?.nodeIds.length || 0,
-      loopPipeline: groupsById[group?.id || '']?.label,
+      loopPipeline: groupsById[group?.id || ""]?.label,
       inLoopGroup: Boolean(group),
       isLoopLeader: Boolean(group?.nodeIds[0] === id),
       functionId: node?.function?.id,
       childWorkflowId: node?.childWorkflow?.workflow,
       childRunId: state?.child_run_id,
-      nodeKind: node?.function?.id === 'nworkflow::internal-var-set'
-        ? 'var'
-        : reduceBodySpec
-        ? 'reduce_body'
-        : reduceSpec
-          ? 'reduce'
-        : ifSpec
-          ? 'if'
-          : ifBranchSpec
-            ? 'if_branch'
-            : node?.childWorkflow
-              ? 'child_workflow'
-              : node?.fanout
-                ? 'fanout'
-                : 'task',
+      nodeKind:
+        node?.function?.id === "nworkflow::internal-var-set"
+          ? "var"
+          : reduceBodySpec
+            ? "reduce_body"
+            : reduceSpec
+              ? "reduce"
+              : ifSpec
+                ? "if"
+                : ifBranchSpec
+                  ? "if_branch"
+                  : node?.childWorkflow
+                    ? "child_workflow"
+                    : node?.fanout
+                      ? "fanout"
+                      : "task",
       reduceCheckpoint: state?.reduce_checkpoint,
       reduceSpec,
       reduceBody: reduceBodySpec,
       ifCheckpoint: state?.if_checkpoint,
-      ifSelected: ifSpec ? status.value?.if_checkpoints?.[id]?.selected : undefined,
+      ifSelected: ifSpec
+        ? status.value?.if_checkpoints?.[id]?.selected
+        : undefined,
       ifSpec,
       ifBranch: ifBranchSpec,
       ifBranchSelected: ifBranchSpec
-        ? status.value?.if_checkpoints?.[ifBranchSpec.if]?.selected === ifBranchSpec.path
+        ? status.value?.if_checkpoints?.[ifBranchSpec.if]?.selected ===
+          ifBranchSpec.path
         : undefined,
       isChildWorkflow: Boolean(node?.childWorkflow),
-      isVarStep: node?.function?.id === 'nworkflow::internal-var-set',
+      isVarStep: node?.function?.id === "nworkflow::internal-var-set",
       isAgent: Boolean(node?.agent),
       agent: node?.agent,
       agentOptions: node?.agentOptions,
-      canInspectResult: Boolean(state?.result) || loopChildResultUids.length > 0,
+      canInspectResult:
+        Boolean(state?.result) || loopChildResultUids.length > 0,
       loopChildResultUids,
-    })
+    });
   }
 
-  return out
-})
+  return out;
+});
 
-const runResultStorageMode = computed<'memory' | 'store' | 'stream' | 'none'>(() => {
-  return status.value?.output_result_mode_effective || 'none'
-})
+const runResultStorageMode = computed<"memory" | "store" | "stream" | "none">(
+  () => {
+    return status.value?.output_result_mode_effective || "none";
+  },
+);
 
 const resultOverview = computed(() => {
-  const nodeStates = status.value?.nodes || {}
-  let readyMemory = 0
-  let readyStore = 0
-  let readyStream = 0
-  let prunedMemory = 0
-  let pending = 0
+  const nodeStates = status.value?.nodes || {};
+  let readyMemory = 0;
+  let readyStore = 0;
+  let readyStream = 0;
+  let prunedMemory = 0;
+  let pending = 0;
 
   for (const [uid, cp] of Object.entries(nodeStates)) {
-    const state = resultStateForNodeCheckpoint(uid, cp)
-    if (state.resultState === 'pending') {
-      pending += 1
-      continue
+    const state = resultStateForNodeCheckpoint(uid, cp);
+    if (state.resultState === "pending") {
+      pending += 1;
+      continue;
     }
-    if (state.resultState === 'pruned') {
-      prunedMemory += 1
-      continue
+    if (state.resultState === "pruned") {
+      prunedMemory += 1;
+      continue;
     }
-    if (state.effectiveMode === 'store') readyStore += 1
-    else if (state.effectiveMode === 'stream') readyStream += 1
-    else readyMemory += 1
+    if (state.effectiveMode === "store") readyStore += 1;
+    else if (state.effectiveMode === "stream") readyStream += 1;
+    else readyMemory += 1;
   }
 
   return {
@@ -810,229 +1209,296 @@ const resultOverview = computed(() => {
     readyStream,
     prunedMemory,
     pending,
-  }
-})
+  };
+});
 
-function openChildRun(payload: { runId: string, nodeId?: string }) {
-  if (!payload.runId) return
-  void push(`/workflows/runs/${encodeURIComponent(payload.runId)}`)
+function openChildRun(payload: { runId: string; nodeId?: string }) {
+  if (!payload.runId) return;
+  void push(`/workflows/runs/${encodeURIComponent(payload.runId)}`);
 }
 
-function viewChildRuns(runs: Array<{ index: number, runId: string, status: string, error?: string, retries?: number, pendingAt?: number, completedAt?: number }>) {
-  childRunsSlideoverRuns.value = runs
-  isChildRunsSlideoverOpen.value = true
+function viewChildRuns(
+  runs: Array<{
+    index: number;
+    runId: string;
+    status: string;
+    error?: string;
+    retries?: number;
+    pendingAt?: number;
+    completedAt?: number;
+  }>,
+) {
+  childRunsSlideoverRuns.value = runs;
+  isChildRunsSlideoverOpen.value = true;
 }
 
-const selectedStep = ref<string | null>(null)
-const isResultSlideoverOpen = ref(false)
-const selectedResultStepKey = ref<string | null>(null)
-const selectedResultNodeUid = ref<string | null>(null)
-const resultNodeUidOptions = ref<string[]>([])
-const resultPending = ref(false)
-const resultError = ref<string | null>(null)
-const selectedNodeResult = ref<unknown>(null)
+const selectedStep = ref<string | null>(null);
+const isResultSlideoverOpen = ref(false);
+const selectedResultStepKey = ref<string | null>(null);
+const selectedResultNodeUid = ref<string | null>(null);
+const resultNodeUidOptions = ref<string[]>([]);
+const resultPending = ref(false);
+const resultError = ref<string | null>(null);
+const selectedNodeResult = ref<unknown>(null);
 
 function baseStepName(stepName?: string | null): string | null {
-  if (!stepName) return null
-  return String(stepName).split('#')[0] || null
+  if (!stepName) return null;
+  return String(stepName).split("#")[0] || null;
 }
 
 const loopGroupNodeIdsByKey = computed<Record<string, string[]>>(() => {
-  const map: Record<string, string[]> = {}
+  const map: Record<string, string[]> = {};
   for (const group of loopGroups.value.groups) {
-    map[`loop-group:${group.id}`] = group.nodeIds
+    map[`loop-group:${group.id}`] = group.nodeIds;
   }
-  return map
-})
+  return map;
+});
+
+const reduceGroupNodeIdsByKey = computed<Record<string, string[]>>(() => {
+  const map: Record<string, string[]> = {};
+  for (const [id, node] of Object.entries(definition.value?.nodes || {}) as [
+    string,
+    any,
+  ][]) {
+    const body = node?.reduce?.body || node?.reduceSpec?.body;
+    if (Array.isArray(body)) map[`reduce-group:${id}`] = body;
+  }
+  return map;
+});
 
 const selectedStepNodeIds = computed<string[]>(() => {
-  const current = selectedStep.value
-  if (!current || !current.startsWith('loop-group:')) return []
-  return loopGroupNodeIdsByKey.value[current] || []
-})
+  const current = selectedStep.value;
+  if (!current) return [];
+  if (current.startsWith("loop-group:"))
+    return loopGroupNodeIdsByKey.value[current] || [];
+  if (current.startsWith("reduce-group:"))
+    return reduceGroupNodeIdsByKey.value[current] || [];
+  return [];
+});
 
-function stepMatchesSelection(stepName: string | null | undefined, selection: string | null): boolean {
-  if (!selection) return true
-  const base = baseStepName(stepName)
-  if (!base) return false
+function stepMatchesSelection(
+  stepName: string | null | undefined,
+  selection: string | null,
+): boolean {
+  if (!selection) return true;
+  const base = baseStepName(stepName);
+  if (!base) return false;
 
-  if (selection.startsWith('loop-group:')) {
-    const members = loopGroupNodeIdsByKey.value[selection] || []
-    return members.includes(base)
+  if (selection.startsWith("loop-group:")) {
+    const members = loopGroupNodeIdsByKey.value[selection] || [];
+    return members.includes(base);
   }
 
-  return base === selection
+  if (selection.startsWith("reduce-group:")) {
+    const members = reduceGroupNodeIdsByKey.value[selection] || [];
+    return members.includes(base);
+  }
+
+  return base === selection;
 }
 
 function candidateResultUidsForStep(stepKey: string): string[] {
-  const nodeStates = status.value?.nodes ?? {}
+  const nodeStates = status.value?.nodes ?? {};
 
-  if (stepKey.startsWith('loop-group:')) {
-    const members = loopGroupNodeIdsByKey.value[stepKey] || []
+  if (stepKey.startsWith("loop-group:")) {
+    const members = loopGroupNodeIdsByKey.value[stepKey] || [];
     return Object.entries(nodeStates)
       .filter(([uid, cp]: [string, any]) => {
-        const base = uid.split('#')[0]
-        return members.includes(base || '') && Boolean(cp?.result_ref)
+        const base = uid.split("#")[0];
+        return members.includes(base || "") && Boolean(cp?.result_ref);
       })
       .map(([uid]) => uid)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }
 
-  const direct = nodeStates[stepKey]
-  if (direct?.result_ref) return [stepKey]
+  if (stepKey.startsWith("reduce-group:")) {
+    const members = reduceGroupNodeIdsByKey.value[stepKey] || [];
+    return Object.entries(nodeStates)
+      .filter(
+        ([uid, cp]: [string, any]) =>
+          members.includes(uid.split("#")[0] || "") && Boolean(cp?.result_ref),
+      )
+      .map(([uid]) => uid)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+
+  const direct = nodeStates[stepKey];
+  if (direct?.result_ref) return [stepKey];
 
   return Object.entries(nodeStates)
-    .filter(([uid, cp]: [string, any]) => uid.startsWith(`${stepKey}#`) && Boolean(cp?.result_ref))
+    .filter(
+      ([uid, cp]: [string, any]) =>
+        uid.startsWith(`${stepKey}#`) && Boolean(cp?.result_ref),
+    )
     .map(([uid]) => uid)
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
 async function fetchNodeResult(nodeUid: string) {
-  resultPending.value = true
-  resultError.value = null
+  resultPending.value = true;
+  resultError.value = null;
   try {
-    const response = await $fetch<WorkflowNodeResultResponse>('/api/_workflows/node-result', {
-      params: {
-        run_id: runId.value,
-        node_uid: nodeUid,
+    const response = await $fetch<WorkflowNodeResultResponse>(
+      "/api/_workflows/node-result",
+      {
+        params: {
+          run_id: runId.value,
+          node_uid: nodeUid,
+        },
       },
-    })
-    selectedNodeResult.value = response?.result ?? null
-  }
-  catch (error: any) {
-    resultError.value = error?.data?.statusMessage || error?.message || 'Result loading failed'
-    selectedNodeResult.value = null
-  }
-  finally {
-    resultPending.value = false
+    );
+    selectedNodeResult.value = response?.result ?? null;
+  } catch (error: any) {
+    resultError.value =
+      error?.data?.statusMessage || error?.message || "Result loading failed";
+    selectedNodeResult.value = null;
+  } finally {
+    resultPending.value = false;
   }
 }
 
 async function openResultSlideover(stepKey: string) {
-  selectedResultStepKey.value = stepKey
-  resultNodeUidOptions.value = candidateResultUidsForStep(stepKey)
-  selectedResultNodeUid.value = resultNodeUidOptions.value[0] || null
-  selectedNodeResult.value = null
-  resultError.value = null
-  isResultSlideoverOpen.value = true
+  selectedResultStepKey.value = stepKey;
+  resultNodeUidOptions.value = candidateResultUidsForStep(stepKey);
+  selectedResultNodeUid.value = resultNodeUidOptions.value[0] || null;
+  selectedNodeResult.value = null;
+  resultError.value = null;
+  isResultSlideoverOpen.value = true;
 
   if (selectedResultNodeUid.value) {
-    await fetchNodeResult(selectedResultNodeUid.value)
+    await fetchNodeResult(selectedResultNodeUid.value);
   }
 }
 
 watch(selectedResultNodeUid, (nextUid, prevUid) => {
-  if (!isResultSlideoverOpen.value) return
-  if (!nextUid || nextUid === prevUid) return
-  void fetchNodeResult(nextUid)
-})
+  if (!isResultSlideoverOpen.value) return;
+  if (!nextUid || nextUid === prevUid) return;
+  void fetchNodeResult(nextUid);
+});
 
 async function refreshAll() {
-  await refresh()
+  await refresh();
 }
 
 async function openStateSlideover() {
-  isStateSlideoverOpen.value = true
+  isStateSlideoverOpen.value = true;
 }
 
 async function openStreamSlideover() {
-  isStreamSlideoverOpen.value = true
+  isStreamSlideoverOpen.value = true;
 }
 
 function openCancelSlideover() {
-  isCancelSlideoverOpen.value = true
+  isCancelSlideoverOpen.value = true;
 }
 
 function openDeleteModal() {
-  if (!isRunTerminal.value || deletePending.value) return
-  deleteError.value = null
-  isDeleteModalOpen.value = true
+  if (!isRunTerminal.value || deletePending.value) return;
+  deleteError.value = null;
+  isDeleteModalOpen.value = true;
 }
 
 async function confirmDeleteRun() {
-  if (!isRunTerminal.value || deletePending.value) return
+  if (!isRunTerminal.value || deletePending.value) return;
 
-  deletePending.value = true
-  deleteError.value = null
+  deletePending.value = true;
+  deleteError.value = null;
   try {
-    await $fetch('/api/_workflows/delete', {
-      method: 'POST',
+    await $fetch("/api/_workflows/delete", {
+      method: "POST",
       body: { run_id: runId.value },
-    })
-    isDeleteModalOpen.value = false
-    await push('/workflows/runs')
-  }
-  catch (error: any) {
-    deleteError.value = error?.data?.statusMessage || error?.message || 'Delete failed'
-  }
-  finally {
-    deletePending.value = false
+    });
+    isDeleteModalOpen.value = false;
+    await push("/workflows/runs");
+  } catch (error: any) {
+    deleteError.value =
+      error?.data?.statusMessage || error?.message || "Delete failed";
+  } finally {
+    deletePending.value = false;
   }
 }
 
 async function cancelRun() {
-  cancelPending.value = true
-  cancelError.value = null
+  cancelPending.value = true;
+  cancelError.value = null;
   try {
-    cancelResult.value = await $fetch<WorkflowStopResponse>('/api/_workflows/stop', {
-      method: 'POST',
-      body: { run_id: runId.value },
-    })
-    await refreshAll()
-  }
-  catch (error: any) {
-    cancelError.value = error?.data?.statusMessage || error?.message || 'Cancel failed'
-  }
-  finally {
-    cancelPending.value = false
+    cancelResult.value = await $fetch<WorkflowStopResponse>(
+      "/api/_workflows/stop",
+      {
+        method: "POST",
+        body: { run_id: runId.value },
+      },
+    );
+    await refreshAll();
+  } catch (error: any) {
+    cancelError.value =
+      error?.data?.statusMessage || error?.message || "Cancel failed";
+  } finally {
+    cancelPending.value = false;
   }
 }
 
-const cancelCleanupAttempted = computed(() => cancelResult.value?.queue_cleanup_attempted ?? 0)
-const cancelCleanupSucceeded = computed(() => cancelResult.value?.queue_cleanup_succeeded ?? 0)
-const cancelCleanupErrors = computed(() => cancelResult.value?.queue_cleanup_errors ?? {})
-const cancelCleanupErrorEntries = computed(() => Object.entries(cancelCleanupErrors.value))
-const cancelCleanupHasErrors = computed(() => cancelCleanupErrorEntries.value.length > 0)
+const cancelCleanupAttempted = computed(
+  () => cancelResult.value?.queue_cleanup_attempted ?? 0,
+);
+const cancelCleanupSucceeded = computed(
+  () => cancelResult.value?.queue_cleanup_succeeded ?? 0,
+);
+const cancelCleanupErrors = computed(
+  () => cancelResult.value?.queue_cleanup_errors ?? {},
+);
+const cancelCleanupErrorEntries = computed(() =>
+  Object.entries(cancelCleanupErrors.value),
+);
+const cancelCleanupHasErrors = computed(
+  () => cancelCleanupErrorEntries.value.length > 0,
+);
 const cancelCleanupRate = computed(() => {
-  const attempted = cancelCleanupAttempted.value
-  if (attempted <= 0) return 100
-  return Math.round((cancelCleanupSucceeded.value / attempted) * 100)
-})
-const cancelCheckedQueues = computed(() => cancelResult.value?.checked_queues ?? [])
-const cancelTrackedReceiptIds = computed(() => cancelResult.value?.tracked_receipt_ids ?? [])
-const isRunCancelled = computed(() => normalizedStatus.value === 'cancelled')
+  const attempted = cancelCleanupAttempted.value;
+  if (attempted <= 0) return 100;
+  return Math.round((cancelCleanupSucceeded.value / attempted) * 100);
+});
+const cancelCheckedQueues = computed(
+  () => cancelResult.value?.checked_queues ?? [],
+);
+const cancelTrackedReceiptIds = computed(
+  () => cancelResult.value?.tracked_receipt_ids ?? [],
+);
+const isRunCancelled = computed(() => normalizedStatus.value === "cancelled");
 const isRunTerminal = computed(() => {
-  const current = String(normalizedStatus.value || '')
-  return current === 'completed' || current === 'failed' || current === 'cancelled'
-})
-const showCancelAction = computed(() => !isRunTerminal.value)
+  const current = String(normalizedStatus.value || "");
+  return (
+    current === "completed" || current === "failed" || current === "cancelled"
+  );
+});
+const showCancelAction = computed(() => !isRunTerminal.value);
 const cancelDisplay = computed(() => ({
   stopped_sessions: cancelResult.value?.stopped_sessions ?? 0,
   queue_fragments_detected: cancelResult.value?.queue_fragments_detected ?? 0,
   tracked_receipt_count: cancelResult.value?.tracked_receipt_count ?? 0,
-}))
+}));
 
 function formatDurationMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '0s'
-  const totalSeconds = Math.floor(ms / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
-  if (minutes > 0) return `${minutes}m ${seconds}s`
-  return `${seconds}s`
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 const runDurationMs = computed(() => {
-  const createdAt = Number(status.value?.created_at || 0)
-  const updatedAt = Number(status.value?.updated_at || 0)
-  if (createdAt <= 0 || updatedAt <= 0) return 0
-  return Math.max(0, updatedAt - createdAt)
-})
-const runDurationLabel = computed(() => formatDurationMs(runDurationMs.value))
+  const createdAt = Number(status.value?.created_at || 0);
+  const updatedAt = Number(status.value?.updated_at || 0);
+  if (createdAt <= 0 || updatedAt <= 0) return 0;
+  return Math.max(0, updatedAt - createdAt);
+});
+const runDurationLabel = computed(() => formatDurationMs(runDurationMs.value));
 
 const nodeStats = computed(() => {
-  const nodes = Object.values(status.value?.nodes ?? {}) as any[]
+  const nodes = Object.values(status.value?.nodes ?? {}) as any[];
   const stats = {
     total: nodes.length,
     completed: 0,
@@ -1041,111 +1507,150 @@ const nodeStats = computed(() => {
     cancelled: 0,
     waiting: 0,
     retries: 0,
-  }
+  };
 
   for (const node of nodes) {
-    const stateRaw = String(node?.state || '').toLowerCase()
-    if (stateRaw === 'done' || stateRaw === 'completed') stats.completed += 1
-    else if (stateRaw === 'error' || stateRaw === 'failed') stats.failed += 1
-    else if (stateRaw === 'cancelled' || stateRaw === 'canceled') stats.cancelled += 1
-    else if (stateRaw === 'running' || stateRaw === 'active' || stateRaw === 'queued') stats.running += 1
-    else stats.waiting += 1
+    const stateRaw = String(node?.state || "").toLowerCase();
+    if (stateRaw === "done" || stateRaw === "completed") stats.completed += 1;
+    else if (stateRaw === "error" || stateRaw === "failed") stats.failed += 1;
+    else if (stateRaw === "cancelled" || stateRaw === "canceled")
+      stats.cancelled += 1;
+    else if (
+      stateRaw === "running" ||
+      stateRaw === "active" ||
+      stateRaw === "queued"
+    )
+      stats.running += 1;
+    else stats.waiting += 1;
 
-    const retries = Number(node?.retries || 0)
-    if (Number.isFinite(retries) && retries > 0) stats.retries += retries
+    const retries = Number(node?.retries || 0);
+    if (Number.isFinite(retries) && retries > 0) stats.retries += retries;
   }
 
-  return stats
-})
+  return stats;
+});
 
-const statusQueueReceipts = computed(() => status.value?.queue_receipts ?? [])
-const statusQueueReceiptCount = computed(() => statusQueueReceipts.value.length)
-const statusQueueReceiptQueueCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.queue)).size)
-const statusQueueReceiptNodeCount = computed(() => new Set(statusQueueReceipts.value.map(item => item.node_uid)).size)
+const statusQueueReceipts = computed(() => status.value?.queue_receipts ?? []);
+const statusQueueReceiptCount = computed(
+  () => statusQueueReceipts.value.length,
+);
+const statusQueueReceiptQueueCount = computed(
+  () => new Set(statusQueueReceipts.value.map((item) => item.queue)).size,
+);
+const statusQueueReceiptNodeCount = computed(
+  () => new Set(statusQueueReceipts.value.map((item) => item.node_uid)).size,
+);
 
 const loopOverviewStats = computed(() => {
-  const loopStats = status.value?.loop_stats || {}
-  const groups = loopGroups.value.groups
+  const loopStats = status.value?.loop_stats || {};
+  const groups = loopGroups.value.groups;
 
-  const loops = groups.length
+  const loops = groups.length;
   const expandedLoops = groups.reduce((sum, group) => {
-    const anyExpanded = group.nodeIds.some(nodeId => Boolean(loopStats[nodeId]?.expanded))
-    return sum + Number(anyExpanded)
-  }, 0)
+    const anyExpanded = group.nodeIds.some((nodeId) =>
+      Boolean(loopStats[nodeId]?.expanded),
+    );
+    return sum + Number(anyExpanded);
+  }, 0);
 
   const totalItems = groups.reduce((sum, group) => {
     const groupTotal = group.nodeIds.reduce((max, nodeId) => {
-      return Math.max(max, Number(loopStats[nodeId]?.total_items || 0))
-    }, 0)
-    return sum + groupTotal
-  }, 0)
+      return Math.max(max, Number(loopStats[nodeId]?.total_items || 0));
+    }, 0);
+    return sum + groupTotal;
+  }, 0);
 
   const completedItems = groups.reduce((sum, group) => {
     const groupCompleted = group.nodeIds.reduce((max, nodeId) => {
-      return Math.max(max, Number(loopStats[nodeId]?.completed_items || 0))
-    }, 0)
-    return sum + groupCompleted
-  }, 0)
+      return Math.max(max, Number(loopStats[nodeId]?.completed_items || 0));
+    }, 0);
+    return sum + groupCompleted;
+  }, 0);
 
   return {
     loops,
     expandedLoops,
     totalItems,
     completedItems,
-  }
-})
+  };
+});
 
-const loopIndexOptions = computed<Array<{ value: string, label: string }>>(() => {
-  const loopStats = status.value?.loop_stats || {}
-  const selected = selectedStep.value
+const loopIndexOptions = computed<Array<{ value: string; label: string }>>(
+  () => {
+    const loopStats = status.value?.loop_stats || {};
+    const selected = selectedStep.value;
 
-  if (selected && selected.startsWith('loop-group:')) {
-    const memberNodeIds = loopGroupNodeIdsByKey.value[selected] || []
-    const values = memberNodeIds
-      .map(nodeId => loopStats[nodeId])
-      .filter(Boolean)
+    if (selected && selected.startsWith("loop-group:")) {
+      const memberNodeIds = loopGroupNodeIdsByKey.value[selected] || [];
+      const values = memberNodeIds
+        .map((nodeId) => loopStats[nodeId])
+        .filter(Boolean);
 
-    const maxTotal = values.reduce((max, entry) => Math.max(max, Number(entry?.total_items || 0)), 0)
-    if (maxTotal <= 0) return []
+      const maxTotal = values.reduce(
+        (max, entry) => Math.max(max, Number(entry?.total_items || 0)),
+        0,
+      );
+      if (maxTotal <= 0) return [];
 
-    const options: Array<{ value: string, label: string }> = [{ value: '', label: 'All loop items' }]
-    for (let i = 0; i < maxTotal; i++) {
-      options.push({ value: String(i), label: `Index #${i}` })
+      const options: Array<{ value: string; label: string }> = [
+        { value: "", label: "All loop items" },
+      ];
+      for (let i = 0; i < maxTotal; i++) {
+        options.push({ value: String(i), label: `Index #${i}` });
+      }
+      return options;
     }
-    return options
-  }
 
-  if (selected && !loopStats[selected]) {
-    return []
-  }
+    if (selected && !loopStats[selected]) {
+      return [];
+    }
 
-  const values = selected ? [loopStats[selected]].filter(Boolean) : Object.values(loopStats)
-  const maxTotal = values.reduce((max, entry) => Math.max(max, Number(entry?.total_items || 0)), 0)
-  if (maxTotal <= 0) return []
+    const values = selected
+      ? [loopStats[selected]].filter(Boolean)
+      : Object.values(loopStats);
+    const maxTotal = values.reduce(
+      (max, entry) => Math.max(max, Number(entry?.total_items || 0)),
+      0,
+    );
+    if (maxTotal <= 0) return [];
 
-  const options: Array<{ value: string, label: string }> = [{ value: '', label: 'All loop items' }]
-  for (let i = 0; i < maxTotal; i++) {
-    options.push({ value: String(i), label: `Index #${i}` })
-  }
-  return options
-})
+    const options: Array<{ value: string; label: string }> = [
+      { value: "", label: "All loop items" },
+    ];
+    for (let i = 0; i < maxTotal; i++) {
+      options.push({ value: String(i), label: `Index #${i}` });
+    }
+    return options;
+  },
+);
 
 const topologyStats = computed(() => {
   const levelArrays = Array.isArray(flowMeta.value?.analyzed?.levels)
-    ? flowMeta.value?.analyzed?.levels as string[][]
-    : []
-  const levelCount = levelArrays.length
-  const maxParallelWidth = levelArrays.reduce((max, level) => Math.max(max, level.length), 0)
-  const activeParallelLevels = levelArrays.filter(level => level.length > 1).length
+    ? (flowMeta.value?.analyzed?.levels as string[][])
+    : [];
+  const levelCount = levelArrays.length;
+  const maxParallelWidth = levelArrays.reduce(
+    (max, level) => Math.max(max, level.length),
+    0,
+  );
+  const activeParallelLevels = levelArrays.filter(
+    (level) => level.length > 1,
+  ).length;
 
-  const nodeDefs = definition.value?.nodes || {}
-  const nodeEntries = Object.entries(nodeDefs) as Array<[string, any]>
-  const fanoutNodes = nodeEntries.filter(([, node]) => Boolean(node?.fanout)).length
-  const joinNodes = nodeEntries.filter(([, node]) => Array.isArray(node?.depends_on) && node.depends_on.length > 1).length
+  const nodeDefs = definition.value?.nodes || {};
+  const nodeEntries = Object.entries(nodeDefs) as Array<[string, any]>;
+  const fanoutNodes = nodeEntries.filter(([, node]) =>
+    Boolean(node?.fanout),
+  ).length;
+  const joinNodes = nodeEntries.filter(
+    ([, node]) => Array.isArray(node?.depends_on) && node.depends_on.length > 1,
+  ).length;
   const terminalCandidates = nodeEntries.filter(([, node]) => {
-    const emits = Array.isArray((node as any)?.emits) ? (node as any).emits.length : 0
-    return emits > 0
-  }).length
+    const emits = Array.isArray((node as any)?.emits)
+      ? (node as any).emits.length
+      : 0;
+    return emits > 0;
+  }).length;
 
   return {
     levelCount,
@@ -1154,21 +1659,22 @@ const topologyStats = computed(() => {
     fanoutNodes,
     joinNodes,
     terminalCandidates,
-  }
-})
+  };
+});
 
 const formattedNodeResult = computed(() => {
-  if (selectedNodeResult.value === null || selectedNodeResult.value === undefined) {
-    return 'null'
+  if (
+    selectedNodeResult.value === null ||
+    selectedNodeResult.value === undefined
+  ) {
+    return "null";
   }
   try {
-    return JSON.stringify(selectedNodeResult.value, null, 2)
+    return JSON.stringify(selectedNodeResult.value, null, 2);
+  } catch {
+    return String(selectedNodeResult.value);
   }
-  catch {
-    return String(selectedNodeResult.value)
-  }
-})
-
+});
 </script>
 
 <template>
@@ -1210,32 +1716,67 @@ const formattedNodeResult = computed(() => {
     <USlideover v-model:open="isResultSlideoverOpen" title="Node Result">
       <template #content>
         <div class="h-full flex flex-col bg-white dark:bg-zinc-950">
-          <div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 space-y-2">
+          <div
+            class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 space-y-2"
+          >
             <div class="text-xs text-zinc-500 dark:text-zinc-400">Step</div>
-            <div class="text-sm font-medium text-zinc-900 dark:text-zinc-100 break-all">{{ selectedResultStepKey || 'n/a' }}</div>
+            <div
+              class="text-sm font-medium text-zinc-900 dark:text-zinc-100 break-all"
+            >
+              {{ selectedResultStepKey || "n/a" }}
+            </div>
             <div v-if="resultNodeUidOptions.length > 1" class="space-y-1">
-              <div class="text-xs text-zinc-500 dark:text-zinc-400">Loop item</div>
+              <div class="text-xs text-zinc-500 dark:text-zinc-400">
+                Loop item
+              </div>
               <select
                 v-model="selectedResultNodeUid"
                 class="w-full text-xs rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1"
               >
-                <option v-for="uid in resultNodeUidOptions" :key="uid" :value="uid">{{ uid }}</option>
+                <option
+                  v-for="uid in resultNodeUidOptions"
+                  :key="uid"
+                  :value="uid"
+                >
+                  {{ uid }}
+                </option>
               </select>
             </div>
           </div>
 
           <div class="flex-1 overflow-auto p-4">
-            <div v-if="resultPending" class="text-sm text-zinc-500 dark:text-zinc-400">Loading result...</div>
-            <div v-else-if="resultError" class="text-sm text-red-600 dark:text-red-400">{{ resultError }}</div>
-            <div v-else-if="!selectedResultNodeUid" class="text-sm text-zinc-500 dark:text-zinc-400">No result available for this step yet.</div>
-            <pre v-else class="text-xs leading-5 whitespace-pre-wrap break-words rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-3">{{ formattedNodeResult }}</pre>
+            <div
+              v-if="resultPending"
+              class="text-sm text-zinc-500 dark:text-zinc-400"
+            >
+              Loading result...
+            </div>
+            <div
+              v-else-if="resultError"
+              class="text-sm text-red-600 dark:text-red-400"
+            >
+              {{ resultError }}
+            </div>
+            <div
+              v-else-if="!selectedResultNodeUid"
+              class="text-sm text-zinc-500 dark:text-zinc-400"
+            >
+              No result available for this step yet.
+            </div>
+            <pre
+              v-else
+              class="text-xs leading-5 whitespace-pre-wrap break-words rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-3"
+              >{{ formattedNodeResult }}</pre
+            >
           </div>
         </div>
       </template>
     </USlideover>
 
     <!-- Header -->
-    <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
+    <div
+      class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950"
+    >
       <div class="flex items-center justify-between w-full">
         <div class="flex items-center gap-4">
           <UButton
@@ -1245,10 +1786,17 @@ const formattedNodeResult = computed(() => {
             @click="push(`/workflows/runs`)"
           />
           <div>
-            <h1 class="text-xl font-bold text-zinc-900 dark:text-white flex items-center gap-2">
-              Run: <span class="font-mono text-lg opacity-70">{{ (runId || '').slice(0, 8) }}...</span>
+            <h1
+              class="text-xl font-bold text-zinc-900 dark:text-white flex items-center gap-2"
+            >
+              Run:
+              <span class="font-mono text-lg opacity-70"
+                >{{ (runId || "").slice(0, 8) }}...</span
+              >
             </h1>
-            <p class="text-xs text-zinc-500 dark:text-zinc-400">Execution detail and node status</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">
+              Execution detail and node status
+            </p>
             <div
               v-if="status?.parent_run_id"
               class="mt-1 flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400"
@@ -1260,17 +1808,21 @@ const formattedNodeResult = computed(() => {
                 size="xs"
                 :label="`${status.parent_run_id.slice(0, 8)}...`"
                 :title="status.parent_run_id"
-                @click="push(`/workflows/runs/${encodeURIComponent(status.parent_run_id)}`)"
+                @click="
+                  push(
+                    `/workflows/runs/${encodeURIComponent(status.parent_run_id)}`,
+                  )
+                "
               />
-              <span v-if="status.parent_node_uid">via {{ status.parent_node_uid }}</span>
+              <span v-if="status.parent_node_uid"
+                >via {{ status.parent_node_uid }}</span
+              >
             </div>
           </div>
         </div>
         <div class="flex items-center gap-2">
           <!-- State Slideover -->
-          <USlideover 
-            v-model="isStateSlideoverOpen"
-            title="State Inspector">
+          <USlideover v-model="isStateSlideoverOpen" title="State Inspector">
             <UButton
               icon="i-lucide-database"
               color="neutral"
@@ -1281,15 +1833,17 @@ const formattedNodeResult = computed(() => {
             <template #content>
               <NventFlowStateInspector
                 :run-id="runId"
-                :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
+                :is-live="
+                  normalizedStatus === 'running' ||
+                  normalizedStatus === 'awaiting' ||
+                  normalizedStatus === 'awaiting_nodes'
+                "
               />
             </template>
           </USlideover>
 
           <!-- Stream Slideover -->
-          <USlideover
-            v-model="isStreamSlideoverOpen"
-            title="Stream Inspector">
+          <USlideover v-model="isStreamSlideoverOpen" title="Stream Inspector">
             <UButton
               icon="i-lucide-waves"
               color="neutral"
@@ -1300,16 +1854,17 @@ const formattedNodeResult = computed(() => {
             <template #content>
               <NventFlowStreamInspector
                 :run-id="runId"
-                :is-live="normalizedStatus === 'running' || normalizedStatus === 'awaiting' || normalizedStatus === 'awaiting_nodes'"
+                :is-live="
+                  normalizedStatus === 'running' ||
+                  normalizedStatus === 'awaiting' ||
+                  normalizedStatus === 'awaiting_nodes'
+                "
               />
             </template>
           </USlideover>
 
           <!-- Child Runs Slideover (opened programmatically from diagram/overview) -->
-          <USlideover
-            v-model="isChildRunsSlideoverOpen"
-            title="Child Runs"
-          >
+          <USlideover v-model="isChildRunsSlideoverOpen" title="Child Runs">
             <template #content>
               <NventFlowChildRunsSlideover
                 :runs="childRunsSlideoverRuns"
@@ -1318,30 +1873,49 @@ const formattedNodeResult = computed(() => {
             </template>
           </USlideover>
 
-          <USlideover
-            v-model="isCancelSlideoverOpen"
-            title="Run Controls"
-          >
+          <USlideover v-model="isCancelSlideoverOpen" title="Run Controls">
             <UButton
               icon="i-lucide-shield-alert"
               color="neutral"
               variant="outline"
-              :label="normalizedStatus ? `Controls: ${String(normalizedStatus).toUpperCase()}` : 'Controls'"
+              :label="
+                normalizedStatus
+                  ? `Controls: ${String(normalizedStatus).toUpperCase()}`
+                  : 'Controls'
+              "
               @click="openCancelSlideover"
             />
             <template #content>
-              <div class="h-full flex flex-col p-4 gap-4 bg-white dark:bg-zinc-950 overflow-y-auto">
-                <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/40 p-3">
+              <div
+                class="h-full flex flex-col p-4 gap-4 bg-white dark:bg-zinc-950 overflow-y-auto"
+              >
+                <div
+                  class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/40 p-3"
+                >
                   <div class="flex items-center justify-between gap-3">
                     <div>
-                      <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">Workflow Cancel</div>
-                      <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">Run controls and queue cleanup diagnostics.</div>
+                      <div
+                        class="text-xs font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        Workflow Cancel
+                      </div>
+                      <div
+                        class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1"
+                      >
+                        Run controls and queue cleanup diagnostics.
+                      </div>
                     </div>
                     <UBadge
                       v-if="normalizedStatus"
                       :label="String(normalizedStatus).toUpperCase()"
                       size="xs"
-                      :color="normalizedStatus === 'completed' ? 'success' : normalizedStatus === 'failed' ? 'error' : 'neutral'"
+                      :color="
+                        normalizedStatus === 'completed'
+                          ? 'success'
+                          : normalizedStatus === 'failed'
+                            ? 'error'
+                            : 'neutral'
+                      "
                       variant="soft"
                     />
                   </div>
@@ -1356,12 +1930,20 @@ const formattedNodeResult = computed(() => {
                       @click="cancelRun"
                     />
                   </div>
-                  <div v-else class="mt-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-[11px] text-zinc-600 dark:text-zinc-300">
-                    This run is terminal ({{ String(normalizedStatus || '').toUpperCase() }}). Cancel action is no longer available.
+                  <div
+                    v-else
+                    class="mt-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-[11px] text-zinc-600 dark:text-zinc-300"
+                  >
+                    This run is terminal ({{
+                      String(normalizedStatus || "").toUpperCase()
+                    }}). Cancel action is no longer available.
                   </div>
                 </div>
 
-                <div v-if="cancelError" class="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
+                <div
+                  v-if="cancelError"
+                  class="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300"
+                >
                   {{ cancelError }}
                 </div>
 
@@ -1370,64 +1952,156 @@ const formattedNodeResult = computed(() => {
                   class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3"
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                    <div
+                      class="text-xs font-semibold text-zinc-900 dark:text-zinc-100"
+                    >
                       Cancel Execution Summary
                     </div>
                     <UBadge
-                      :label="cancelResult ? (cancelCleanupHasErrors ? 'Partial Cleanup' : 'Cleanup OK') : 'Already Cancelled'"
-                      :color="cancelResult ? (cancelCleanupHasErrors ? 'warning' : 'success') : 'neutral'"
+                      :label="
+                        cancelResult
+                          ? cancelCleanupHasErrors
+                            ? 'Partial Cleanup'
+                            : 'Cleanup OK'
+                          : 'Already Cancelled'
+                      "
+                      :color="
+                        cancelResult
+                          ? cancelCleanupHasErrors
+                            ? 'warning'
+                            : 'success'
+                          : 'neutral'
+                      "
                       size="xs"
                       variant="soft"
                     />
                   </div>
 
                   <div class="mt-3 grid grid-cols-2 gap-2">
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Sessions Stopped</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelDisplay.stopped_sessions }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Sessions Stopped
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ cancelDisplay.stopped_sessions }}
+                      </div>
                     </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Queue Fragments</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelDisplay.queue_fragments_detected }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Queue Fragments
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ cancelDisplay.queue_fragments_detected }}
+                      </div>
                     </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Receipts Tracked</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelDisplay.tracked_receipt_count }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Receipts Tracked
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ cancelDisplay.tracked_receipt_count }}
+                      </div>
                     </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Cleanup Success</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ cancelCleanupRate }}%</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Cleanup Success
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ cancelCleanupRate }}%
+                      </div>
                     </div>
                   </div>
 
-                  <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
+                  <div
+                    class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300"
+                  >
                     <template v-if="cancelResult">
-                      Attempted {{ cancelCleanupAttempted }}, succeeded {{ cancelCleanupSucceeded }}, failed {{ cancelCleanupErrorEntries.length }}.
+                      Attempted {{ cancelCleanupAttempted }}, succeeded
+                      {{ cancelCleanupSucceeded }}, failed
+                      {{ cancelCleanupErrorEntries.length }}.
                     </template>
                     <template v-else>
                       No cleanup diagnostics available from this session.
                     </template>
                   </div>
 
-                  <details v-if="cancelCheckedQueues.length > 0 || cancelTrackedReceiptIds.length > 0 || cancelCleanupHasErrors" class="mt-3 group">
-                    <summary class="cursor-pointer text-xs font-medium text-zinc-700 dark:text-zinc-200 list-none flex items-center gap-2">
-                      <span class="inline-block transition-transform group-open:rotate-90">▶</span>
+                  <details
+                    v-if="
+                      cancelCheckedQueues.length > 0 ||
+                      cancelTrackedReceiptIds.length > 0 ||
+                      cancelCleanupHasErrors
+                    "
+                    class="mt-3 group"
+                  >
+                    <summary
+                      class="cursor-pointer text-xs font-medium text-zinc-700 dark:text-zinc-200 list-none flex items-center gap-2"
+                    >
+                      <span
+                        class="inline-block transition-transform group-open:rotate-90"
+                        >▶</span
+                      >
                       Show Cleanup Details
                     </summary>
                     <div class="mt-2 space-y-2">
-                      <div v-if="cancelCheckedQueues.length > 0" class="text-[11px] text-zinc-600 dark:text-zinc-300">
+                      <div
+                        v-if="cancelCheckedQueues.length > 0"
+                        class="text-[11px] text-zinc-600 dark:text-zinc-300"
+                      >
                         <span class="font-medium">Queues:</span>
-                        {{ cancelCheckedQueues.join(', ') }}
+                        {{ cancelCheckedQueues.join(", ") }}
                       </div>
-                      <div v-if="cancelTrackedReceiptIds.length > 0" class="text-[11px] text-zinc-600 dark:text-zinc-300">
+                      <div
+                        v-if="cancelTrackedReceiptIds.length > 0"
+                        class="text-[11px] text-zinc-600 dark:text-zinc-300"
+                      >
                         <span class="font-medium">Receipt IDs:</span>
-                        {{ cancelTrackedReceiptIds.join(', ') }}
+                        {{ cancelTrackedReceiptIds.join(", ") }}
                       </div>
-                      <div v-if="cancelCleanupHasErrors" class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-2">
-                        <div class="text-[11px] font-semibold text-amber-800 dark:text-amber-300">Cleanup Errors</div>
-                        <ul class="mt-1 space-y-1 text-[11px] text-amber-800/90 dark:text-amber-200/90 max-h-28 overflow-auto">
-                          <li v-for="[receiptId, err] in cancelCleanupErrorEntries" :key="receiptId">
-                            <span class="font-medium">{{ receiptId }}:</span> {{ err }}
+                      <div
+                        v-if="cancelCleanupHasErrors"
+                        class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-2"
+                      >
+                        <div
+                          class="text-[11px] font-semibold text-amber-800 dark:text-amber-300"
+                        >
+                          Cleanup Errors
+                        </div>
+                        <ul
+                          class="mt-1 space-y-1 text-[11px] text-amber-800/90 dark:text-amber-200/90 max-h-28 overflow-auto"
+                        >
+                          <li
+                            v-for="[
+                              receiptId,
+                              err,
+                            ] in cancelCleanupErrorEntries"
+                            :key="receiptId"
+                          >
+                            <span class="font-medium">{{ receiptId }}:</span>
+                            {{ err }}
                           </li>
                         </ul>
                       </div>
@@ -1440,12 +2114,16 @@ const formattedNodeResult = computed(() => {
                   class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3"
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                    <div
+                      class="text-xs font-semibold text-zinc-900 dark:text-zinc-100"
+                    >
                       Run Snapshot
                     </div>
                     <div class="flex items-center gap-2">
                       <UBadge
-                        :label="String(normalizedStatus || 'terminal').toUpperCase()"
+                        :label="
+                          String(normalizedStatus || 'terminal').toUpperCase()
+                        "
                         color="neutral"
                         size="xs"
                         variant="soft"
@@ -1463,48 +2141,130 @@ const formattedNodeResult = computed(() => {
                   </div>
 
                   <div class="mt-3 grid grid-cols-2 gap-2">
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Duration</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ runDurationLabel }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Nodes Total</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.total }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Nodes OK / Failed</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.completed }} / {{ nodeStats.failed }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Retries</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ nodeStats.retries }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Queue Receipts</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ statusQueueReceiptCount }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Run Result Mode</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ runResultStorageMode }}</div>
-                    </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2 col-span-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Node Result Availability</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                        store {{ resultOverview.readyStore }} · memory {{ resultOverview.readyMemory }} · stream {{ resultOverview.readyStream }}
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Duration
                       </div>
-                      <div class="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1">
-                        pending {{ resultOverview.pending }} · memory pruned {{ resultOverview.prunedMemory }}
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ runDurationLabel }}
+                      </div>
+                    </div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Nodes Total
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ nodeStats.total }}
+                      </div>
+                    </div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Nodes OK / Failed
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ nodeStats.completed }} / {{ nodeStats.failed }}
+                      </div>
+                    </div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Retries
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ nodeStats.retries }}
+                      </div>
+                    </div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Queue Receipts
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ statusQueueReceiptCount }}
+                      </div>
+                    </div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Run Result Mode
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ runResultStorageMode }}
+                      </div>
+                    </div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2 col-span-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Node Result Availability
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        store {{ resultOverview.readyStore }} · memory
+                        {{ resultOverview.readyMemory }} · stream
+                        {{ resultOverview.readyStream }}
+                      </div>
+                      <div
+                        class="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1"
+                      >
+                        pending {{ resultOverview.pending }} · memory pruned
+                        {{ resultOverview.prunedMemory }}
                       </div>
                     </div>
                   </div>
 
-                  <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
-                    Receipt queues {{ statusQueueReceiptQueueCount }}, receipt nodes {{ statusQueueReceiptNodeCount }}.
+                  <div
+                    class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300"
+                  >
+                    Receipt queues {{ statusQueueReceiptQueueCount }}, receipt
+                    nodes {{ statusQueueReceiptNodeCount }}.
                   </div>
-                  <div v-if="status?.store_key" class="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300 font-mono break-all">
+                  <div
+                    v-if="status?.store_key"
+                    class="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300 font-mono break-all"
+                  >
                     store_key: {{ status.store_key }}
                   </div>
-                  <div v-if="status?.result_error" class="mt-2 rounded border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+                  <div
+                    v-if="status?.result_error"
+                    class="mt-2 rounded border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300"
+                  >
                     {{ status.result_error }}
                   </div>
                 </div>
@@ -1513,7 +2273,9 @@ const formattedNodeResult = computed(() => {
                   class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3"
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <div class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                    <div
+                      class="text-xs font-semibold text-zinc-900 dark:text-zinc-100"
+                    >
                       Execution Topology
                     </div>
                     <UBadge
@@ -1525,39 +2287,82 @@ const formattedNodeResult = computed(() => {
                   </div>
 
                   <div class="mt-3 grid grid-cols-2 gap-2">
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Depth (levels)</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.levelCount }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Depth (levels)
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ topologyStats.levelCount }}
+                      </div>
                     </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Parallel Levels</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.activeParallelLevels }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Parallel Levels
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ topologyStats.activeParallelLevels }}
+                      </div>
                     </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Join Nodes</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.joinNodes }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Join Nodes
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ topologyStats.joinNodes }}
+                      </div>
                     </div>
-                    <div class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2">
-                      <div class="text-[10px] uppercase tracking-wide text-zinc-500">Fanout Nodes</div>
-                      <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ topologyStats.fanoutNodes }}</div>
+                    <div
+                      class="rounded-lg bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 px-2 py-2"
+                    >
+                      <div
+                        class="text-[10px] uppercase tracking-wide text-zinc-500"
+                      >
+                        Fanout Nodes
+                      </div>
+                      <div
+                        class="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                      >
+                        {{ topologyStats.fanoutNodes }}
+                      </div>
                     </div>
                   </div>
 
-                  <div class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300">
-                    Potential terminal emitters: {{ topologyStats.terminalCandidates }}.
+                  <div
+                    class="mt-3 text-[11px] text-zinc-600 dark:text-zinc-300"
+                  >
+                    Potential terminal emitters:
+                    {{ topologyStats.terminalCandidates }}.
                   </div>
                 </div>
               </div>
             </template>
           </USlideover>
 
-           <UButton
-             icon="i-heroicons-arrow-path"
-             color="neutral"
-             variant="outline"
-             :loading="pending"
-             @click="refreshAll"
-           />
+          <UButton
+            icon="i-heroicons-arrow-path"
+            color="neutral"
+            variant="outline"
+            :loading="pending"
+            @click="refreshAll"
+          />
         </div>
       </div>
     </div>
@@ -1568,20 +2373,50 @@ const formattedNodeResult = computed(() => {
           id="workflow-run-layout"
           auto-save-id="workflow-run-layout"
           :items="[
-            { slot: 'diagram', minSize: 35, maxSize: 70, defaultSize: 50, class: 'min-w-0 h-full overflow-hidden' },
-            { slot: 'overview', minSize: 18, maxSize: 35, defaultSize: 25, class: 'min-w-0 h-full overflow-hidden' },
-            { slot: 'timeline', minSize: 18, maxSize: 35, defaultSize: 25, class: 'min-w-0 h-full overflow-hidden' },
+            {
+              slot: 'diagram',
+              minSize: 35,
+              maxSize: 70,
+              defaultSize: 50,
+              class: 'min-w-0 h-full overflow-hidden',
+            },
+            {
+              slot: 'overview',
+              minSize: 18,
+              maxSize: 35,
+              defaultSize: 25,
+              class: 'min-w-0 h-full overflow-hidden',
+            },
+            {
+              slot: 'timeline',
+              minSize: 18,
+              maxSize: 35,
+              defaultSize: 25,
+              class: 'min-w-0 h-full overflow-hidden',
+            },
           ]"
-          :ui="{ handle: 'w-1.5 cursor-col-resize bg-zinc-200/70 dark:bg-zinc-800/70 hover:bg-primary/60 data-[state=drag]:bg-primary' }"
+          :ui="{
+            handle:
+              'w-1.5 cursor-col-resize bg-zinc-200/70 dark:bg-zinc-800/70 hover:bg-primary/60 data-[state=drag]:bg-primary',
+          }"
           class="h-full"
         >
           <template #diagram>
-            <div class="relative h-full w-full min-w-0 overflow-hidden border-r border-zinc-200 dark:border-zinc-800">
-              <div v-if="pending && !status" class="absolute inset-0 z-10 flex items-center justify-center bg-white/50 dark:bg-zinc-900/50">
-                <div class="h-10 w-10 animate-spin rounded-full border-4 border-zinc-200 border-t-zinc-800" />
+            <div
+              class="relative h-full w-full min-w-0 overflow-hidden border-r border-zinc-200 dark:border-zinc-800"
+            >
+              <div
+                v-if="pending && !status"
+                class="absolute inset-0 z-10 flex items-center justify-center bg-white/50 dark:bg-zinc-900/50"
+              >
+                <div
+                  class="h-10 w-10 animate-spin rounded-full border-4 border-zinc-200 border-t-zinc-800"
+                />
               </div>
               <div v-else-if="error" class="p-12 text-center">
-                <p class="font-medium text-red-500">Failed to load run status</p>
+                <p class="font-medium text-red-500">
+                  Failed to load run status
+                </p>
                 <p class="mt-2 text-sm text-zinc-500">{{ error }}</p>
               </div>
               <div v-else class="h-full w-full">
@@ -1597,13 +2432,20 @@ const formattedNodeResult = computed(() => {
                   @open-child-run="openChildRun"
                   @view-child-runs="viewChildRuns"
                 />
-                <div v-else class="flex h-full items-center justify-center text-zinc-500">No diagram data available</div>
+                <div
+                  v-else
+                  class="flex h-full items-center justify-center text-zinc-500"
+                >
+                  No diagram data available
+                </div>
               </div>
             </div>
           </template>
 
           <template #overview>
-            <div class="h-full w-full min-w-0 overflow-hidden border-r border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+            <div
+              class="h-full w-full min-w-0 overflow-hidden border-r border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+            >
               <NventFlowRunOverview
                 v-if="status"
                 :run-status="normalizedStatus"
@@ -1628,7 +2470,9 @@ const formattedNodeResult = computed(() => {
           </template>
 
           <template #timeline>
-            <div class="h-full w-full min-w-0 overflow-hidden bg-white dark:bg-zinc-950">
+            <div
+              class="h-full w-full min-w-0 overflow-hidden bg-white dark:bg-zinc-950"
+            >
               <NventFlowRunTimeline
                 :run-id="runId"
                 :run-status="normalizedStatus || 'unknown'"
@@ -1646,39 +2490,67 @@ const formattedNodeResult = computed(() => {
       </div>
 
       <div class="flex h-full flex-col overflow-hidden xl:hidden">
-        <div class="min-w-0 flex-1 relative overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800">
-        <div v-if="pending && !status" class="absolute inset-0 flex items-center justify-center bg-white/50 z-10 dark:bg-zinc-900/50">
-           <div class="w-10 h-10 border-4 border-zinc-200 border-t-zinc-800 rounded-full animate-spin"></div>
-        </div>
-        
-        <div v-else-if="error" class="p-12 text-center">
-          <div class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/20 text-red-600 mb-4">
-             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <div
+          class="min-w-0 flex-1 relative overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800"
+        >
+          <div
+            v-if="pending && !status"
+            class="absolute inset-0 flex items-center justify-center bg-white/50 z-10 dark:bg-zinc-900/50"
+          >
+            <div
+              class="w-10 h-10 border-4 border-zinc-200 border-t-zinc-800 rounded-full animate-spin"
+            ></div>
           </div>
-          <p class="text-red-500 font-medium">Failed to load run status</p>
-          <p class="text-sm text-zinc-500 mt-2">{{ error }}</p>
+
+          <div v-else-if="error" class="p-12 text-center">
+            <div
+              class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/20 text-red-600 mb-4"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+            </div>
+            <p class="text-red-500 font-medium">Failed to load run status</p>
+            <p class="text-sm text-zinc-500 mt-2">{{ error }}</p>
+          </div>
+
+          <div v-else class="h-full w-full">
+            <NventFlowDiagram
+              v-if="flowMeta"
+              height-class="h-full"
+              :show-controls="true"
+              :show-background="true"
+              :flow="flowMeta"
+              :step-states="stepStates"
+              :flow-status="normalizedStatus"
+              @node-selected="selectedStep = $event.id"
+              @open-child-run="openChildRun"
+              @view-child-runs="viewChildRuns"
+            />
+            <div
+              v-else
+              class="h-full flex items-center justify-center text-zinc-500"
+            >
+              No diagram data available
+            </div>
+          </div>
         </div>
 
-        <div v-else class="h-full w-full">
-          <NventFlowDiagram 
-            v-if="flowMeta"
-            height-class="h-full"
-            :show-controls="true"
-            :show-background="true"
-            :flow="flowMeta"
-            :step-states="stepStates"
-            :flow-status="normalizedStatus"
-            @node-selected="selectedStep = $event.id"
-            @open-child-run="openChildRun"
-            @view-child-runs="viewChildRuns"
-          />
-          <div v-else class="h-full flex items-center justify-center text-zinc-500">
-             No diagram data available
-          </div>
-        </div>
-        </div>
-
-        <div class="w-full xl:w-[24rem] 2xl:w-[26rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800">
+        <div
+          class="w-full xl:w-[24rem] 2xl:w-[26rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden border-b xl:border-b-0 xl:border-r border-zinc-200 dark:border-zinc-800"
+        >
           <NventFlowRunOverview
             v-if="status"
             :run-status="normalizedStatus"
@@ -1700,16 +2572,26 @@ const formattedNodeResult = computed(() => {
             @view-child-runs="viewChildRuns"
           />
           <div v-else-if="pending" class="p-8 space-y-4">
-            <div class="h-8 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse w-1/2"></div>
-            <div class="h-32 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
+            <div
+              class="h-8 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse w-1/2"
+            ></div>
+            <div
+              class="h-32 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"
+            ></div>
             <div class="space-y-2">
-              <div class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
-              <div class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"></div>
+              <div
+                class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"
+              ></div>
+              <div
+                class="h-10 bg-zinc-100 dark:bg-zinc-800 rounded animate-pulse"
+              ></div>
             </div>
           </div>
         </div>
 
-        <div class="w-full xl:w-[28rem] 2xl:w-[32rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden">
+        <div
+          class="w-full xl:w-[28rem] 2xl:w-[32rem] shrink-0 bg-white dark:bg-zinc-950 flex flex-col overflow-hidden"
+        >
           <NventFlowRunTimeline
             :run-id="runId"
             :run-status="normalizedStatus || 'unknown'"
