@@ -37,6 +37,28 @@ describe('defineWorkflow compilation', () => {
     runtimeConfigMock.nvent.iii.namespace.map.workflows = 'default'
   })
 
+  it('exposes separately retryable steps inside a reduce iteration', async () => {
+    const workflow = defineWorkflow({
+      name: 'reduce-steps',
+      async handler(_input, ctx) {
+        const items = await ctx.call('load-items')
+        return ctx.reduce(items, [], async (_accumulator, item, iteration) => {
+          const prepared = await iteration.step('prepare-item', 'prepare-item', item, {
+            retry: { max_attempts: 3 },
+          })
+          return iteration.step('synthesize-item', 'synthesize-item', prepared)
+        })
+      },
+    })
+
+    const plan = await workflow.compile({})
+
+    expect(plan.nodes['prepare-item'].reduce_body).toEqual({ reduce: 'reduce' })
+    expect(plan.nodes['synthesize-item'].reduce_body).toEqual({ reduce: 'reduce' })
+    expect(plan.nodes['synthesize-item'].input).toEqual({ from: 'node:prepare-item' })
+    expect(plan.nodes['prepare-item'].function.engine_retry).toEqual({ max_attempts: 3 })
+  })
+
   it('preserves disabled agent message streaming in the workflow plan', async () => {
     const workflow = defineWorkflow({
       name: 'result-only-agent',

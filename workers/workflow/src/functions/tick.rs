@@ -440,13 +440,14 @@ fn resolve_node_input(
             _ => None,
         };
 
-        let base = maybe_item_from_dep
-            .unwrap_or_else(|| dag::gather_input(def, record, run_input, base_id, results));
+        let base = maybe_item_from_dep.unwrap_or_else(|| {
+            resolve_iteration_input(def, record, run_input, node_uid, base_id, node, results)
+        });
         return resolve_dynamic_template(
             def,
             record,
             run_input,
-            base_id,
+            node_uid,
             &node.input,
             &base,
             fanout_item,
@@ -454,17 +455,67 @@ fn resolve_node_input(
         );
     }
 
-    let base = dag::gather_input(def, record, run_input, base_id, results);
+    let base = resolve_iteration_input(def, record, run_input, node_uid, base_id, node, results);
     resolve_dynamic_template(
         def,
         record,
         run_input,
-        base_id,
+        node_uid,
         &node.input,
         &base,
         fanout_item,
         results,
     )
+}
+
+fn reduce_iteration_index(node_uid: &str) -> Option<usize> {
+    node_uid
+        .rsplit_once('#')
+        .and_then(|(_, index)| index.parse::<usize>().ok())
+}
+
+fn resolve_iteration_input(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    run_input: &Value,
+    node_uid: &str,
+    base_id: &str,
+    node: &NodeDef,
+    results: &BTreeMap<String, Value>,
+) -> Value {
+    let Some(index) = reduce_iteration_index(node_uid) else {
+        return dag::gather_input(def, record, run_input, base_id, results);
+    };
+
+    let Some(reduce_id) = node.reduce_body.as_ref().map(|body| body.reduce.as_str()) else {
+        return dag::gather_input(def, record, run_input, base_id, results);
+    };
+
+    match &node.input.from {
+        InputFrom::One(source) if source.starts_with("node:") => {
+            let source_id = source.strip_prefix("node:").unwrap_or(source);
+            let source_is_iteration_node = def
+                .nodes
+                .get(source_id)
+                .and_then(|candidate| candidate.reduce_body.as_ref())
+                .is_some_and(|body| body.reduce == reduce_id)
+                || def
+                    .nodes
+                    .get(source_id)
+                    .and_then(|candidate| candidate.fanout.as_ref())
+                    .is_some();
+
+            if source_is_iteration_node {
+                return results
+                    .get(&format!("{source_id}#{index}"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+
+            dag::gather_input(def, record, run_input, base_id, results)
+        }
+        _ => dag::gather_input(def, record, run_input, base_id, results),
+    }
 }
 
 fn value_at_path(value: &Value, path: &[String]) -> Value {
@@ -519,8 +570,29 @@ fn resolve_dynamic_payload_value(
 
                 if ref_source.starts_with("node:") {
                     let dep = ref_source.strip_prefix("node:").unwrap_or(ref_source);
-                    let dep_value = if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some()
-                    {
+                    let iteration_value = reduce_iteration_index(node_id).and_then(|index| {
+                        let current_reduce = def
+                            .nodes
+                            .get(node_id.split('#').next().unwrap_or(node_id))
+                            .and_then(|node| node.reduce_body.as_ref())
+                            .map(|body| body.reduce.as_str());
+                        let same_reduce_body = current_reduce.is_some()
+                            && def
+                                .nodes
+                                .get(dep)
+                                .and_then(|node| node.reduce_body.as_ref())
+                                .is_some_and(|body| Some(body.reduce.as_str()) == current_reduce);
+                        let fanout = def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some();
+                        (same_reduce_body || fanout).then(|| {
+                            results
+                                .get(&format!("{dep}#{index}"))
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        })
+                    });
+                    let dep_value = if let Some(value) = iteration_value {
+                        value
+                    } else if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some() {
                         let n = record.fanout_src.get(dep).copied().unwrap_or(0);
                         let arr = (0..n)
                             .map(|i| {
@@ -1996,7 +2068,8 @@ mod tests {
     use super::*;
     use crate::types::{
         FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
-        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, WorkflowDef, WorkflowRunRecord,
+        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, ReduceBodySpec, ReduceMode,
+        ReduceSpec, WorkflowDef, WorkflowRunRecord,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -2999,6 +3072,117 @@ mod tests {
         );
 
         assert_eq!(val, json!([{ "summary": "X" }]));
+    }
+
+    #[test]
+    fn resolve_node_input_reduce_body_uses_matching_iteration_result() {
+        let mut def = three_node_def();
+        def.nodes.insert(
+            "reduce".to_string(),
+            NodeDef {
+                label: None,
+                function: Some(FunctionSpec {
+                    id: "reduce_function".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                }),
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                reduce: Some(ReduceSpec {
+                    over: "node:plan.result.docs".to_string(),
+                    mode: ReduceMode::Sequential,
+                    initial: json!([]),
+                    item_return_type: None,
+                    accumulator_return_type: None,
+                    body: vec!["read".to_string(), "synthesize".to_string()],
+                }),
+                reduce_body: None,
+                if_spec: None,
+                if_branch: None,
+                input: InputSpec {
+                    from: "node:plan".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec!["plan".to_string()],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+        for body_id in ["read", "synthesize"] {
+            let body = def.nodes.get_mut(body_id).unwrap();
+            body.reduce_body = Some(ReduceBodySpec {
+                reduce: "reduce".to_string(),
+            });
+        }
+        def.nodes.get_mut("synthesize").unwrap().input = InputSpec {
+            from: "node:read".into(),
+            template: None,
+            value: None,
+        };
+
+        let record = fresh_record();
+        let mut results = BTreeMap::new();
+        results.insert("read#0".to_string(), json!({ "summary": "A" }));
+        results.insert("read#1".to_string(), json!({ "summary": "B" }));
+
+        let node = def.nodes.get("synthesize").unwrap();
+        let value = resolve_node_input(
+            &def,
+            &record,
+            &Value::Null,
+            "synthesize#1",
+            "synthesize",
+            node,
+            Some(&json!("item-1")),
+            &results,
+        );
+
+        assert_eq!(value, json!({ "summary": "B" }));
+    }
+
+    #[test]
+    fn resolve_node_input_reduce_body_resolves_nested_node_reference() {
+        let mut def = three_node_def();
+        for body_id in ["read", "synthesize"] {
+            let body = def.nodes.get_mut(body_id).unwrap();
+            body.reduce_body = Some(ReduceBodySpec {
+                reduce: "reduce".to_string(),
+            });
+        }
+        def.nodes.get_mut("synthesize").unwrap().input = InputSpec {
+            from: "run_input".into(),
+            template: None,
+            value: Some(json!({
+                "summary": {
+                    "$wf_ref": "node:read",
+                    "$wf_path": ["summary"]
+                }
+            })),
+        };
+
+        let record = fresh_record();
+        let mut results = BTreeMap::new();
+        results.insert("read#0".to_string(), json!({ "summary": "A" }));
+        results.insert("read#1".to_string(), json!({ "summary": "B" }));
+
+        let node = def.nodes.get("synthesize").unwrap();
+        let value = resolve_node_input(
+            &def,
+            &record,
+            &Value::Null,
+            "synthesize#1",
+            "synthesize",
+            node,
+            Some(&json!("item-1")),
+            &results,
+        );
+
+        assert_eq!(value, json!({ "summary": "B" }));
     }
 
     #[test]

@@ -337,6 +337,11 @@ export interface WorkflowReduceContext extends WorkflowContext {
   item: WorkflowLoopItemRef
   accumulator: WorkflowValueRef
   index: WorkflowValueRef
+  /**
+   * Declare a separately retryable function step in the current Reduce iteration.
+   * The returned value is a durable Node reference and can be passed to another step.
+   */
+  step: WorkflowCall
 }
 
 export interface WorkflowConditionBuilder {
@@ -1383,6 +1388,7 @@ export function defineWorkflow<
             item: createWorkflowValueRef('fanout_item', 'reduce_item') as WorkflowLoopItemRef,
             accumulator: createWorkflowValueRef('node', `reduce:${reduceId}:accumulator`) as WorkflowValueRef,
             index: createWorkflowValueRef('node', `reduce:${reduceId}:index`) as WorkflowValueRef,
+            step: ctx.call,
           }
 
           // Compile the body once against symbolic iteration references. The worker
