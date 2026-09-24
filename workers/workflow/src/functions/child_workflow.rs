@@ -50,6 +50,25 @@ pub struct ChildCompletedPayload {
     pub result_error: Option<String>,
 }
 
+async fn resolve_completed_result(
+    deps: &Deps,
+    child_run_id: &str,
+    payload_result: Option<Value>,
+) -> Result<Option<Value>, WorkflowError> {
+    if payload_result.is_some() {
+        return Ok(payload_result);
+    }
+
+    let Some(child_record) = crate::state::get_run(&deps.iii, child_run_id).await? else {
+        return Ok(None);
+    };
+    let Some(result_ref) = child_record.result_ref.as_deref() else {
+        return Ok(None);
+    };
+
+    crate::state::get_run_result(&deps.iii, result_ref).await
+}
+
 /// Build the payload sent to the target workflow's own registered function.
 /// `defineWorkflow`'s handler unwraps `_childWorkflow` to extract
 /// `callerSessionId`/`notify` for its `nworkflow::start` call and uses `input`
@@ -146,7 +165,18 @@ pub async fn handle_completed(
     };
 
     let (result, result_error) = match payload.status.as_str() {
-        "completed" => (payload.result, None),
+        "completed" => {
+            match resolve_completed_result(deps, &payload.run_id, payload.result).await? {
+                Some(result) => (Some(result), None),
+                None => (
+                    None,
+                    Some(format!(
+                        "child workflow (run {}) completed without a stored result",
+                        payload.run_id
+                    )),
+                ),
+            }
+        }
         "failed" => (
             None,
             Some(format!(

@@ -12,8 +12,8 @@ use workflow::{
     functions::tick::{decide, TickDecision},
     reconcile::{classify_terminal, NodeOutcome},
     types::{
-        FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState,
-        OutputRef, RunStatus, WorkflowDef, WorkflowRunRecord,
+        ChildWorkflowSpec, FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint,
+        NodeDef, NodeState, OutputRef, RunStatus, WorkflowDef, WorkflowRunRecord,
     },
 };
 
@@ -392,6 +392,51 @@ fn fanout_barrier_synthesize_completes_in_order() {
         RunStatus::Completed,
         "run must be Completed after synthesize done"
     );
+}
+
+#[test]
+fn child_workflow_fanout_results_are_forwarded_without_nulls() {
+    let mut def = three_node_def();
+    let child_node = def.nodes.get_mut("read").expect("read node");
+    child_node.function = None;
+    child_node.child_workflow = Some(ChildWorkflowSpec {
+        workflow: "cohort::child".to_string(),
+    });
+
+    let mut record = new_record(json!({"topic": "rust"}));
+    let mut results = BTreeMap::new();
+    assert!(matches!(
+        drive_step(&def, &mut record, &results),
+        TickDecision::Fire(ref uids) if uids == &["plan"]
+    ));
+    complete(
+        &mut record,
+        &mut results,
+        "plan",
+        json!({"docs": ["a", "b"]}),
+    );
+
+    let fired = drive_step(&def, &mut record, &results);
+    assert!(matches!(fired, TickDecision::Fire(ref uids) if uids == &["read#0", "read#1"]));
+
+    // Child runs may complete out of order, but their materialized results must
+    // still be forwarded by item index and must never be replaced with null.
+    complete(&mut record, &mut results, "read#1", json!({"status": "B"}));
+    complete(&mut record, &mut results, "read#0", json!({"status": "A"}));
+
+    let gathered = dag::gather_input(
+        &def,
+        &record,
+        &json!({"topic": "rust"}),
+        "synthesize",
+        &results,
+    );
+    assert_eq!(
+        gathered,
+        json!([{"status": "A"}, {"status": "B"}]),
+        "completed child results must be forwarded in fanout order"
+    );
+    assert!(!gathered.as_array().unwrap().iter().any(Value::is_null));
 }
 
 // ---------------------------------------------------------------------------

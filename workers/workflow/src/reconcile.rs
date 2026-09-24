@@ -339,6 +339,21 @@ fn child_workflow_cancelled_message(child_run_id: &str) -> String {
     format!("child workflow (run {child_run_id}) cancelled")
 }
 
+fn classify_child_terminal(
+    child_run_id: &str,
+    status: &str,
+    result: Option<Value>,
+    result_error: Option<String>,
+) -> NodeOutcome {
+    if status == "completed" && result.is_none() {
+        return NodeOutcome::Failed(format!(
+            "child workflow (run {child_run_id}) completed without a stored result"
+        ));
+    }
+
+    classify_terminal(status, result, result_error)
+}
+
 /// Poll Running `child_workflow` nodes against their target run's own status.
 /// This is the pull-side fallback for `child_workflow::handle_completed` (the
 /// push path via `notify`): if that callback is ever lost — worker restart,
@@ -383,7 +398,14 @@ pub async fn reconcile_child_workflow_nodes(
             "reconcile: child workflow run reached terminal state (pull fallback)"
         );
 
-        match classify_terminal(status, result, child_record.result_error.clone()) {
+        let outcome = classify_child_terminal(
+            &child_run_id,
+            status,
+            result,
+            child_record.result_error.clone(),
+        );
+
+        match outcome {
             NodeOutcome::StillRunning => {
                 unreachable!("status is always one of the terminal branches above")
             }
@@ -842,6 +864,26 @@ mod tests {
         let status = child_terminal_status_str(RunStatus::Completed).expect("terminal");
         let outcome = classify_terminal(status, Some(json!({"ok": true})), None);
         assert_eq!(outcome, NodeOutcome::Done(json!({"ok": true})));
+    }
+
+    #[test]
+    fn completed_child_without_result_fails_instead_of_forwarding_null() {
+        let outcome = classify_child_terminal("r_child_missing", "completed", None, None);
+
+        assert_eq!(
+            outcome,
+            NodeOutcome::Failed(
+                "child workflow (run r_child_missing) completed without a stored result"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn completed_child_with_stored_json_null_remains_done() {
+        let outcome = classify_child_terminal("r_child_null", "completed", Some(json!(null)), None);
+
+        assert_eq!(outcome, NodeOutcome::Done(json!(null)));
     }
 
     #[test]
