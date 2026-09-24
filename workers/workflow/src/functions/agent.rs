@@ -12,7 +12,9 @@ use std::path::Path;
 use crate::error::WorkflowError;
 use crate::functions::{node_completed, stream_publish, Deps};
 use crate::state;
-use crate::types::{AgentInvocationSpec, AgentRuntimeOptions, AgentTaskRecord, AgentTaskStatus};
+use crate::types::{
+    AgentInvocationSpec, AgentResponseSpec, AgentRuntimeOptions, AgentTaskRecord, AgentTaskStatus,
+};
 
 pub const AGENT_START_ID: &str = "nworkflow::agent-start";
 pub const AGENT_SEND_ID: &str = "nworkflow::agent-send";
@@ -230,6 +232,138 @@ fn message_stream_enabled(task: &AgentTaskRecord) -> bool {
     task.message_stream_enabled.unwrap_or(true)
 }
 
+fn parse_json_output(value: Value) -> Result<Value, String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            let content = trimmed
+                .strip_prefix("```json")
+                .and_then(|value| value.strip_suffix("```"))
+                .or_else(|| {
+                    trimmed
+                        .strip_prefix("```")
+                        .and_then(|value| value.strip_suffix("```"))
+                })
+                .map(str::trim)
+                .unwrap_or(trimmed);
+            serde_json::from_str(content)
+                .map_err(|error| format!("LLM_OUTPUT_INVALID: invalid JSON: {error}"))
+        }
+        value if value.is_object() || value.is_array() => Ok(value),
+        _ => Err("LLM_OUTPUT_INVALID: expected a JSON object, array, or JSON string".to_string()),
+    }
+}
+
+fn schema_type_matches(value: &Value, expected: &str) -> bool {
+    match expected {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => true,
+    }
+}
+
+fn validate_json_schema(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
+    let Some(schema) = schema.as_object() else {
+        return Ok(());
+    };
+    if let Some(expected) = schema.get("type").and_then(Value::as_str) {
+        if !schema_type_matches(value, expected) {
+            return Err(format!("LLM_OUTPUT_INVALID: {path} must be {expected}"));
+        }
+    }
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        let Some(object) = value.as_object() else {
+            return Ok(());
+        };
+        for field in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(field) {
+                return Err(format!("LLM_OUTPUT_INVALID: {path}.{field} is required"));
+            }
+        }
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        if let Some(object) = value.as_object() {
+            for (field, field_schema) in properties {
+                if let Some(field_value) = object.get(field) {
+                    validate_json_schema(field_value, field_schema, &format!("{path}.{field}"))?;
+                }
+            }
+        }
+    }
+    if let Some(items) = schema.get("items") {
+        if let Some(array) = value.as_array() {
+            for (index, item) in array.iter().enumerate() {
+                validate_json_schema(item, items, &format!("{path}[{index}]"))?;
+            }
+        }
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        if !values.iter().any(|candidate| candidate == value) {
+            return Err(format!(
+                "LLM_OUTPUT_INVALID: {path} is not an allowed value"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_agent_result(
+    value: Option<Value>,
+    response: Option<&AgentResponseSpec>,
+) -> Result<Option<Value>, String> {
+    let Some(value) = value else { return Ok(None) };
+    let Some(response) = response else {
+        return Ok(Some(value));
+    };
+    if response.format.as_deref().unwrap_or("text") != "json" {
+        return Ok(Some(value));
+    }
+    match parse_json_output(value.clone()) {
+        Ok(parsed) => {
+            if let Some(schema) = response.schema.as_ref() {
+                validate_json_schema(&parsed, schema, "$")?;
+            }
+            Ok(Some(parsed))
+        }
+        Err(_error) if response.on_invalid.as_deref() == Some("raw") => Ok(Some(value)),
+        Err(error) => Err(error),
+    }
+}
+
+fn response_prompt(response: Option<&AgentResponseSpec>) -> Option<String> {
+    let response = response?;
+    if response.format.as_deref().unwrap_or("text") != "json" {
+        return None;
+    }
+
+    let schema = response
+        .schema
+        .as_ref()
+        .map(|schema| serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string()));
+    Some(match schema {
+        Some(schema) => format!(
+            "Response requirements:\nReturn only valid JSON matching this schema:\n```json\n{schema}\n```"
+        ),
+        None => "Response requirements:\nReturn only a valid JSON object or array. Do not wrap it in markdown.".to_string(),
+    })
+}
+
+fn validation_feedback(error: &str, response: &AgentResponseSpec) -> String {
+    let schema = response
+        .schema
+        .as_ref()
+        .map(|schema| serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string()))
+        .unwrap_or_else(|| "(no schema provided)".to_string());
+    format!(
+        "Your previous response was invalid.\nValidation error: {error}\n\nReturn only corrected JSON matching this schema:\n```json\n{schema}\n```"
+    )
+}
+
 fn validate_folder(folder: Option<&str>, has_existing_session: bool) -> Result<(), WorkflowError> {
     let Some(folder) = folder else {
         return Ok(());
@@ -359,6 +493,7 @@ pub async fn start_agent_task(
         system_prompt: None,
         system_prompt_strategy: None,
         stream: None,
+        response: None,
         result: None,
     });
 
@@ -381,6 +516,10 @@ pub async fn start_agent_task(
                 prompt_parts.push(format!("Input Data:\n```json\n{}\n```", json_str));
             }
         }
+    }
+
+    if let Some(instruction) = response_prompt(opts.response.as_ref()) {
+        prompt_parts.push(instruction);
     }
 
     let prompt_msg = if prompt_parts.is_empty() {
@@ -528,6 +667,8 @@ pub async fn start_agent_task(
         options_hash: format!("{:x}", crate::ids::now_ms()),
         stream_name: "nworkflow".to_string(),
         stream_scope_id: run_id.clone(),
+        response: opts.response.clone(),
+        response_attempts: 0,
     };
 
     state::put_agent_task(&task_record).await?;
@@ -621,6 +762,7 @@ pub async fn handle_agent_event(
 
     if is_terminal {
         let node_uid = task_node_uid(&task).to_string();
+        let mut response_validation_failed = false;
         if payload.status.as_deref() == Some("failed") || mapped_stream_name == "agents.failed" {
             task.status = AgentTaskStatus::Failed;
             task.error = payload
@@ -633,11 +775,83 @@ pub async fn handle_agent_event(
             task.status = AgentTaskStatus::Cancelled;
         } else {
             task.status = AgentTaskStatus::Completed;
-            task.final_result = payload.result.clone().or_else(|| payload.output.clone());
+            match normalize_agent_result(
+                payload.result.clone().or_else(|| payload.output.clone()),
+                task.response.as_ref(),
+            ) {
+                Ok(result) => task.final_result = result,
+                Err(error) => {
+                    let max_attempts = task
+                        .response
+                        .as_ref()
+                        .and_then(|response| response.max_attempts)
+                        .unwrap_or(2);
+                    let should_retry = task
+                        .response
+                        .as_ref()
+                        .map(|response| response.on_invalid.as_deref() == Some("retry"))
+                        .unwrap_or(false)
+                        && task.response_attempts < max_attempts;
+
+                    if should_retry {
+                        let response = task.response.as_ref().expect("retry requires response");
+                        let retry_message = validation_feedback(&error, response);
+                        let retry_payload = send_payload(
+                            &task.agent_session_id,
+                            &retry_message,
+                            None,
+                            None,
+                            json!({
+                                "stream": {
+                                    "session_id": task.run_id,
+                                    "name": "nworkflow"
+                                }
+                            }),
+                        );
+                        let retry_result = deps
+                            .trigger_bounded(
+                                iii_sdk::protocol::TriggerRequest {
+                                    function_id: "harness::send".to_string(),
+                                    payload: retry_payload,
+                                    action: None,
+                                    timeout_ms: None,
+                                },
+                                deps.cfg().await.dispatch_timeout_ms,
+                            )
+                            .await
+                            .map_err(|send_error| {
+                                WorkflowError::Trigger(format!(
+                                    "harness::send validation retry failed: {send_error}"
+                                ))
+                            })?;
+                        let (_, retry_turn_id) = send_ids(&retry_result, &task.agent_session_id)?;
+                        task.turn_id = retry_turn_id;
+                        task.response_attempts += 1;
+                        task.status = AgentTaskStatus::Running;
+                        task.error = None;
+                    } else {
+                        task.status = AgentTaskStatus::Failed;
+                        task.error = Some(error);
+                        response_validation_failed = true;
+                    }
+                }
+            }
         }
 
         task.updated_at = now;
         state::put_agent_task(&task).await?;
+
+        if response_validation_failed {
+            let mut run = state::get_run(&deps.iii, &task.run_id)
+                .await?
+                .ok_or_else(|| WorkflowError::State(format!("run '{}' not found", task.run_id)))?;
+            if let Some(checkpoint) = run.nodes.get_mut(&node_uid) {
+                checkpoint.session_id = None;
+                checkpoint.turn_id = None;
+            }
+            run.updated_at = now;
+            state::put_run(&deps.iii, &run).await?;
+        }
 
         // Publish stream event
         let _ = stream_publish::handle(
@@ -799,8 +1013,77 @@ pub async fn handle_agent_message_added(
 
 #[cfg(test)]
 mod tests {
-    use crate::types::AgentInvocationSpec;
+    use crate::types::{AgentInvocationSpec, AgentResponseSpec};
     use serde_json::json;
+
+    #[test]
+    fn json_response_parses_fenced_output_and_validates_required_fields() {
+        let response = AgentResponseSpec {
+            format: Some("json".to_string()),
+            schema: Some(json!({
+                "type": "object",
+                "required": ["value"],
+                "properties": { "value": { "type": "string" } }
+            })),
+            on_invalid: None,
+            max_attempts: None,
+        };
+
+        let result = super::normalize_agent_result(
+            Some(json!("```json\n{\"value\":\"yes\"}\n```")),
+            Some(&response),
+        )
+        .expect("valid JSON response");
+
+        assert_eq!(result.expect("result")["value"], "yes");
+    }
+
+    #[test]
+    fn json_response_rejects_missing_required_fields() {
+        let response = AgentResponseSpec {
+            format: Some("json".to_string()),
+            schema: Some(json!({ "type": "object", "required": ["value"] })),
+            on_invalid: None,
+            max_attempts: None,
+        };
+
+        let error = super::normalize_agent_result(Some(json!({ "other": true })), Some(&response))
+            .expect_err("missing required field must fail");
+
+        assert!(error.contains("$.value is required"));
+    }
+
+    #[test]
+    fn json_response_can_keep_invalid_raw_output_when_configured() {
+        let response = AgentResponseSpec {
+            format: Some("json".to_string()),
+            schema: Some(json!({ "type": "object" })),
+            on_invalid: Some("raw".to_string()),
+            max_attempts: None,
+        };
+
+        let result = super::normalize_agent_result(Some(json!("not-json")), Some(&response))
+            .expect("raw fallback is configured")
+            .expect("result");
+
+        assert_eq!(result, json!("not-json"));
+    }
+
+    #[test]
+    fn response_prompt_includes_schema_and_json_only_instruction() {
+        let response = AgentResponseSpec {
+            format: Some("json".to_string()),
+            schema: Some(json!({ "type": "object", "required": ["value"] })),
+            on_invalid: Some("retry".to_string()),
+            max_attempts: Some(2),
+        };
+
+        let prompt = super::response_prompt(Some(&response)).expect("JSON prompt");
+
+        assert!(prompt.contains("Return only valid JSON"));
+        assert!(prompt.contains("\"required\""));
+        assert!(prompt.contains("\"value\""));
+    }
 
     #[test]
     fn spawn_ids_reads_harness_child_ids() {

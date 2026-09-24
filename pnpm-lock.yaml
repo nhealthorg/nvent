@@ -166,6 +166,9 @@ importers:
       perfect-debounce:
         specifier: ^2.1.0
         version: 2.1.0
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
     devDependencies:
       '@nuxt/module-builder':
         specifier: ^1.0.3
@@ -195,29 +198,7 @@ importers:
 
   packages/workflow-worker/workflow-worker-linux-x64-musl: {}
 
-  packages/workflow-worker/workflow-worker-meta:
-    optionalDependencies:
-      '@nvent-addon/workflow-worker-darwin-arm64':
-        specifier: 1.0.6
-        version: 1.0.6
-      '@nvent-addon/workflow-worker-darwin-x64':
-        specifier: 1.0.6
-        version: 1.0.6
-      '@nvent-addon/workflow-worker-linux-arm64-gnu':
-        specifier: 1.0.6
-        version: 1.0.6
-      '@nvent-addon/workflow-worker-linux-arm64-musl':
-        specifier: 1.0.6
-        version: 1.0.6
-      '@nvent-addon/workflow-worker-linux-x64-gnu':
-        specifier: 1.0.6
-        version: 1.0.6
-      '@nvent-addon/workflow-worker-linux-x64-musl':
-        specifier: 1.0.6
-        version: 1.0.6
-      '@nvent-addon/workflow-worker-win32-x64-msvc':
-        specifier: 1.0.6
-        version: 1.0.6
+  packages/workflow-worker/workflow-worker-meta: {}
 
   packages/workflow-worker/workflow-worker-win32-x64-msvc: {}
 
@@ -1383,41 +1364,6 @@ packages:
 
   '@nuxtjs/color-mode@4.0.1':
     resolution: {integrity: sha512-eiA7hWXi5zNHaYKyJFCGF6i0wFZtuvR7KDXZ6jiSvwxjCpRFwphrw0MOSmNfArTSSsT1wpW+/2H92cejeVfUlg==}
-
-  '@nvent-addon/workflow-worker-darwin-arm64@1.0.6':
-    resolution: {integrity: sha512-sBEKsXOK7phGuQGyp8IwoBeA2qDTkZ6+Vi4jal8V1MMQ/OSALZjACf2ZDQfo881buAe3MvTJMY3jLEGr1576FA==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@nvent-addon/workflow-worker-darwin-x64@1.0.6':
-    resolution: {integrity: sha512-QjM9YypkYZPuJz0WK1B5CNnOelkn1TBd36o5muWNP8jOHKjp5/UUZQxrRmSmKj9fm6+01sERUvdpJOfnBscUFw==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@nvent-addon/workflow-worker-linux-arm64-gnu@1.0.6':
-    resolution: {integrity: sha512-+AkoyCSM7bdsI0qor9Cx7M4KnsAg3NwIFdgySW+f9a9duHFb9yrmEYzv/d71jvgg1jKmpe2m6StfvrzbY+JMqQ==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-arm64-musl@1.0.6':
-    resolution: {integrity: sha512-u6km5vb6KIygcUEoYuos3PGlqdiJY8xhq3HjliGedt4J5hWOzIeUWHnhqJQ1yEqCSVP4qc7ctWC53NyCWnOQgQ==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-x64-gnu@1.0.6':
-    resolution: {integrity: sha512-ffjBh9bv3cwmcvQWvMnx4f990It6uTrGnumh9rskl90UQH4K3N5Zw7UulnHSivgzRQq1VpH2MOktcrwEQ9P5Mg==}
-    cpu: [x64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-linux-x64-musl@1.0.6':
-    resolution: {integrity: sha512-F3e7OJMzPMdGPg9yG7Ajl+7yMrMXhPv+C9WIzZhb3Tcvk0rF7lwfPE084VROS45YyQqSjIg7ouGvHk9kkFo/EQ==}
-    cpu: [x64]
-    os: [linux]
-
-  '@nvent-addon/workflow-worker-win32-x64-msvc@1.0.6':
-    resolution: {integrity: sha512-OUTqRQ1tMFWnhIDR+ZO178ZgADa0YQv6pGPZ+fbmEzsHXCeWUAN1EBL7l/0Qgqst/oZLF5tRvcUyrdEZ7CB60A==}
-    cpu: [x64]
-    os: [win32]
 
   '@opentelemetry/api-logs@0.222.0':
     resolution: {integrity: sha512-9mb1If+IF6u0ZVXkHQ6ogEae5HwA6ajIVUgpSDQyRASxft6BSXHvBvPooRle3yFN/fKnCdSOnuu0OC3PLcF6+g==}
@@ -9216,27 +9162,6 @@ snapshots:
       - oxc-parser
       - rolldown
       - unplugin
-
-  '@nvent-addon/workflow-worker-darwin-arm64@1.0.6':
-    optional: true
-
-  '@nvent-addon/workflow-worker-darwin-x64@1.0.6':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-arm64-gnu@1.0.6':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-arm64-musl@1.0.6':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-x64-gnu@1.0.6':
-    optional: true
-
-  '@nvent-addon/workflow-worker-linux-x64-musl@1.0.6':
-    optional: true
-
-  '@nvent-addon/workflow-worker-win32-x64-msvc@1.0.6':
-    optional: true
 
   '@opentelemetry/api-logs@0.222.0':
     dependencies:

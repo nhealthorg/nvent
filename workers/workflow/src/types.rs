@@ -298,6 +298,23 @@ pub struct AgentStreamSpec {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentResponseSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_invalid: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "maxAttempts"
+    )]
+    pub max_attempts: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AgentRuntimeOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -327,6 +344,8 @@ pub struct AgentRuntimeOptions {
     pub system_prompt_strategy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<AgentStreamSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<AgentResponseSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<NodeResultSpec>,
 }
@@ -367,6 +386,10 @@ pub struct AgentTaskRecord {
     pub options_hash: String,
     pub stream_name: String,
     pub stream_scope_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<AgentResponseSpec>,
+    #[serde(default)]
+    pub response_attempts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -1,4 +1,5 @@
 import { useIii, useRuntimeConfig } from '#imports'
+import { toJSONSchema } from 'zod'
 import type { TriggerConfig } from './defineFunction'
 import type { WorkflowRunRecord } from './workflow-types'
 import { normalizeWorkflowInput } from './workflow/input-spec'
@@ -72,6 +73,11 @@ function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined
   if (!schema || typeof schema !== 'object') return undefined
   const s = schema as Record<string, any>
   if (typeof s.parse !== 'function') return s // raw JSON Schema
+  try {
+    return toJSONSchema(schema as any) as Record<string, unknown>
+  } catch {
+    // Keep compatibility with schema libraries that expose their own converter.
+  }
   if (typeof s.toJsonSchema === 'function') return s.toJsonSchema()
   return undefined
 }
@@ -113,6 +119,12 @@ export interface AgentRuntimeOptions {
   systemPromptStrategy?: 'enrich' | 'override'
   stream?: {
     enabled?: boolean
+  }
+  response?: {
+    format?: 'text' | 'json'
+    schema?: unknown
+    onInvalid?: 'error' | 'raw' | 'retry'
+    maxAttempts?: number
   }
   result?: {
     returnType?: 'memory' | 'store'
@@ -1266,11 +1278,23 @@ export function defineWorkflow<
         agent: async <T = AgentResult>(spec: AgentInvocationSpec, options?: AgentRuntimeOptions): Promise<T> => {
           const rawId = spec.task?.title || (typeof spec.agent === 'string' ? spec.agent : spec.agent?.id) || 'agent'
           const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(rawId))
+          const response = options?.response
+            ? {
+                ...options.response,
+                ...(options.response.schema !== undefined
+                  ? { schema: extractJsonSchema(options.response.schema) }
+                  : {}),
+              }
+            : undefined
+
+          if (options?.response?.schema !== undefined && !response?.schema) {
+            throw new Error('[nvent] Agent response schema must be JSON Schema or expose toJsonSchema()')
+          }
 
           return ctx.node(nodeId, {
             label: spec.task?.title ?? (typeof spec.agent === 'string' ? spec.agent : spec.agent?.display?.name ?? 'Agent'),
             agent: spec,
-            agentOptions: options,
+            agentOptions: options ? { ...options, response } : undefined,
             input: spec.input ?? createWorkflowValueRef('run_input', 'run_input'),
             result: options?.result,
           }) as any
