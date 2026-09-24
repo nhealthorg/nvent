@@ -619,7 +619,18 @@ const stepStates = computed(() => {
       const children = Object.entries(nodeStates).filter(([id]) =>
         id.startsWith(`${baseId}#`),
       );
-      if (children.length === 0) return;
+      if (children.length === 0) {
+        const loopStat = status.value?.loop_stats?.[baseId];
+        if (loopStat?.expanded && Number(loopStat.total_items || 0) === 0) {
+          out[baseId] = {
+            ...(out[baseId] || {}),
+            status: "completed",
+            result_state: "ready",
+            result_available: true,
+          };
+        }
+        return;
+      }
 
       const childStates = children.map(([, cp]: any) =>
         String(cp?.state || "").toLowerCase(),

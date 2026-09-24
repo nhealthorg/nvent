@@ -126,9 +126,11 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
         }
     }
 
-    // Optional fast-path payload persistence: runtimes may include result/error
-    // directly in this event and skip the extra nworkflow::node-result-write call.
-    if event.result.is_some() || event.result_error.is_some() {
+    // Persist the completion payload before waking the tick. A workflow runtime
+    // may serialize an undefined return value without a `result` field; the
+    // completion event still conclusively finishes the running node, so null is
+    // the valid stored result in that case.
+    {
         let value = match event.result_error {
             Some(err) => json!({ "__workflow_error__": err }),
             None => event.result.unwrap_or(Value::Null),

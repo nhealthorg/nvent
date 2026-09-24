@@ -574,7 +574,7 @@ fn resolve_dynamic_payload_value(
                         .unwrap_or(ref_source)
                         .to_string();
                     if record.if_checkpoints.contains_key(&dep) {
-                        dep = dag::resolve_output_node(def, record, &dep);
+                        dep = dag::resolve_output_node_with_results(def, record, &dep, results);
                     }
                     let iteration_value = reduce_iteration_index(node_id).and_then(|index| {
                         let current_reduce = def

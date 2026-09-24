@@ -1155,7 +1155,7 @@ fn gather_one(
         // An if-node is a logical result selector. Resolve it before reading
         // the selected branch result.
         let dep = if record.if_checkpoints.contains_key(dep) {
-            resolve_output_node(def, record, dep)
+            resolve_output_node_with_results(def, record, dep, results)
         } else {
             dep.to_string()
         };
@@ -1384,6 +1384,38 @@ pub fn resolve_output_node(
         })
         .cloned()
         .unwrap_or_else(|| output_node.to_string())
+}
+
+/// Resolve an If output using the branch result already available in this tick.
+pub fn resolve_output_node_with_results(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    output_node: &str,
+    results: &BTreeMap<String, Value>,
+) -> String {
+    let resolved = resolve_output_node(def, record, output_node);
+    if results.contains_key(&resolved) || !record.if_checkpoints.contains_key(output_node) {
+        return resolved;
+    }
+
+    let Some(selected) = record
+        .if_checkpoints
+        .get(output_node)
+        .and_then(|checkpoint| checkpoint.selected)
+    else {
+        return resolved;
+    };
+
+    def.nodes
+        .iter()
+        .filter_map(|(node_id, node)| {
+            node.if_branch
+                .as_ref()
+                .filter(|branch| branch.if_node == output_node && branch.path == selected)
+                .and_then(|_| results.contains_key(node_id).then_some(node_id.clone()))
+        })
+        .next()
+        .unwrap_or(resolved)
 }
 
 // ---------------------------------------------------------------------------
