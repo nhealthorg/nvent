@@ -1331,6 +1331,49 @@ pub fn required_set(def: &WorkflowDef) -> BTreeSet<String> {
     req
 }
 
+/// Resolve an output that was returned from both branches of an `if`.
+///
+/// The compiler stores the conditional node as `output.from` because the
+/// selected branch is only known at runtime. The branch leaf is the selected
+/// branch node that is not a dependency of another node in that branch.
+pub fn resolve_output_node(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    output_node: &str,
+) -> String {
+    let Some(checkpoint) = record.if_checkpoints.get(output_node) else {
+        return output_node.to_string();
+    };
+    let Some(selected) = checkpoint.selected else {
+        return output_node.to_string();
+    };
+
+    let branch_nodes: Vec<String> = def
+        .nodes
+        .iter()
+        .filter_map(|(node_id, node)| {
+            node.if_branch
+                .as_ref()
+                .filter(|branch| branch.if_node == output_node && branch.path == selected)
+                .map(|_| node_id.clone())
+        })
+        .collect();
+
+    branch_nodes
+        .iter()
+        .find(|candidate| {
+            !branch_nodes.iter().any(|other| {
+                other != *candidate
+                    && def
+                        .nodes
+                        .get(other)
+                        .is_some_and(|node| node.depends_on.iter().any(|dep| dep == *candidate))
+            })
+        })
+        .cloned()
+        .unwrap_or_else(|| output_node.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1679,6 +1722,33 @@ mod tests {
         );
 
         assert!(ready_frontier(&d, &r).contains(&"synthesize#0".to_string()));
+    }
+
+    #[test]
+    fn resolves_output_to_selected_if_branch_leaf() {
+        let mut d = def();
+        d.nodes.get_mut("synthesize").unwrap().if_branch = Some(IfBranchSpec {
+            if_node: "if".to_string(),
+            path: IfBranchPath::Else,
+        });
+        let mut then_node = d.nodes["synthesize"].clone();
+        then_node.if_branch = Some(IfBranchSpec {
+            if_node: "if".to_string(),
+            path: IfBranchPath::Then,
+        });
+        d.nodes.insert("synthesize_then".to_string(), then_node);
+
+        let mut r = record();
+        r.if_checkpoints.insert(
+            "if".to_string(),
+            IfCheckpoint {
+                state: IfState::Done,
+                selected: Some(IfBranchPath::Else),
+                error: None,
+            },
+        );
+
+        assert_eq!(resolve_output_node(&d, &r, "if"), "synthesize");
     }
 
     #[test]

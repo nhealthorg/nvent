@@ -450,6 +450,7 @@ export interface WorkflowReduceOptions {
 const WORKFLOW_BRANCH = Symbol('workflow.branch')
 const WORKFLOW_LOOP_ITEM = Symbol('workflow.loop.item')
 const WORKFLOW_VALUE_REF = Symbol('workflow.value.ref')
+const WORKFLOW_IF_RESULT = Symbol('workflow.if.result')
 /** Mirrors `child_workflow::CHILD_WORKFLOW_WRAPPER_KEY` in the workflow worker. */
 const CHILD_WORKFLOW_WRAPPER_KEY = '_childWorkflow'
 
@@ -581,6 +582,10 @@ function createWorkflowValueRef(source: 'node' | 'fanout_item' | 'run_input', re
       return createWorkflowValueRef(source, ref, [...path, String(prop)])
     },
   })
+}
+
+function createWorkflowIfResultRef(result: WorkflowValueRef, ifNode: string): WorkflowValueRef {
+  return Object.assign(result, { [WORKFLOW_IF_RESULT]: ifNode })
 }
 
 function appendWorkflowValuePath(value: WorkflowValueRef, path: string[]): WorkflowValueRef {
@@ -1469,7 +1474,16 @@ export function defineWorkflow<
           const branchFrontier = [...new Set([...thenFrontier, ...elseFrontier])]
           controlFrontier = branchFrontier.length > 0 ? branchFrontier : previousFrontier
 
-          return (thenBranch.result ?? elseBranch.result) as T
+          const result = thenBranch.result ?? elseBranch.result
+          if (
+            thenBranch.result
+            && elseBranch.result
+            && isWorkflowValueRef(thenBranch.result)
+            && isWorkflowValueRef(elseBranch.result)
+          ) {
+            return createWorkflowIfResultRef(thenBranch.result, ifId) as T
+          }
+          return result as T
         },
 
         branch: <T = any>(fn: (c: WorkflowContext) => T | Promise<T>): WorkflowParallelBranch<T> => ({
@@ -1587,7 +1601,9 @@ export function defineWorkflow<
 
       const result = await options.handler(input, ctx)
       let outputNode = ''
-      if (result && typeof result === 'object' && (result as any).$ref) {
+      if (result && typeof result === 'object' && (result as any)[WORKFLOW_IF_RESULT]) {
+        outputNode = (result as any)[WORKFLOW_IF_RESULT]
+      } else if (result && typeof result === 'object' && (result as any).$ref) {
         outputNode = (result as any).$ref.replace('node:', '')
       } else if (nodeOrder.length > 0) {
         outputNode = nodeOrder[nodeOrder.length - 1]!

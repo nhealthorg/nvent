@@ -1622,32 +1622,33 @@ async fn finalize(
     crate::telemetry::record_run_terminal(status, duration_ms);
 
     // Output node id (strip "node:") for result extraction.
-    let out_node = def
+    let configured_out_node = def
         .output
         .from
         .strip_prefix("node:")
         .unwrap_or(&def.output.from);
+    let out_node = dag::resolve_output_node(def, record, configured_out_node);
 
     if status == RunStatus::Completed {
         // Check if the output node is a fanout group.
         let out_val = if def
             .nodes
-            .get(out_node)
+            .get(&out_node)
             .and_then(|n| n.fanout.as_ref())
             .is_some()
         {
             // Fanout group: collect results as an array in numeric order.
-            let n = dag::fanned_uids(record, out_node).len();
+            let n = dag::fanned_uids(record, &out_node).len();
             let arr: Vec<Value> = (0..n)
                 .map(|i| {
-                    let uid = ids::node_uid(out_node, Some(i as u32));
+                    let uid = ids::node_uid(&out_node, Some(i as u32));
                     results.get(&uid).cloned().unwrap_or(Value::Null)
                 })
                 .collect();
             Value::Array(arr)
         } else {
             // Normal single-result node.
-            results.get(out_node).cloned().unwrap_or(Value::Null)
+            results.get(&out_node).cloned().unwrap_or(Value::Null)
         };
 
         let result_ref = record
