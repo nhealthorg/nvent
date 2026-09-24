@@ -166,6 +166,18 @@ pub fn resolve_reduce_over_path(
     for index in 0..*total_items {
         let uid = node_uid(node_id, Some(index as u32));
         let Some(value) = results.get(&uid) else {
+            let checkpoint = record.nodes.get(&uid);
+            tracing::warn!(
+                workflow = ?record.workflow_name,
+                node = %node_id,
+                fanout_index = index,
+                node_uid = %uid,
+                child_run_id = ?checkpoint.and_then(|cp| cp.child_run_id.as_deref()),
+                result_store_key = ?checkpoint.and_then(|cp| cp.result_ref.as_deref()),
+                result_state = ?checkpoint.map(|cp| cp.state),
+                resolved_value = "null",
+                "fanout item result is missing while resolving reduce input"
+            );
             return Err(format!(
                 "fanout node '{node_id}' item {index} has no result"
             ));
@@ -673,10 +685,13 @@ fn fanout_dep_item_done(record: &WorkflowRunRecord, dep_id: &str, item_idx: usiz
     }
 
     let dep_uid = node_uid(dep_id, Some(item_idx as u32));
-    matches!(
-        record.nodes.get(&dep_uid).map(|cp| cp.state),
-        Some(NodeState::Done)
-    )
+    checkpoint_done_with_result(record, &dep_uid)
+}
+
+fn checkpoint_done_with_result(record: &WorkflowRunRecord, node_uid: &str) -> bool {
+    record.nodes.get(node_uid).is_some_and(|checkpoint| {
+        checkpoint.state == NodeState::Done && checkpoint.result_ref.is_some()
+    })
 }
 
 fn reduce_body_item_ready(
@@ -718,13 +733,7 @@ fn reduce_body_item_ready(
                         .and_then(|candidate| candidate.reduce_body.as_ref())
                         .is_some_and(|candidate| candidate.reduce == body.reduce)
                     {
-                        matches!(
-                            record
-                                .nodes
-                                .get(&node_uid(dep, Some(index as u32)))
-                                .map(|cp| cp.state),
-                            Some(NodeState::Done)
-                        )
+                        checkpoint_done_with_result(record, &node_uid(dep, Some(index as u32)))
                     } else if def
                         .nodes
                         .get(dep)
@@ -733,10 +742,7 @@ fn reduce_body_item_ready(
                     {
                         fanout_dep_item_done(record, dep, index)
                     } else {
-                        matches!(
-                            record.nodes.get(dep).map(|cp| cp.state),
-                            Some(NodeState::Done)
-                        )
+                        checkpoint_done_with_result(record, dep)
                     }
                 })
             })
@@ -859,7 +865,7 @@ fn ordered_group_active_index(
         for member in &members {
             let uid = node_uid(member, Some(idx as u32));
             match record.nodes.get(&uid).map(|cp| cp.state) {
-                Some(NodeState::Done) => {}
+                Some(NodeState::Done) if checkpoint_done_with_result(record, &uid) => {}
                 _ => {
                     all_done = false;
                     break;
@@ -916,7 +922,7 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
                     for i in 0..*total_items {
                         let uid = node_uid(dep_id, Some(i as u32));
                         match record.nodes.get(&uid) {
-                            Some(cp) if cp.state == NodeState::Done => {}
+                            Some(cp) if cp.state == NodeState::Done && cp.result_ref.is_some() => {}
                             _ => return false,
                         }
                     }
@@ -1138,7 +1144,24 @@ fn gather_one(
             let arr: Vec<Value> = (0..n)
                 .map(|i| {
                     let uid = node_uid(dep, Some(i as u32));
-                    results.get(&uid).cloned().unwrap_or(Value::Null)
+                    match results.get(&uid).cloned() {
+                        Some(value) => value,
+                        None => {
+                            let checkpoint = record.nodes.get(&uid);
+                            tracing::warn!(
+                                workflow = ?record.workflow_name,
+                                node = %dep,
+                                fanout_index = i,
+                                node_uid = %uid,
+                                child_run_id = ?checkpoint.and_then(|cp| cp.child_run_id.as_deref()),
+                                result_store_key = ?checkpoint.and_then(|cp| cp.result_ref.as_deref()),
+                                result_state = ?checkpoint.map(|cp| cp.state),
+                                resolved_value = "null",
+                                "fanout item result is missing while gathering node input"
+                            );
+                            Value::Null
+                        }
+                    }
                 })
                 .collect();
             Value::Array(arr)
@@ -1457,7 +1480,7 @@ mod tests {
             state: NodeState::Done,
             session_id: None,
             turn_id: None,
-            result_ref: None,
+            result_ref: Some("node-result".to_string()),
             result_error: None,
             child_run_id: None,
             pending_at: None,
@@ -1579,6 +1602,40 @@ mod tests {
         );
 
         assert!(ready_frontier(&d, &r).contains(&"synthesize#0".to_string()));
+    }
+
+    #[test]
+    fn reduce_body_waits_when_fanout_item_has_no_result_reference() {
+        let mut d = def();
+        d.nodes.get_mut("synthesize").unwrap().reduce_body = Some(ReduceBodySpec {
+            reduce: "reduce".to_string(),
+        });
+        d.nodes.get_mut("synthesize").unwrap().depends_on = vec!["read".to_string()];
+
+        let mut r = record();
+        r.fanout_src.insert("read".to_string(), 1);
+        r.nodes.insert(
+            "read#0".to_string(),
+            NodeCheckpoint {
+                result_ref: None,
+                ..done_checkpoint()
+            },
+        );
+        r.nodes
+            .insert("synthesize#0".to_string(), pending_checkpoint());
+        r.reduce_checkpoints.insert(
+            "reduce".to_string(),
+            ReduceCheckpoint {
+                next_index: 0,
+                total_items: 1,
+                accumulator: json!([]),
+                state: ReduceState::Running,
+                active_body_uids: vec!["synthesize#0".to_string()],
+                error: None,
+            },
+        );
+
+        assert!(!ready_frontier(&d, &r).contains(&"synthesize#0".to_string()));
     }
 
     #[test]
