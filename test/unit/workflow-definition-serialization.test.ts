@@ -27,6 +27,21 @@ describe('workflow definition serialization helpers', () => {
     expect(normalized).toEqual({ from: ['node:a', 'node:b'] })
   })
 
+  it('uses run_input for mixed reduce and fanout value templates', () => {
+    const normalized = normalizeWorkflowInput({
+      accumulator: { $ref: 'reduce:reduce:accumulator', $source: 'node' },
+      step: { $ref: 'fanout_item', $source: 'fanout_item' },
+      records: { $ref: 'node:records', $source: 'node', $path: ['records'] },
+    }, ['records'], isWorkflowValueRef)
+
+    expect(normalized.from).toBe('run_input')
+    expect(normalized.value).toEqual({
+      accumulator: { $wf_ref: 'reduce:reduce:accumulator', $wf_path: [] },
+      step: { $wf_ref: 'fanout_item', $wf_path: [] },
+      records: { $wf_ref: 'node:records', $wf_path: ['records'] },
+    })
+  })
+
   it('sanitizes invalid input.from object values', () => {
     const plan: any = {
       nodes: {

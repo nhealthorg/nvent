@@ -52,6 +52,15 @@ export function normalizeWorkflowInput(
     return Object.values(value).some(containsFanoutRefs)
   }
 
+  const containsReduceRefs = (value: any): boolean => {
+    if (isWorkflowValueRef(value)) {
+      return value.$source === 'node' && value.$ref.startsWith('reduce:')
+    }
+    if (!value || typeof value !== 'object') return false
+    if (Array.isArray(value)) return value.some(containsReduceRefs)
+    return Object.values(value).some(containsReduceRefs)
+  }
+
   const encodeDynamicValue = (value: any): any => {
     if (isWorkflowValueRef(value)) {
       return {
@@ -73,6 +82,7 @@ export function normalizeWorkflowInput(
   }
 
   const inferDynamicFrom = (value: any): string => {
+    if (containsFanoutRefs(value) || containsReduceRefs(value)) return 'run_input'
     if (deps.length === 1) return `node:${deps[0]}`
     return 'run_input'
   }
