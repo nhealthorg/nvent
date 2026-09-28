@@ -1,6 +1,6 @@
 {
   "name": "nvent",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "Event-driven workflows for Nuxt",
   "repository": "nhealthorg/nvent",
   "license": "MIT",
