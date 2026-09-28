@@ -615,9 +615,9 @@ class _WorkflowScopedState:
 
 
 class _WorkflowScopedStream:
-    def __init__(self, client, run_id: str, node_uid: str, fn_id: str):
+    def __init__(self, client, stream_scope_id: str, node_uid: str, fn_id: str):
         self._client = client
-        self._run_id = run_id
+        self._run_id = stream_scope_id
         self._node_uid = node_uid
         self._fn_id = fn_id
 
@@ -673,11 +673,11 @@ class _WorkflowScopedStream:
 
 
 class _WorkflowScopedContext:
-    def __init__(self, client, run_id: str, node_uid: str, fn_id: str):
+    def __init__(self, client, run_id: str, node_uid: str, fn_id: str, stream_scope_id: str = None):
         self.stateScopeId = run_id
-        self.streamScopeId = run_id
+        self.streamScopeId = stream_scope_id or run_id
         self.state = _WorkflowScopedState(client, run_id, node_uid, fn_id)
-        self.stream = _WorkflowScopedStream(client, run_id, node_uid, fn_id)
+        self.stream = _WorkflowScopedStream(client, self.streamScopeId, node_uid, fn_id)
         self._client = client
         self.run_id = run_id
         self.node_uid = node_uid
@@ -750,7 +750,19 @@ class WorkflowContext:
         self.state = _State(client, fn_id)
         self.stream = _Stream(client, self._stream_name, self._get_or_create_group_id)
         if self.run_id and self.node_uid:
-            self.workflow = _WorkflowScopedContext(client, self.run_id, self.node_uid, fn_id)
+            stream_scope_id = (
+                workflow_meta.get("stream_scope_id")
+                or workflow_meta.get("root_run_id")
+                or workflow_meta.get("parent_run_id")
+                or self.run_id
+            )
+            self.workflow = _WorkflowScopedContext(
+                client,
+                self.run_id,
+                self.node_uid,
+                fn_id,
+                stream_scope_id,
+            )
         else:
             self.workflow = None
 

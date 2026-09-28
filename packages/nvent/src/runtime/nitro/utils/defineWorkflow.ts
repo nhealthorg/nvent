@@ -2,6 +2,7 @@ import { useIii, useRuntimeConfig } from '#imports'
 import { toJSONSchema } from 'zod'
 import type { TriggerConfig } from './defineFunction'
 import type { WorkflowRunRecord } from './workflow-types'
+import { filterLocalWorkflowRefs } from './workflow/dependencies'
 import { normalizeWorkflowInput } from './workflow/input-spec'
 import { serializeWorkflowDefinitionOrThrow, summarizeWorkflowDefinitionShape } from './workflow/definition-serialization'
 
@@ -1173,19 +1174,23 @@ export function defineWorkflow<
           const dataDepSet = new Set<string>()
           collectNodeRefs(spec, dataDepSet)
 
-          const dataDeps = [...dataDepSet]
+          // A child workflow can receive value refs from its caller. Those refs
+          // remain valid in the input template, but their parent nodes are not
+          // part of this workflow's local DAG.
+          const allDataDeps = [...dataDepSet]
+          const localDataDeps = filterLocalWorkflowRefs(allDataDeps, nodes)
           const declaredDeps = Array.isArray(spec.depends_on) ? spec.depends_on : []
           const baseControlDeps = (parallelCollector && parallelFixedFrontier)
             ? parallelFixedFrontier
             : controlFrontier
-          const combinedDeps = [...baseControlDeps, ...declaredDeps, ...dataDeps]
+          const combinedDeps = [...baseControlDeps, ...declaredDeps, ...localDataDeps]
           const dependsOn = reduceDependencies(combinedDeps)
 
           // Map to Rust NodeDef structure
           const nodeDef: any = {
             label: spec.label,
             depends_on: dependsOn,
-            input: normalizeInput(spec.input, dataDeps),
+            input: normalizeInput(spec.input, localDataDeps),
             fanout: typeof spec.fanout === 'string' ? { over: spec.fanout } : spec.fanout,
             ...(spec.reduce ? { reduce: spec.reduce } : {}),
             ...(spec.reduce_body ? { reduce_body: spec.reduce_body } : {}),

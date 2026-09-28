@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { normalizeWorkflowInput } from '../../packages/nvent/src/runtime/nitro/utils/workflow/input-spec'
+import { filterLocalWorkflowRefs } from '../../packages/nvent/src/runtime/nitro/utils/workflow/dependencies'
 import {
   collectWorkflowPlanSerializationIssues,
   sanitizeWorkflowPlanInputFrom,
@@ -17,6 +18,14 @@ const isWorkflowValueRef = (value: unknown): value is { $ref: string, $path?: st
 }
 
 describe('workflow definition serialization helpers', () => {
+  it('keeps external refs out of local dependencies', () => {
+    const refs = ['cohort::loadExtractionRecords', 'cohort::local-step']
+
+    expect(filterLocalWorkflowRefs(refs, {
+      'cohort::local-step': {},
+    })).toEqual(['cohort::local-step'])
+  })
+
   it('normalizes array inputs to string refs only', () => {
     const normalized = normalizeWorkflowInput([
       'node:a',
@@ -39,6 +48,17 @@ describe('workflow definition serialization helpers', () => {
       accumulator: { $wf_ref: 'reduce:reduce:accumulator', $wf_path: [] },
       step: { $wf_ref: 'fanout_item', $wf_path: [] },
       records: { $wf_ref: 'node:records', $wf_path: ['records'] },
+    })
+  })
+
+  it('uses run_input when the input only references an external node', () => {
+    const normalized = normalizeWorkflowInput({
+      records: { $ref: 'node:cohort::loadExtractionRecords', $source: 'node', $path: ['records'] },
+    }, [], isWorkflowValueRef)
+
+    expect(normalized.from).toBe('run_input')
+    expect(normalized.value).toEqual({
+      records: { $wf_ref: 'node:cohort::loadExtractionRecords', $wf_path: ['records'] },
     })
   })
 

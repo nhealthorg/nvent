@@ -239,11 +239,18 @@ function makeRecordId(prefix: string): string {
 function createWorkflowScopedContext(
   iii: IiiClient,
   functionId: string,
-  workflow: { run_id: string, node_uid: string },
+  workflow: {
+    run_id: string
+    node_uid: string
+    stream_scope_id?: string
+    root_run_id?: string
+    parent_run_id?: string
+  },
 ) {
+  const streamScopeId = workflow.stream_scope_id ?? workflow.root_run_id ?? workflow.parent_run_id ?? workflow.run_id
   return {
     stateScopeId: workflow.run_id,
-    streamScopeId: workflow.run_id,
+    streamScopeId,
     state: {
       scopeId: workflow.run_id,
       async get<T = unknown>(userKey: string): Promise<T | null> {
@@ -289,16 +296,16 @@ function createWorkflowScopedContext(
       },
     },
     stream: {
-      scopeId: workflow.run_id,
+      scopeId: streamScopeId,
       streamName: WORKFLOW_STREAM_NAME,
-      groupId: workflow.run_id,
+      groupId: streamScopeId,
       subscription() {
-        return { streamName: WORKFLOW_STREAM_NAME, groupId: workflow.run_id }
+        return { streamName: WORKFLOW_STREAM_NAME, groupId: streamScopeId }
       },
       async get<T = unknown>(itemId: string): Promise<T | null> {
         const result = await iii.trigger({
           function_id: 'stream::get',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id, item_id: itemId },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId },
           timeoutMs: 10_000,
         })
         return (result ?? null) as T | null
@@ -306,7 +313,7 @@ function createWorkflowScopedContext(
       async set(itemId: string, data: Record<string, unknown>) {
         await iii.trigger({
           function_id: 'stream::set',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id, item_id: itemId, data },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId, data },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
         })
@@ -314,7 +321,7 @@ function createWorkflowScopedContext(
       async delete(itemId: string) {
         await iii.trigger({
           function_id: 'stream::delete',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id, item_id: itemId },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId, item_id: itemId },
           timeoutMs: 10_000,
           action: TriggerAction.Void()
         })
@@ -322,7 +329,7 @@ function createWorkflowScopedContext(
       async list<T = unknown>(): Promise<Array<{ key: string, value: T }>> {
         const result = await iii.trigger({
           function_id: 'stream::list',
-          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: workflow.run_id },
+          payload: { stream_name: WORKFLOW_STREAM_NAME, group_id: streamScopeId },
           timeoutMs: 10_000,
         })
         const raw = Array.isArray(result)
@@ -343,7 +350,7 @@ function createWorkflowScopedContext(
         await iii.trigger({
           function_id: 'nworkflow::stream-publish',
           payload: {
-            run_id: workflow.run_id,
+            run_id: streamScopeId,
             stream: streamName,
             data,
             node_uid: workflow.node_uid
@@ -357,7 +364,7 @@ function createWorkflowScopedContext(
         await iii.trigger({
           function_id: 'nworkflow::stream-publish',
           payload: {
-            run_id: workflow.run_id,
+            run_id: streamScopeId,
             stream: type,
             data,
             node_uid: workflow.node_uid,
@@ -544,6 +551,9 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
         context.workflow = createWorkflowScopedContext(iii, fn.id, {
           run_id: workflow.run_id,
           node_uid: workflow.node_uid,
+          stream_scope_id: workflow.stream_scope_id,
+          root_run_id: workflow.root_run_id,
+          parent_run_id: workflow.parent_run_id,
         })
         const activeSpan = trace.getActiveSpan()
         activeSpan?.setAttribute('workflow.run_id', workflow.run_id)
