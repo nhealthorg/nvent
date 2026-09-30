@@ -1,5 +1,6 @@
 // @ts-expect-error '#imports' is resolved by Nuxt/Nitro in consuming apps.
 import { useRuntimeConfig, defineWebSocketHandler } from '#imports'
+import { closeWebSocketPeer } from '../utils/websocket'
 
 const CANONICAL_STREAM_NAME = 'nworkflow'
 const RUN_ID_PATTERN = /^r_[0-9a-f]{32}$/
@@ -62,7 +63,7 @@ export default defineWebSocketHandler({
     })
 
     upstream.addEventListener('close', (e) => {
-      peer.close(e.code, e.reason)
+      closeWebSocketPeer(peer, e.code, e.reason)
     })
 
     upstream.addEventListener('error', () => {

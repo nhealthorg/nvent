@@ -1,4 +1,5 @@
 import { createBrowserAuthToken } from '../utils/browserAuthToken'
+import { closeWebSocketPeer } from '../utils/websocket'
 // @ts-expect-error '#imports' is resolved by Nuxt/Nitro in consuming apps.
 import { useRuntimeConfig, defineWebSocketHandler } from '#imports'
 
@@ -150,7 +151,7 @@ export default defineWebSocketHandler({
           scheduleReconnect()
           return
         }
-        peer.close(e.code, e.reason)
+        closeWebSocketPeer(peer, e.code, e.reason)
       })
 
       upstream.addEventListener('error', () => {
