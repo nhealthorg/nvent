@@ -80,7 +80,7 @@ export class WorkflowWorkerManager {
    * This is used by the iii engine config generator to register an exec worker.
    */
   getCommandArgs(): { command: string, args: string[] } {
-    const workerConfigArg = this.buildWorkerConfigArg()
+    const workerConfigArg = this.getConfigArg()
     if (this.preferredCommand) {
       return {
         command: this.preferredCommand,
@@ -107,6 +107,10 @@ export class WorkflowWorkerManager {
         ? ['run', '--manifest-path', cargoToml, '--', '--url', this.wsUrl, '--config', workerConfigArg]
         : ['run', '--manifest-path', cargoToml, '--', '--url', this.wsUrl],
     }
+  }
+
+  getConfigArg(): string | null {
+    return this.buildWorkerConfigArg()
   }
 
   private normalizeAdapter(): {

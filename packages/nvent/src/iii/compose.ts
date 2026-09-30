@@ -9,6 +9,7 @@ export interface ComposeWorkflowWorkerOptions {
   packageName?: string
   packageVersion?: string
   startupTimeout?: string
+  configArg?: string
 }
 
 export interface ComposeGenerationOptions {
@@ -106,10 +107,14 @@ function createWorkflowContainer(worker: ComposeWorkflowWorkerOptions | undefine
       working_dir: '.',
       startup_timeout: startupTimeout,
       scripts: {
-        run: './bin/workflow --url "$III_URL"',
+        run: `./bin/workflow --url "$III_URL"${worker?.configArg ? ` --config ${shellQuote(worker.configArg)}` : ''}`,
       },
     },
   }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
 function normalizePackageVersion(input: string | undefined, fallback: string): string {
@@ -167,7 +172,12 @@ function createDefaultServiceContainers(options: ComposeGenerationOptions): Reco
     const version = resolveContainerVersion(options.packageVersions?.queue)
     if (version) entry.version = version
     if (options.queueConfig && Object.keys(options.queueConfig).length > 0) {
-      entry.config_override = options.queueConfig
+      const queueConfig = { ...options.queueConfig }
+      const adapter = isObjectRecord(queueConfig.adapter) ? queueConfig.adapter : undefined
+      if (adapter?.name === 'redis') {
+        delete queueConfig.queue_configs
+      }
+      entry.config_override = queueConfig
     }
     containers.queue = entry
   }
@@ -317,8 +327,8 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
 
   if (options.includeStream) {
     const streamCfg: Record<string, unknown> = {
-      ...(options.streamConfig ?? {}),
       ...(isObjectRecord(engineWorkers['iii-stream']) ? engineWorkers['iii-stream'] : {}),
+      ...(options.streamConfig ?? {}),
     }
     if (streamCfg.port == null) {
       streamCfg.port = options.streamPort
@@ -352,6 +362,9 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
   for (const [name, defaultEntry] of Object.entries(defaultServiceContainers)) {
     const existingEntry = isObjectRecord(containers[name]) ? containers[name]! : {}
     containers[name] = deepMergeRecord(existingEntry, defaultEntry)
+    if (Object.prototype.hasOwnProperty.call(defaultEntry, 'config_override')) {
+      containers[name].config_override = defaultEntry.config_override
+    }
   }
 
   // 3. Merge workflow worker container
@@ -380,6 +393,9 @@ export function generateWorkerComposeYaml(options: ComposeGenerationOptions): st
       if (!customEntry || typeof customEntry !== 'object') continue
       const existing = isObjectRecord(containers[name]) ? containers[name] : {}
       containers[name] = deepMergeRecord(existing, customEntry as Record<string, unknown>)
+      if (Object.prototype.hasOwnProperty.call(customEntry, 'config_override')) {
+        containers[name].config_override = customEntry.config_override
+      }
     }
   }
 

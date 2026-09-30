@@ -123,7 +123,6 @@ export interface StateModuleConfig {
 
 export interface QueueModuleConfig {
   adapter?: QueueAdapter
-  queues?: Record<string, NamedQueueConfig>
   queue_configs?: Record<string, NamedQueueConfig>
 }
 
@@ -392,9 +391,10 @@ export function generateIiiConfigYaml(cfg: IiiEngineConfig): string {
   if (cfg.modules.queue !== false) {
     const adapter = cfg.queue?.adapter ?? defaultQueueAdapter()
     const queueModCfg: Record<string, unknown> = { adapter }
-    const queueConfigs = cfg.queue?.queues ?? cfg.queue?.queue_configs
-    if (queueConfigs && Object.keys(queueConfigs).length > 0) {
-      queueModCfg.queues = queueConfigs
+    const queueConfigs = cfg.queue?.queue_configs
+    // Redis is pub/sub-only in the queue worker and cannot serve named
+    // durable function queues. Those queue configs require builtin or RabbitMQ.
+    if (adapter.name !== 'redis' && queueConfigs && Object.keys(queueConfigs).length > 0) {
       queueModCfg.queue_configs = queueConfigs
     }
     workers.push({ name: 'queue', config: queueModCfg })
@@ -556,7 +556,6 @@ export function buildEngineConfig(
         : undefined
       return {
         adapter: mapQueueAdapter(iiiOpts.queue?.adapter),
-        queues: formattedConfigs,
         queue_configs: formattedConfigs,
       }
     })() : undefined,

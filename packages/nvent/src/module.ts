@@ -186,11 +186,15 @@ export default defineNuxtModule<NventIiiOptions>({
 
     // Instantiate the WorkflowWorkerManager to allow iii config generation to use it.
     // Prefer a stable, relocatable command path from nvent's artifact bin dir.
-    new WorkflowWorkerManager(
+    const workflowWorkerManager = new WorkflowWorkerManager(
       wsUrl,
       workflowRustRoot,
       packageRootDir,
-      iiiOpts.workflow,
+      // `nworkflow` is the runtime worker key used by the playground and
+      // existing generated configs; keep `workflow` as the public alias.
+      iiiOpts.workflow ?? (iiiOpts as typeof iiiOpts & {
+        nworkflow?: NonNullable<typeof iiiOpts.workflow>
+      }).nworkflow,
       stagedWorkflowBinary ? join('.', 'bin', getWorkflowBinaryName()) : undefined,
     )
 
@@ -242,7 +246,6 @@ export default defineNuxtModule<NventIiiOptions>({
       ...(iiiOpts.workers ?? {}),
       ...(iiiOpts.containers ?? {}),
     } as Record<string, Record<string, unknown>>
-
     const composeFilePath = join(nventDir, composeFileName)
     const existingYamlContent = existsSync(composeFilePath)
       ? readFileSync(composeFilePath, 'utf-8')
@@ -287,6 +290,7 @@ export default defineNuxtModule<NventIiiOptions>({
         packageName: composeOpts.workflowWorkerPackageName,
         packageVersion: composeOpts.workflowWorkerPackageVersion,
         startupTimeout: composeOpts.workflowStartupTimeout,
+        configArg: workflowWorkerManager.getConfigArg() ?? undefined,
       },
     })
 
