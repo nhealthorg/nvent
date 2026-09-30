@@ -275,23 +275,15 @@ pub async fn reconcile_function_nodes(
                 continue;
             }
             Err(e) => {
-                // State read error - treat as node failure
+                // A state/engine read failure is transport instability, not a
+                // business failure. Leave the node Running so the next sweep
+                // can reconcile it after the dependency recovers.
                 tracing::warn!(
                     run_id = %record.run_id,
                     node = %uid,
                     error = %e,
-                    "reconcile: failed to read node result from state"
+                    "reconcile: state result read deferred after transient error"
                 );
-                if let Some(cp) = record.nodes.get_mut(&uid) {
-                    cp.result_error = Some(format!("state read error: {}", e));
-                    cp.state = NodeState::Failed;
-                    cp.completed_at = Some(now); // Track completion time (failure)
-                    let dur = cp
-                        .pending_at
-                        .map(|p| (now - p).max(0) as f64)
-                        .unwrap_or(0.0);
-                    crate::telemetry::record_node_terminal(false, dur);
-                }
             }
         }
     }

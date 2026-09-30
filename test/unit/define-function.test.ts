@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { defineFunction } from '../../packages/nvent/src/runtime/nitro/utils/defineFunction'
 import { normalizeModuleToFnInfo } from '../../packages/nvent/src/runtime/nitro/utils/workers/node'
+
+vi.mock('#imports', () => ({
+  useRuntimeConfig: () => ({ nvent: { functions: {} } }),
+}))
 
 describe('defineFunction trigger namespace validation', () => {
   it('allows builtin triggers without trigger_namespace', () => {

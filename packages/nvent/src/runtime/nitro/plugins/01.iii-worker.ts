@@ -175,10 +175,6 @@ export default defineNitroPlugin(async (nitroApp) => {
     },
   })
 
-  // Expose immediately so useIii() is available during startup while
-  // function/trigger registration is still in progress.
-  nitroApp.$iii = iii
-
   console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
 
   // Define configured queues from Nuxt options with their concurrency & settings
@@ -209,7 +205,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   // Register all Node.js functions and triggers with the iii engine
   const nodeFunctions = ((registry.functions ?? []).filter(f => f.runtime === 'nodejs') as any[])
-  await registerNodeFunctions(iii, nodeFunctions)
+  await registerNodeFunctions(iii, nodeFunctions, { workerName, namespace: appNamespace })
 
   // Built-in RBAC auth function used by the browser worker-manager.
   iii.registerFunction(
@@ -249,6 +245,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     },
     { description: 'nvent browser RBAC auth function' },
   )
+
+  // Publish the client only after all local functions are registered. Routes
+  // must not start workflows while the engine still lacks their node handlers.
+  nitroApp.$iii = iii
 
   // Python workers — started here only in production.
   // In development, module.ts manages Python workers directly in the Nuxt process.

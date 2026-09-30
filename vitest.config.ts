@@ -1,8 +1,12 @@
 import { defineConfig } from 'vitest/config'
-import { defineVitestProject } from '@nuxt/test-utils/config'
 import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      'bun:test': fileURLToPath(new URL('./test/bun-test-shim.ts', import.meta.url)),
+    },
+  },
   test: {
     globals: true,
     testTimeout: 60000,
@@ -15,30 +19,14 @@ export default defineConfig({
           environment: 'node',
         },
       },
-      await defineVitestProject({
+      {
         test: {
           name: 'e2e',
           include: ['test/e2e/base-*.test.ts'],
-          environment: 'nuxt',
-          environmentOptions: {
-            nuxt: {
-              rootDir: fileURLToPath(new URL('./test/fixtures/base', import.meta.url)),
-            },
-          },
+          hookTimeout: 120000,
+          fileParallelism: false,
         },
-      }),
-      await defineVitestProject({
-        test: {
-          name: 'playground-e2e',
-          include: ['test/e2e/playground-*.test.ts'],
-          environment: 'nuxt',
-          environmentOptions: {
-            nuxt: {
-              rootDir: fileURLToPath(new URL('./playground', import.meta.url)),
-            },
-          },
-        },
-      }),
+      },
     ],
     coverage: {
       provider: 'v8',

@@ -105,6 +105,26 @@ def set_span_ok(span) -> None:
         span.set_status(_StatusCode.OK)
 
 
+async def _report_node_completed(client, payload: dict[str, Any]) -> bool:
+    """Best-effort fast path; durable state and the nworkflow sweep remain authoritative."""
+    delay = 0.1
+    for attempt in range(4):
+        try:
+            request = payload if 'function_id' in payload else {
+                'function_id': 'nworkflow::node-completed',
+                'payload': payload,
+            }
+            await client.trigger_async(request)
+            return True
+        except Exception as error:
+            if attempt == 3:
+                print(f"[nvent/workflow] completion fast-path abandoned after retries: {error}", flush=True)
+                return False
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 1.0)
+    return False
+
+
 def _current_trace_id_hex() -> str | None:
     if not _HAS_OTEL:
         return None
@@ -1216,7 +1236,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         if not is_lifecycle_hook:
                             try:
                                 # Wake orchestrator and include failure payload directly
-                                await _client.trigger_async({
+                                await _report_node_completed(_client, {
                                     'function_id': 'nworkflow::node-completed',
                                     'payload': {
                                         'run_id': wf['run_id'],
@@ -1240,7 +1260,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                             print(f"[nvent/workflow] node {wf['node_uid']} completed, emitting completion event", flush=True)
 
                             # Emit completion event
-                            await _client.trigger_async({
+                            await _report_node_completed(_client, {
                                 'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
@@ -1338,7 +1358,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                         if not is_lifecycle_hook:
                             try:
                             # Wake orchestrator and include failure payload directly
-                                await _client.trigger_async({
+                                await _report_node_completed(_client, {
                                     'function_id': 'nworkflow::node-completed',
                                     'payload': {
                                         'run_id': wf['run_id'],
@@ -1360,7 +1380,7 @@ def _register_one(client, mod, default_id: str, fn_def: dict) -> None:
                     if not is_lifecycle_hook:
                         try:
                             # Emit completion event
-                            await _client.trigger_async({
+                            await _report_node_completed(_client, {
                                 'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
@@ -1491,7 +1511,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     if has_workflow_meta and not is_lifecycle_hook:
                         try:
                             # Wake orchestrator and include failure payload directly
-                            await _client.trigger_async({
+                            await _report_node_completed(_client, {
                                 'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
@@ -1513,7 +1533,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     if not is_lifecycle_hook:
                         try:
                             # Emit completion event
-                            await _client.trigger_async({
+                            await _report_node_completed(_client, {
                                 'function_id': 'nworkflow::node-completed',
                                 'payload': {
                                     'run_id': wf['run_id'],
@@ -1621,7 +1641,7 @@ def _register_legacy(client, mod, default_id: str) -> None:
                     await _emit_workflow_trace_event(_client, _fn_id, wf, "workflow.node.completed")
                     try:
                         # Emit completion event
-                        await _client.trigger_async({
+                        await _report_node_completed(_client, {
                             'function_id': 'nworkflow::node-completed',
                             'payload': {
                                 'run_id': wf['run_id'],

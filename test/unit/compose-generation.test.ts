@@ -16,7 +16,7 @@ function makeBaseOptions() {
     includePubsub: false,
     includeHttp: false,
     includeStream: true,
-    includeConsole: true,
+    includeAde: true,
   } as const
 }
 
@@ -27,7 +27,7 @@ describe('compose generation package versions', () => {
     expect(yaml).toContain('worker: package://api.workers.iii.dev/state')
     expect(yaml).toContain('worker: package://api.workers.iii.dev/queue')
     expect(yaml).toContain('worker: package://api.workers.iii.dev/cron')
-    expect(yaml).toContain('worker: package://api.workers.iii.dev/console')
+    expect(yaml).toContain('worker: package://api.workers.iii.dev/ade')
     expect(yaml).toContain('version: latest')
     expect(yaml).not.toContain('version: 0.23.0')
   })
@@ -39,13 +39,13 @@ describe('compose generation package versions', () => {
         state: '1.2.3',
         queue: 'v2.0.0',
         cron: 'iii/v3.1.4',
-        console: 'latest',
+        ade: 'latest',
       },
     })
 
     expect(yaml).toContain('state:\n    worker: package://api.workers.iii.dev/state\n    version: 1.2.3')
     expect(yaml).toContain('queue:\n    worker: package://api.workers.iii.dev/queue\n    version: 2.0.0')
     expect(yaml).toContain('cron:\n    worker: package://api.workers.iii.dev/cron\n    version: 3.1.4')
-    expect(yaml).toContain('console:\n    worker: package://api.workers.iii.dev/console\n    version: latest')
+    expect(yaml).toContain('ade:\n    worker: package://api.workers.iii.dev/ade\n    version: latest')
   })
 })

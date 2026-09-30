@@ -2,6 +2,8 @@ use iii_sdk::errors::Error;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {
+    #[error("workflow_not_ready: {0}")]
+    NotReady(String),
     #[error("invalid workflow definition: {0}")]
     InvalidDef(String),
     #[error("state error: {0}")]

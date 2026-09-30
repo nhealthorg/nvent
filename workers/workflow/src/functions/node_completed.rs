@@ -217,8 +217,16 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
         "enqueueing next tick after node completion"
     );
 
-    // Enqueue a new tick to reconcile the completed node and fire any newly-ready nodes.
-    start::enqueue_tick(&deps.iii, &event.run_id, record.step + 1).await?;
+    // The completion is already durable. A queue/engine outage may lose this
+    // wakeup, but must not turn a successful business operation into a failed
+    // completion handler; the sweep/reconnect recovery will enqueue the tick.
+    if let Err(error) = start::enqueue_tick(&deps.iii, &event.run_id, record.step + 1).await {
+        tracing::warn!(
+            run_id = %event.run_id,
+            error = %error,
+            "node completion persisted; tick wakeup deferred to recovery"
+        );
+    }
 
     Ok(())
 }

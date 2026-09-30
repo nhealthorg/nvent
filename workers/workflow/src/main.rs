@@ -235,6 +235,21 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
+    // Registration is not readiness: the engine may still be converging its
+    // function table while state/queue/stream workers are coming online.
+    // Refresh after all internal functions exist, but keep the gate closed
+    // until the recovery probes below have completed successfully.
+    for attempt in 1..=8u32 {
+        match workflow::discovery::refresh_registry(&iii, &deps.discovery).await {
+            Ok(()) if deps.discovery.has_required_functions().await => break,
+            Ok(()) => tracing::debug!(attempt, "workflow discovery is incomplete during boot"),
+            Err(error) => {
+                tracing::warn!(attempt, error = %error, "workflow discovery refresh failed during boot")
+            }
+        }
+        tokio::time::sleep(Duration::from_millis((150u64 << (attempt - 1)).min(2_000))).await;
+    }
+
     // Bind the cron sweep; retain the handle so a sweep_expression change
     // re-binds it live.
     let handles = Arc::new(TriggerHandles {
@@ -250,18 +265,63 @@ async fn main() -> Result<()> {
 
     // Immediate one-shot sweep after resume-scan so a reboot doesn't wait for
     // the next cron minute to reconcile stale Running nodes / overdue timeouts.
-    if let Err(e) = boot_sweep_with_retry(&deps, 8, 150).await {
-        tracing::warn!(error = %e, "boot-sweep failed");
+    let boot_sweep_ok = match boot_sweep_with_retry(&deps, 8, 150).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, "boot-sweep failed");
+            false
+        }
+    };
+
+    if boot_sweep_ok && deps.discovery.has_required_functions().await {
+        deps.discovery.mark_ready().await;
+        tracing::info!("nworkflow readiness gate opened");
+    } else {
+        tracing::warn!("nworkflow readiness gate remains closed until discovery recovers");
     }
 
     // LAST: bind the configuration-change trigger.
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
+    // The engine event is an optimization, not the only reconnect signal. A
+    // periodic inventory refresh also recovers when a reconnect happens before
+    // the functions-available trigger is replayed.
+    let recovery_iii = iii.clone();
+    let recovery_deps = deps.clone();
+    let recovery_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            match workflow::discovery::refresh_registry(&recovery_iii, &recovery_deps.discovery)
+                .await
+            {
+                Ok(()) if recovery_deps.discovery.has_required_functions().await => {
+                    if !recovery_deps.discovery.is_ready().await {
+                        recovery_deps.discovery.mark_ready().await;
+                        tracing::info!("periodic discovery recovery reopened readiness gate");
+                    }
+                    workflow::discovery::recover_runs(&recovery_iii).await;
+                }
+                Ok(()) => {
+                    recovery_deps.discovery.mark_stale().await;
+                    tracing::warn!(
+                        "periodic discovery refresh found incomplete workflow functions"
+                    );
+                }
+                Err(error) => {
+                    recovery_deps.discovery.mark_stale().await;
+                    tracing::debug!(error = %error, "periodic discovery refresh failed");
+                }
+            }
+        }
+    });
+
     tracing::info!("workflow ready");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("workflow shutting down");
+    recovery_task.abort();
     iii.shutdown_async().await;
     Ok(())
 }

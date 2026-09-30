@@ -288,7 +288,7 @@ export default defineNuxtModule<NventIiiOptions>({
         source: composeWorkflowWorkerSource,
         containerName: composeOpts.workflowWorkerContainerName,
         packageName: composeOpts.workflowWorkerPackageName,
-        packageVersion: composeOpts.workflowWorkerPackageVersion,
+        packageVersion: composeOpts.workflowWorkerPackageVersion ?? meta.version,
         startupTimeout: composeOpts.workflowStartupTimeout,
         configArg: workflowWorkerManager.getConfigArg() ?? undefined,
       },

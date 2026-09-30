@@ -74,10 +74,11 @@ async fn resolve_completed_result(
 /// `callerSessionId`/`notify` for its `nworkflow::start` call and uses `input`
 /// as the actual workflow input, so an unrelated top-level trigger (no
 /// wrapper) is completely unaffected.
-fn wrapped_trigger_payload(caller_session_id: &str, input: Value) -> Value {
+fn wrapped_trigger_payload(caller_session_id: &str, idempotency_key: &str, input: Value) -> Value {
     json!({
         CHILD_WORKFLOW_WRAPPER_KEY: {
             "callerSessionId": caller_session_id,
+            "idempotencyKey": idempotency_key,
             "notify": notify_spec(),
         },
         "input": input,
@@ -92,11 +93,25 @@ pub async fn start_child_workflow_task(
     req: ChildStartRequest,
 ) -> Result<ChildStartResponse, WorkflowError> {
     let caller_session_id = ids::child_session_id(&req.run_id, &req.node_uid);
+    let idempotency_key = format!("child:{}:{}", req.run_id, req.node_uid);
+
+    // A retry after the child was accepted but before the response/link was
+    // persisted must reuse the same start key. This also makes recovery safe
+    // when the parent tick is redelivered.
+    if let Some(existing_link) = crate::state::list_child_workflow_links_for_run(&req.run_id)
+        .await?
+        .into_iter()
+        .find(|link| link.parent_node_uid == req.node_uid)
+    {
+        return Ok(ChildStartResponse {
+            child_run_id: existing_link.child_run_id,
+        });
+    }
 
     crate::state::put_session_index(&deps.iii, &caller_session_id, &req.run_id).await?;
 
     let dispatch_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    let payload = wrapped_trigger_payload(&caller_session_id, req.input);
+    let payload = wrapped_trigger_payload(&caller_session_id, &idempotency_key, req.input);
 
     let response = deps
         .trigger_bounded(
@@ -223,7 +238,11 @@ mod tests {
 
     #[test]
     fn wrapped_trigger_payload_carries_caller_session_and_notify() {
-        let payload = wrapped_trigger_payload("wf_r_parent_invoice", json!({ "orderId": "o1" }));
+        let payload = wrapped_trigger_payload(
+            "wf_r_parent_invoice",
+            "child:wf_r_parent:invoice",
+            json!({ "orderId": "o1" }),
+        );
 
         assert_eq!(
             payload[CHILD_WORKFLOW_WRAPPER_KEY]["callerSessionId"],
@@ -232,6 +251,10 @@ mod tests {
         assert_eq!(
             payload[CHILD_WORKFLOW_WRAPPER_KEY]["notify"]["function_id"],
             CHILD_COMPLETED_ID
+        );
+        assert_eq!(
+            payload[CHILD_WORKFLOW_WRAPPER_KEY]["idempotencyKey"],
+            "child:wf_r_parent:invoice"
         );
         assert_eq!(payload["input"]["orderId"], "o1");
     }

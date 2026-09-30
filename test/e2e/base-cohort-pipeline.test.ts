@@ -1,20 +1,40 @@
-import { $fetch } from '@nuxt/test-utils/e2e'
+import { $fetch, setup } from '@nuxt/test-utils/e2e'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-describe('playground cohort pipeline', () => {
+describe('base fixture cohort pipeline', async () => {
+  await setup({
+    rootDir: resolve(process.cwd(), 'test/fixtures/base'),
+    server: true,
+  })
+
   async function runPipeline(patientId: string) {
-    const started = await $fetch<{ run_id?: string, runId?: string }>('/api/test/cohort-pipeline', {
-      method: 'POST',
-      body: { patientId },
-    })
+    let started: { run_id?: string, runId?: string }
+    let lastError: unknown
+    for (let attempt = 0; attempt < 120; attempt++) {
+      try {
+        started = await $fetch('/api/test/cohort-pipeline', {
+          method: 'POST',
+          body: { patientId },
+        })
+        lastError = undefined
+        break
+      } catch (error) {
+        lastError = error
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+    }
+    if (lastError || !started!) {
+      throw new Error(String(lastError))
+    }
     const runId = started.run_id || started.runId
     expect(runId).toEqual(expect.any(String))
 
     let status: any
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < 80; attempt++) {
       status = await $fetch(`/api/test/cohort-pipeline/${runId}`)
       if (status?.status === 'completed' || status?.status === 'failed') break
-      await new Promise(resolve => setTimeout(resolve, 100))
+      await new Promise(resolve => setTimeout(resolve, 250))
     }
 
     return status

@@ -24,7 +24,7 @@
     "dev:preview": "NVENT_PYTHON_BIN=playground/.venv/bin/python3 nuxi preview playground",
     "test": "vitest run",
     "test:unit": "vitest test/unit",
-    "test:e2e": "vitest test/e2e",
+    "test:e2e": "vitest run test/e2e",
     "test:coverage": "vitest --coverage",
     "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit",
     "lint": "eslint --ext .ts,.js,.mjs,.cjs,.vue .",

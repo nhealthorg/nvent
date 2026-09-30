@@ -12,6 +12,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+async function reportNodeCompleted(
+  iii: IiiClient,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  let delayMs = 100
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await iii.trigger({
+        function_id: 'nworkflow::node-completed',
+        payload,
+      })
+      return
+    } catch (error) {
+      if (attempt === 3) {
+        console.warn('[nvent/workflow] completion fast-path abandoned after retries', error)
+        return
+      }
+      await sleep(delayMs)
+      delayMs = Math.min(delayMs * 2, 1_000)
+    }
+  }
+}
+
 function isTransientTriggerRegistrationError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
   return /worker\s+.+\s+is\s+missing|trigger\s+type\s+.+\s+not\s+found|not\s+active\s+in\s+your\s+project/i.test(msg)
@@ -120,6 +143,39 @@ async function waitForRequiredTriggerTypes(
 
   const missing = Array.from(requiredTriggerTypes).join(', ')
   console.warn(`[nvent] trigger-type readiness timeout before registration: ${missing}`)
+}
+
+async function waitForWorkerConnection(
+  iii: IiiClient,
+  options?: { timeoutMs?: number, pollMs?: number, workerName?: string },
+): Promise<void> {
+  const timeoutMs = options?.timeoutMs ?? 25_000
+  const pollMs = options?.pollMs ?? 50
+  const deadline = Date.now() + timeoutMs
+  const client = iii as IiiClient & { getConnectionState?: () => string }
+  let lastState = 'unknown'
+
+  while (Date.now() < deadline) {
+    lastState = client.getConnectionState?.() ?? 'unknown'
+    if (lastState === 'connected') {
+      if (!options?.workerName) return
+      try {
+        const result = await iii.trigger({
+          function_id: 'engine::workers::list',
+          payload: {},
+          timeoutMs: 5_000,
+        })
+        const workers = asArrayPayload(result, 'workers') as Array<Record<string, unknown>>
+        if (workers.some(worker => worker.name === options.workerName)) return
+      }
+      catch {
+        // The engine may accept the socket before its worker catalog is ready.
+      }
+    }
+    await sleep(pollMs)
+  }
+
+  console.warn(`[nvent] iii-worker connection was not ready before function registration (state: ${lastState}, worker: ${options?.workerName ?? 'unknown'})`)
 }
 
 async function registerTriggerWithRetry(
@@ -500,9 +556,11 @@ function createContextLogger(iii: IiiClient, functionId: string, context: { run_
  * Auto-wraps handlers to emit nworkflow::node-completed events when _workflow metadata
  * is present in the input (workflow orchestration).
  */
-export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): Promise<void> {
+export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[], options?: { workerName?: string, namespace?: string }): Promise<void> {
   const requiredWorkers = new Set<string>()
   let workflowSubscriptionCount = 0
+
+  await waitForWorkerConnection(iii, { workerName: options?.workerName })
 
   for (const fn of fns) {
     for (const trigger of fn.triggers ?? []) {
@@ -516,8 +574,6 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
       requiredWorkers.add('queue')
     }
   }
-
-  await waitForRequiredWorkers(iii, requiredWorkers)
 
   for (const fn of fns) {
     // Wrap handler to auto-emit workflow completion events
@@ -584,17 +640,14 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
         if (reportsNodeCompletion) {
           try {
             // Emit completion event to wake the orchestrator
-            await iii.trigger({
-              function_id: 'nworkflow::node-completed',
-              payload: {
-                run_id: workflow.run_id,
-                node_uid: workflow.node_uid,
-                attempt: Number(workflow.attempt ?? 0),
-                trace_id: trace.getActiveSpan()?.spanContext().traceId,
-                function_id: fn.id,
-                runtime: 'nodejs',
-                result_error: errorMessage,
-              },
+            await reportNodeCompleted(iii, {
+              run_id: workflow.run_id,
+              node_uid: workflow.node_uid,
+              attempt: Number(workflow.attempt ?? 0),
+              trace_id: trace.getActiveSpan()?.spanContext().traceId,
+              function_id: fn.id,
+              runtime: 'nodejs',
+              result_error: errorMessage,
             })
           } catch (reportErr) {
             console.error(`[nvent/workflow] failed to report node failure for ${workflow.node_uid}:`, reportErr)
@@ -610,17 +663,14 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
 
           // Emit completion event (fast-path tick wake)
           if (reportsNodeCompletion) {
-            await iii.trigger({
-              function_id: 'nworkflow::node-completed',
-              payload: {
-                run_id: workflow.run_id,
-                node_uid: workflow.node_uid,
-                attempt: Number(workflow.attempt ?? 0),
-                trace_id: trace.getActiveSpan()?.spanContext().traceId,
-                function_id: fn.id,
-                runtime: 'nodejs',
-                result,
-              },
+            await reportNodeCompleted(iii, {
+              run_id: workflow.run_id,
+              node_uid: workflow.node_uid,
+              attempt: Number(workflow.attempt ?? 0),
+              trace_id: trace.getActiveSpan()?.spanContext().traceId,
+              function_id: fn.id,
+              runtime: 'nodejs',
+              result,
             })
           }
           
@@ -640,7 +690,8 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
         description: fn.description,
         request_format: fn.request_format,
         response_format: fn.response_format,
-      },
+        namespace: options?.namespace,
+      } as any,
     )
 
     // Register all declared triggers
@@ -649,7 +700,7 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[]): 
       await registerTriggerWithRetry(iii, {
         type: trigger.type,
         function_id: fn.id,
-        trigger_namespace: trigger.trigger_namespace,
+        trigger_namespace: trigger.trigger_namespace ?? options?.namespace,
         config: cfg,
       })
     }

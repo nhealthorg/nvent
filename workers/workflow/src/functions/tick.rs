@@ -41,6 +41,24 @@ fn parked_run_is_stuck(record: &WorkflowRunRecord) -> bool {
     !has_running_nodes(record)
 }
 
+fn is_transient_dispatch_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "connection",
+        "not connected",
+        "disconnected",
+        "reconnect",
+        "temporarily unavailable",
+        "service unavailable",
+        "queue unavailable",
+        "function not found",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
 // ---------------------------------------------------------------------------
 // decide (pure)
 // ---------------------------------------------------------------------------
@@ -1118,6 +1136,14 @@ pub(crate) async fn fire_node(
         return Ok(());
     }
 
+    // A reconnect can leave the local function table temporarily stale. Keep
+    // the node pending while discovery converges; do not dispatch into a
+    // black hole or turn transport instability into a workflow failure.
+    if !deps.discovery.is_ready().await {
+        tracing::debug!(run_id = %record.run_id, node_uid = %node_uid, "dispatch deferred while nworkflow is not ready");
+        return Ok(());
+    }
+
     let base_id = node_uid.split('#').next().unwrap();
     let node = def
         .nodes
@@ -1229,12 +1255,6 @@ pub(crate) async fn fire_node(
     // Fire the function or agent asynchronously via queue / harness (non-blocking)
     let node_pending_timeout_ms =
         effective_pending_timeout_ms(prior_timeout, function.timeout_ms, dispatch_timeout_ms);
-    let max_retries = function
-        .engine_retry
-        .as_ref()
-        .and_then(|r| r.max_attempts)
-        .unwrap_or(deps.cfg().await.max_node_retries);
-
     if let Some(agent_spec) = &node.agent {
         let mut spec = agent_spec.clone();
         if !input_val.is_null() {
@@ -1360,70 +1380,23 @@ pub(crate) async fn fire_node(
         }
     }
 
-    // Discovery check: if the function is not in the registry, fail immediately
-    // instead of enqueuing into a black hole.
+    // Discovery check: a missing function means the snapshot raced a reconnect.
+    // Refresh and leave the node pending; the sweep/reconnect path will retry.
     if !crate::discovery::is_function_available(&deps.discovery, &function.id).await {
-        if attempt >= max_retries {
-            tracing::error!(
-                run_id = %record.run_id,
-                node_uid = %node_uid,
-                function_id = %function.id,
-                retries = attempt,
-                max_retries,
-                "node fire failed: function missing after discovery retries"
-            );
-
-            record.nodes.insert(
-                node_uid.to_string(),
-                NodeCheckpoint {
-                    state: NodeState::Failed,
-                    session_id: None,
-                    turn_id: None,
-                    result_ref: None,
-                    result_error: Some(format!(
-                        "Function not found after retries: {}",
-                        function.id
-                    )),
-                    child_run_id: None,
-                    pending_at: Some(deps.now_ms()),
-                    pending_timeout_ms: None,
-                    retries: attempt,
-                    completed_at: Some(deps.now_ms()),
-                    worker_name: None,
-                },
-            );
-        } else {
-            // Discovery is eventually consistent across worker reconnects.
-            // Treat early misses as transient and re-drive via sweep timeout.
-            tracing::warn!(
-                run_id = %record.run_id,
-                node_uid = %node_uid,
-                function_id = %function.id,
-                retries = attempt,
-                max_retries,
-                "function missing in discovery snapshot; will retry"
-            );
-
-            record.nodes.insert(
-                node_uid.to_string(),
-                NodeCheckpoint {
-                    state: NodeState::Running,
-                    session_id: None,
-                    turn_id: None,
-                    result_ref: None,
-                    result_error: Some("function_missing_discovery_snapshot".to_string()),
-                    child_run_id: None,
-                    pending_at: Some(deps.now_ms()),
-                    pending_timeout_ms: Some(10_000),
-                    retries: attempt,
-                    completed_at: None,
-                    worker_name: None,
-                },
-            );
+        tracing::warn!(
+            run_id = %record.run_id,
+            node_uid = %node_uid,
+            function_id = %function.id,
+            "function missing after discovery refresh; dispatch deferred"
+        );
+        deps.discovery.mark_stale().await;
+        if crate::discovery::refresh_registry(&deps.iii, &deps.discovery)
+            .await
+            .is_ok()
+            && deps.discovery.has_required_functions().await
+        {
+            deps.discovery.mark_ready().await;
         }
-
-        record.updated_at = deps.now_ms();
-        state::put_run(&deps.iii, record).await?;
         return Ok(());
     }
 
@@ -1471,6 +1444,16 @@ pub(crate) async fn fire_node(
                     .as_str()
                     .unwrap_or("Unknown trigger error")
                     .to_string();
+                if is_transient_dispatch_error(&err_msg) {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        node_uid = %node_uid,
+                        error = %err_msg,
+                        "node dispatch deferred after transient trigger error"
+                    );
+                    deps.discovery.mark_stale().await;
+                    return Ok(());
+                }
                 tracing::warn!(
                     run_id = %record.run_id,
                     node_uid = %node_uid,
@@ -1565,6 +1548,16 @@ pub(crate) async fn fire_node(
             }
         }
         Err(e) => {
+            if is_transient_dispatch_error(&e.to_string()) {
+                tracing::warn!(
+                    run_id = %record.run_id,
+                    node_uid = %node_uid,
+                    error = %e,
+                    "node dispatch deferred after transient trigger failure"
+                );
+                deps.discovery.mark_stale().await;
+                return Ok(());
+            }
             tracing::warn!(
                 run_id = %record.run_id,
                 node_uid = %node_uid,
@@ -2089,6 +2082,16 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn transient_dispatch_errors_are_deferred() {
+        assert!(is_transient_dispatch_error(
+            "queue unavailable during reconnect"
+        ));
+        assert!(is_transient_dispatch_error("local RPC timeout"));
+        assert!(is_transient_dispatch_error("function not found"));
+        assert!(!is_transient_dispatch_error("invalid input schema"));
+    }
 
     // -----------------------------------------------------------------------
     // Test helpers

@@ -1096,7 +1096,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
         );
     }
 
-    let mut record = WorkflowRunRecord {
+    let record = WorkflowRunRecord {
         run_id: run_id.clone(),
         workflow_name,
         workflow_trace_id: Some(new_trace_id()),
@@ -1143,16 +1143,12 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
             .await?;
     }
 
-    // The Running record is already persisted; if the first tick fails to enqueue,
-    // only the cron sweep would recover it (up to a sweep interval later). Mark the
-    // run Failed best-effort so nworkflow::status / list don't surface a phantom
-    // Running run in the meantime.
+    // The Running record is already persisted. If the first tick fails to enqueue
+    // during a queue/engine reconnect, leave the run durable and let the next
+    // sweep or reconnect recovery enqueue it again. A transport failure must not
+    // become a business failure.
     if let Err(e) = enqueue_tick(&deps.iii, &run_id, 0).await {
-        record.status = RunStatus::Failed;
-        record.result_error = Some(format!("failed to enqueue initial tick: {e}"));
-        record.updated_at = deps.now_ms();
-        let _ = state::put_run(&deps.iii, &record).await;
-        return Err(e);
+        tracing::warn!(run_id = %run_id, error = %e, "initial tick enqueue deferred to recovery");
     }
 
     Ok(StartResponse { run_id })

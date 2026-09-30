@@ -618,7 +618,14 @@ describe('defineWorkflow compilation', () => {
       body: ['add-item'],
     })
     expect(plan.nodes['add-item'].reduce_body).toEqual({ reduce: 'reduce' })
-    expect(plan.nodes['add-item'].input).toEqual({ from: 'run_input' })
+    expect(plan.nodes['add-item'].input).toEqual({
+      from: 'run_input',
+      value: {
+        accumulator: { $wf_ref: 'reduce:reduce:accumulator', $wf_path: [] },
+        item: { $wf_ref: 'fanout_item', $wf_path: [] },
+        index: { $wf_ref: 'reduce:reduce:index', $wf_path: [] },
+      },
+    })
     expect(plan.nodes.finalize.depends_on).toEqual(['reduce'])
   })
 
@@ -988,7 +995,7 @@ describe('defineWorkflow compilation', () => {
     const plan = await workflow.compile({ orderId: 'o1' })
     const node = plan.nodes['billing::generate-invoice']
 
-    expect(node.child_workflow).toEqual({ workflow: 'billing::generate-invoice' })
+    expect(node.childWorkflow).toEqual({ workflow: 'billing::generate-invoice' })
     expect(node.function).toBeUndefined()
     expect(node.result).toEqual({ returnType: 'memory' })
   })
@@ -1006,8 +1013,8 @@ describe('defineWorkflow compilation', () => {
 
     const plan = await workflow.compile({ orderId: 'o1' })
 
-    expect(plan.nodes.invoice.child_workflow).toEqual({ workflow: 'billing::generate-invoice' })
-    expect(plan.nodes.ship.child_workflow).toEqual({ workflow: 'logistics::dispatch-order' })
+    expect(plan.nodes.invoice.childWorkflow).toEqual({ workflow: 'billing::generate-invoice' })
+    expect(plan.nodes.ship.childWorkflow).toEqual({ workflow: 'logistics::dispatch-order' })
     expect(plan.nodes.ship.result).toEqual({ returnType: 'store' })
     expect(plan.nodes.ship.depends_on).toEqual(['invoice'])
   })

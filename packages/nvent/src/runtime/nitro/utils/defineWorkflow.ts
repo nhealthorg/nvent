@@ -1005,9 +1005,11 @@ export function defineWorkflow<
       let input: TInput = rawInput
       let childWorkflowCallerSessionId: string | undefined
       let childWorkflowNotify: { function_id: string, queue?: string } | undefined
+      let childWorkflowIdempotencyKey: string | undefined
       if (rawInput && typeof rawInput === 'object' && CHILD_WORKFLOW_WRAPPER_KEY in (rawInput as Record<string, unknown>)) {
         const wrapper = (rawInput as Record<string, any>)[CHILD_WORKFLOW_WRAPPER_KEY]
         childWorkflowCallerSessionId = wrapper?.callerSessionId
+        childWorkflowIdempotencyKey = wrapper?.idempotencyKey
         childWorkflowNotify = wrapper?.notify
         input = (rawInput as Record<string, any>).input
       }
@@ -1041,6 +1043,7 @@ export function defineWorkflow<
             input,
             ...(workflowInputPolicy ? { inputPolicy: workflowInputPolicy } : {}),
             ...(childWorkflowCallerSessionId ? { caller_session_id: childWorkflowCallerSessionId } : {}),
+            ...(childWorkflowIdempotencyKey ? { idempotency_key: childWorkflowIdempotencyKey } : {}),
             ...(childWorkflowNotify ? { notify: childWorkflowNotify } : {}),
           },
           ...(workflowsNamespace ? { namespace: workflowsNamespace } : {}),

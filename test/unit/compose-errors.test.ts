@@ -128,6 +128,7 @@ wait "$child_pid"
     const engineSignalPath = join(fixtureDir, 'engine-signal')
     const enginePidPath = join(fixtureDir, 'engine-pid')
     const readyPath = join(fixtureDir, 'ready')
+    const ownerScriptPath = join(fixtureDir, 'owner.mjs')
     writeFileSync(enginePath, `#!${process.execPath}
 import { writeFileSync } from 'node:fs'
 const stateDir = process.env.III_COMPOSE_STATE_DIR
@@ -166,12 +167,18 @@ wait
       writeFileSync(${JSON.stringify(readyPath)}, 'ready')
       process.exit(0)
     `
+    writeFileSync(ownerScriptPath, script)
 
     let enginePid = 0
     try {
-      const owner = spawn(process.execPath, ['-e', script], { stdio: 'ignore' })
+      const owner = spawn('pnpm', ['exec', 'vite-node', '--script', ownerScriptPath], { stdio: ['ignore', 'pipe', 'pipe'] })
+      let ownerOutput = ''
+      owner.stdout?.on('data', chunk => { ownerOutput += chunk.toString() })
+      owner.stderr?.on('data', chunk => { ownerOutput += chunk.toString() })
       await new Promise<void>((resolve, reject) => {
-        owner.once('exit', code => code === 0 ? resolve() : reject(new Error(`owner exited with ${code}`)))
+        owner.once('exit', code => code === 0
+          ? resolve()
+          : reject(new Error(`owner exited with ${code}: ${ownerOutput}`)))
         owner.once('error', reject)
       })
       await waitForFile(readyPath)
