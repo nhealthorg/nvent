@@ -1285,7 +1285,7 @@ export function defineWorkflow<
 
         agent: async <T = AgentResult>(spec: AgentInvocationSpec, options?: AgentRuntimeOptions): Promise<T> => {
           const rawId = spec.task?.title || (typeof spec.agent === 'string' ? spec.agent : spec.agent?.id) || 'agent'
-          const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(rawId))
+          const nodeId = applyAutoNodeSuffix(toVarNodeIdBase(rawId).replace(/^var_/, 'agent_'))
           const response = options?.response
             ? {
                 ...options.response,
@@ -1300,7 +1300,7 @@ export function defineWorkflow<
           }
 
           return ctx.node(nodeId, {
-            label: spec.task?.title ?? (typeof spec.agent === 'string' ? spec.agent : spec.agent?.display?.name ?? 'Agent'),
+            label: spec.task?.title ? `Agent: ${spec.task.title}` : (typeof spec.agent === 'string' ? spec.agent : spec.agent?.display?.name ?? 'Agent'),
             agent: spec,
             agentOptions: options ? { ...options, response } : undefined,
             input: spec.input ?? createWorkflowValueRef('run_input', 'run_input'),

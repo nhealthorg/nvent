@@ -1110,10 +1110,12 @@ async fn execute_internal_var_set(
 
 fn effective_pending_timeout_ms(
     prior_timeout: Option<u64>,
+    agent_timeout_ms: Option<u64>,
     function_timeout_ms: Option<u64>,
     default_pending_timeout_ms: u64,
 ) -> Option<u64> {
     prior_timeout
+        .or(agent_timeout_ms)
         .or(function_timeout_ms)
         .or(Some(default_pending_timeout_ms))
 }
@@ -1254,12 +1256,14 @@ pub(crate) async fn fire_node(
     let dispatch_timeout_ms = cfg.dispatch_timeout_ms;
 
     // Fire the function or agent asynchronously via queue / harness (non-blocking)
-    let node_pending_timeout_ms =
-        effective_pending_timeout_ms(
-            prior_timeout,
-            function.timeout_ms,
-            cfg.default_pending_timeout_ms,
-        );
+    let node_pending_timeout_ms = effective_pending_timeout_ms(
+        prior_timeout,
+        node.agent_options
+            .as_ref()
+            .and_then(|options| options.timeout_ms),
+        function.timeout_ms,
+        cfg.default_pending_timeout_ms,
+    );
     if let Some(agent_spec) = &node.agent {
         let mut spec = agent_spec.clone();
         if !input_val.is_null() {
@@ -2967,17 +2971,21 @@ mod tests {
     }
 
     #[test]
-    fn effective_pending_timeout_prefers_prior_then_function_then_default() {
+    fn effective_pending_timeout_prefers_prior_then_agent_then_function_then_default() {
         assert_eq!(
-            effective_pending_timeout_ms(Some(5_000), Some(10_000), 30_000),
+            effective_pending_timeout_ms(Some(5_000), Some(8_000), Some(10_000), 30_000),
             Some(5_000)
         );
         assert_eq!(
-            effective_pending_timeout_ms(None, Some(10_000), 30_000),
+            effective_pending_timeout_ms(None, Some(8_000), Some(10_000), 30_000),
+            Some(8_000)
+        );
+        assert_eq!(
+            effective_pending_timeout_ms(None, None, Some(10_000), 30_000),
             Some(10_000)
         );
         assert_eq!(
-            effective_pending_timeout_ms(None, None, 300_000),
+            effective_pending_timeout_ms(None, None, None, 300_000),
             Some(300_000)
         );
     }

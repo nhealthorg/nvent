@@ -15,9 +15,11 @@ use super::{run_delete, start};
 
 fn effective_max_retries(def: &crate::types::WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
     let base_id = node_uid.split('#').next().unwrap_or(node_uid);
-    def.nodes
-        .get(base_id)
-        .map(|n| n.effective_function())
+    let node = def.nodes.get(base_id);
+    if node.is_some_and(|n| n.agent.is_some()) {
+        return 0;
+    }
+    node.map(|n| n.effective_function())
         .and_then(|f| f.engine_retry)
         .and_then(|r| r.max_attempts)
         .unwrap_or(fallback)
@@ -406,6 +408,15 @@ mod tests {
         let def = retry_test_def(None);
         assert_eq!(effective_max_retries(&def, "step", 3), 3);
         assert_eq!(effective_max_retries(&def, "missing", 3), 3);
+    }
+
+    #[test]
+    fn agent_timeout_does_not_refire_a_running_harness_task() {
+        let mut def = retry_test_def(None);
+        let node = def.nodes.get_mut("step").unwrap();
+        node.agent = Some(serde_json::from_value(serde_json::json!({ "prompt": "test" })).unwrap());
+        assert_eq!(effective_max_retries(&def, "step", 3), 0);
+        assert_eq!(effective_max_retries(&def, "step#1", 3), 0);
     }
 
     #[test]

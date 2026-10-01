@@ -348,7 +348,11 @@ Beim Terminieren wird das Child-Ergebnis unverändert als Node-Ergebnis übernom
 
 Jeder Run behält seinen **eigenen** physischen Stream (`stream_scope_id = eigene run_id`) für seine eigenen Ereignisse — das ist unverändert und bleibt die Quelle für `nworkflow::status`/Timeline-Abfragen dieses spezifischen Runs.
 
-Zusätzlich gilt: **Jeder Schreibvorgang** auf den kanonischen `nworkflow`-Stream läuft durch einen einzigen zentralen Punkt (`stream_publish::handle` / `publish_best_effort`, siehe §7.3). Dieser Punkt wird um eine Spiegelung erweitert:
+Zusätzlich gilt: **Jeder Schreibvorgang von nworkflow** auf den kanonischen `nworkflow`-Stream läuft durch einen einzigen zentralen Punkt (`stream_publish::handle` / `publish_best_effort`, siehe §7.3). Dieser Punkt wird um eine Spiegelung erweitert:
+
+Der Harness schreibt seinen nativen Stream direkt in die Gruppe des ausführenden Child-Runs und durchläuft diesen Publisher nicht. nworkflow übernimmt die relevanten Harness- und Session-Events (`agents.*`, einschließlich Assistant-Revisionen) über seine Event-Handler in den eigenen Stream und spiegelt sie dort zur Root-Gruppe. Der Parent-Client erhält so den normalisierten Live-Stream mit `origin_run_id` und `node_path`, während der native Harness-Stream beim Child abrufbar bleibt. Native Harness-Frames werden nicht zusätzlich als dritte Kopie in die Root-Gruppe geschrieben.
+
+Für zwei getrennt abrufbare Gruppen müssen Child- und Root-Stream-Items jeweils persistiert werden; der Worker hält dafür keinen weiteren Frame-Puffer. Häufige `agents.message.updated`-Revisionen werden nicht noch einmal vollständig in den Audit-Traces beider Runs gespeichert: Die Traces enthalten Vorschau und Item-ID, der volle Inhalt verbleibt in den Stream-Items. Da die Stream-Items weiterhin vollständige Message-Snapshots je Revision speichern, bleibt der Speicherbedarf bei sehr langen Antworten und vielen Revisionen ein eigenständiges Retention-/Compaction-Thema.
 
 ```rust
 // Nach dem regulären Schreiben in den eigenen stream_scope_id-Gruppe:

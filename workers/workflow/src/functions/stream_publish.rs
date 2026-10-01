@@ -105,22 +105,13 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
         "node_uid": node_uid,
         "ts_unix_ms": ts_unix_ms,
     });
+    let audit_payload = audit_stream_payload(&event_type, &payload);
 
     let item_id = publish_to_group(deps, &stream_name, &run_id_ref, &payload, "original").await?;
 
     if let Some(root_group_id) = mirror_group_id.as_deref() {
-        let mirrored_payload = json!({
-            "type": payload["type"],
-            "data": payload["data"],
-            "run_id": root_group_id,
-            "node_uid": payload["node_uid"],
-            "ts_unix_ms": payload["ts_unix_ms"],
-            "origin_run_id": run_id_ref.clone(),
-            "origin_node_uid": payload["node_uid"],
-            "origin_stream_group_id": run_id_ref.clone(),
-            "node_path": mirror_node_path,
-            "mirrored": true,
-        });
+        let mirrored_payload =
+            mirror_payload(&payload, root_group_id, &run_id_ref, &mirror_node_path);
         publish_to_group(
             deps,
             &stream_name,
@@ -149,7 +140,7 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
                     "workflow.stream.group_id": run_id,
                     "workflow.stream.item_id": item_id,
                     "workflow.stream.preview": data_preview,
-                    "workflow.stream.payload": payload,
+                    "workflow.stream.payload": audit_payload,
                 })),
                 trace_id: None,
                 span_id: None,
@@ -179,7 +170,7 @@ pub async fn handle(deps: &Deps, req: StreamPublishRequest) -> Result<(), Workfl
                         "workflow.stream.origin_node_uid": node_uid,
                         "workflow.stream.node_path": mirror_node_path,
                         "workflow.stream.preview": data_preview,
-                        "workflow.stream.payload": payload,
+                        "workflow.stream.payload": audit_payload,
                     })),
                     trace_id: None,
                     span_id: None,
@@ -198,6 +189,26 @@ fn mirror_target_group_id(run_id: &str, root_stream_scope_id: Option<&str>) -> O
     root_stream_scope_id
         .filter(|root_group_id| *root_group_id != run_id)
         .map(str::to_string)
+}
+
+fn mirror_payload(
+    payload: &Value,
+    root_group_id: &str,
+    origin_run_id: &str,
+    node_path: &[String],
+) -> Value {
+    json!({
+        "type": payload["type"],
+        "data": payload["data"],
+        "run_id": root_group_id,
+        "node_uid": payload["node_uid"],
+        "ts_unix_ms": payload["ts_unix_ms"],
+        "origin_run_id": origin_run_id,
+        "origin_node_uid": payload["node_uid"],
+        "origin_stream_group_id": origin_run_id,
+        "node_path": node_path,
+        "mirrored": true,
+    })
 }
 
 async fn resolve_node_path(deps: &Deps, origin_run_id: &str) -> Result<Vec<String>, WorkflowError> {
@@ -257,11 +268,11 @@ async fn publish_to_group(
 
 fn truncate_value(v: &Value) -> Value {
     match v {
-        Value::String(s) if s.len() > 200 => json!(format!("{}...", &s[..200])),
+        Value::String(s) if s.len() > 200 => json!(format!("{}...", safe_prefix(s, 200))),
         Value::Object(_) | Value::Array(_) => {
             let s = serde_json::to_string(v).unwrap_or_default();
             if s.len() > 500 {
-                json!(format!("{}...[truncated]", &s[..500]))
+                json!(format!("{}...[truncated]", safe_prefix(&s, 500)))
             } else {
                 v.clone()
             }
@@ -270,9 +281,42 @@ fn truncate_value(v: &Value) -> Value {
     }
 }
 
+fn safe_prefix(text: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn audit_stream_payload<'a>(event_type: &str, payload: &'a Value) -> Option<&'a Value> {
+    (event_type != "agents.message.updated").then_some(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_revisions_do_not_duplicate_full_snapshots_in_audit() {
+        let payload = json!({ "type": "agents.message.updated", "data": { "message": { "content": "long assistant revision" } }, "run_id": "r_child" });
+        assert_eq!(
+            audit_stream_payload("agents.message.updated", &payload),
+            None
+        );
+        assert_eq!(
+            audit_stream_payload("agents.completed", &payload),
+            Some(&payload)
+        );
+    }
+
+    #[test]
+    fn audit_preview_accepts_unicode_assistant_text() {
+        let message = json!({ "message": format!("a{}", "ä".repeat(260)) });
+        assert!(truncate_value(&message).is_string());
+        let text = json!(format!("a{}", "ä".repeat(105)));
+        assert!(truncate_value(&text).as_str().unwrap().ends_with("..."));
+    }
 
     #[test]
     fn mirror_target_group_id_is_none_without_root_linkage() {
@@ -294,5 +338,22 @@ mod tests {
             mirror_target_group_id("r_child", Some("r_root")),
             Some("r_root".to_string())
         );
+    }
+
+    #[test]
+    fn agent_event_mirror_preserves_content_and_identifies_its_child() {
+        let local = json!({
+            "type": "agents.message.updated",
+            "data": { "entry_id": "entry-1", "revision": 2, "message": { "content": "ASS" } },
+            "run_id": "r_child",
+            "node_uid": "agent_extract_value",
+            "ts_unix_ms": 42,
+        });
+        let root = mirror_payload(&local, "r_root", "r_child", &["child-node".to_string()]);
+        assert_eq!(local["run_id"], "r_child");
+        assert_eq!(root["data"], local["data"]);
+        assert_eq!(root["run_id"], "r_root");
+        assert_eq!(root["origin_run_id"], "r_child");
+        assert_eq!(root["node_path"], json!(["child-node"]));
     }
 }

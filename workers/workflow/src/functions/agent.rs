@@ -233,6 +233,17 @@ fn task_node_uid(task: &AgentTaskRecord) -> &str {
     }
 }
 
+fn harness_stream_options(run_id: &str) -> Value {
+    json!({ "stream": { "session_id": run_id, "name": "nworkflow" } })
+}
+
+fn agent_node_is_terminal(status: &AgentTaskStatus) -> bool {
+    matches!(
+        status,
+        AgentTaskStatus::Completed | AgentTaskStatus::Failed | AgentTaskStatus::Cancelled
+    )
+}
+
 fn message_stream_enabled(task: &AgentTaskRecord) -> bool {
     task.message_stream_enabled.unwrap_or(true)
 }
@@ -538,12 +549,7 @@ pub async fn start_agent_task(
     };
 
     let model = opts.model.as_ref().or(profile_model.as_ref());
-    let mut harness_options = json!({
-        "stream": {
-            "session_id": run_id,
-            "name": "nworkflow"
-        }
-    });
+    let mut harness_options = harness_stream_options(&run_id);
 
     if let Some(opts_obj) = harness_options.as_object_mut() {
         if let Some(turns) = opts.max_turns {
@@ -810,12 +816,7 @@ pub async fn handle_agent_event(
                             &retry_message,
                             None,
                             None,
-                            json!({
-                                "stream": {
-                                    "session_id": task.run_id,
-                                    "name": "nworkflow"
-                                }
-                            }),
+                            harness_stream_options(&task.stream_scope_id),
                         );
                         let retry_result = deps
                             .trigger_bounded(
@@ -849,6 +850,40 @@ pub async fn handle_agent_event(
 
         task.updated_at = now;
         state::put_agent_task(&task).await?;
+
+        if !agent_node_is_terminal(&task.status) {
+            let _guard = deps.locks.guard(&task.run_id).await;
+            let mut run = state::get_run(&deps.iii, &task.run_id)
+                .await?
+                .ok_or_else(|| WorkflowError::State(format!("run '{}' not found", task.run_id)))?;
+            if let Some(checkpoint) = run.nodes.get_mut(&node_uid) {
+                if checkpoint.state == crate::types::NodeState::Running {
+                    checkpoint.turn_id = task.turn_id.clone();
+                    checkpoint.pending_at = Some(now);
+                }
+            }
+            run.updated_at = now;
+            state::put_run(&deps.iii, &run).await?;
+            drop(_guard);
+            let _ = stream_publish::handle(
+                deps,
+                stream_publish::StreamPublishRequest {
+                    run_id: task.run_id.clone(),
+                    stream: "agents.started".to_string(),
+                    data: json!({
+                        "task_id": task.task_id,
+                        "node_uid": node_uid,
+                        "agent_session_id": task.agent_session_id,
+                        "turn_id": task.turn_id,
+                        "response_attempts": task.response_attempts,
+                        "status": task.status,
+                    }),
+                    node_uid: Some(node_uid),
+                },
+            )
+            .await;
+            return Ok(());
+        }
 
         if response_validation_failed {
             let mut run = state::get_run(&deps.iii, &task.run_id)
@@ -1022,8 +1057,26 @@ pub async fn handle_agent_message_added(
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{AgentInvocationSpec, AgentResponseSpec};
+    use crate::types::{AgentInvocationSpec, AgentResponseSpec, AgentTaskStatus};
     use serde_json::json;
+
+    #[test]
+    fn harness_stream_stays_local_for_nested_workflows() {
+        let options = super::harness_stream_options("r_child");
+        let spawned = super::spawn_payload(None, None, None, None, "prompt", options.clone(), None);
+        let retried = super::send_payload("session", "retry", None, None, options);
+        assert_eq!(spawned["options"]["stream"]["session_id"], "r_child");
+        assert_eq!(retried["options"]["stream"]["session_id"], "r_child");
+    }
+
+    #[test]
+    fn response_format_retry_keeps_agent_node_running() {
+        assert!(!super::agent_node_is_terminal(&AgentTaskStatus::Pending));
+        assert!(!super::agent_node_is_terminal(&AgentTaskStatus::Running));
+        assert!(super::agent_node_is_terminal(&AgentTaskStatus::Completed));
+        assert!(super::agent_node_is_terminal(&AgentTaskStatus::Failed));
+        assert!(super::agent_node_is_terminal(&AgentTaskStatus::Cancelled));
+    }
 
     #[test]
     fn json_response_parses_fenced_output_and_validates_required_fields() {

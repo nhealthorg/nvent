@@ -6,7 +6,9 @@ use crate::{
     error::WorkflowError,
     ids::new_ref_id,
     state,
-    types::{NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord},
+    types::{
+        AgentTaskStatus, NodeCheckpoint, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord,
+    },
 };
 
 fn effective_max_retries(def: &WorkflowDef, node_uid: &str, fallback: u32) -> u32 {
@@ -54,6 +56,19 @@ const MAX_RESULT_BYTES: usize = 1 << 20; // 1 MiB
 fn oversized_result(result: &Value) -> Option<usize> {
     let len = serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
     (len > MAX_RESULT_BYTES).then_some(len)
+}
+
+fn agent_task_outcome(
+    status: AgentTaskStatus,
+    result: Option<Value>,
+    error: Option<String>,
+) -> NodeOutcome {
+    match status {
+        AgentTaskStatus::Completed => classify_terminal("completed", result, error),
+        AgentTaskStatus::Failed => classify_terminal("failed", None, error),
+        AgentTaskStatus::Cancelled => NodeOutcome::Cancelled,
+        AgentTaskStatus::Pending | AgentTaskStatus::Running => NodeOutcome::StillRunning,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +485,43 @@ pub async fn reconcile_run(
     let now = deps.now_ms();
 
     for (uid, session_id, expected_turn_id) in running {
+        if let Some(task) = state::get_agent_task_by_session(&session_id).await? {
+            if task.run_id != record.run_id || task.node_uid != uid {
+                continue;
+            }
+            if task.turn_id != expected_turn_id {
+                continue;
+            }
+            let outcome = agent_task_outcome(task.status, task.final_result, task.error);
+            if matches!(outcome, NodeOutcome::StillRunning) {
+                continue;
+            }
+            match outcome {
+                NodeOutcome::Done(result) => {
+                    state::put_node_result(&deps.iii, &record.run_id, &uid, &result).await?;
+                    if let Some(cp) = record.nodes.get_mut(&uid) {
+                        cp.result_ref = Some(new_ref_id("node_result"));
+                        cp.state = NodeState::Done;
+                        cp.completed_at = Some(now);
+                    }
+                }
+                NodeOutcome::Failed(error) => {
+                    if let Some(cp) = record.nodes.get_mut(&uid) {
+                        cp.result_error = Some(error);
+                        cp.state = NodeState::Failed;
+                        cp.completed_at = Some(now);
+                    }
+                }
+                NodeOutcome::Cancelled => {
+                    if let Some(cp) = record.nodes.get_mut(&uid) {
+                        cp.state = NodeState::Cancelled;
+                        cp.completed_at = Some(now);
+                    }
+                }
+                NodeOutcome::StillRunning => unreachable!(),
+            }
+            continue;
+        }
         // Poll harness::status. A transient/timeout error polling ONE node must NOT
         // abort reconciliation of the rest of the run (which previously bubbled up,
         // failed the whole tick, and dead-lettered). Log and move on — the node
@@ -586,6 +638,26 @@ mod tests {
     use crate::types::{EngineRetrySpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowDef};
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn agent_retry_never_completes_from_unvalidated_harness_output() {
+        assert_eq!(
+            agent_task_outcome(
+                AgentTaskStatus::Running,
+                Some(json!({ "raw": "invalid" })),
+                None
+            ),
+            NodeOutcome::StillRunning,
+        );
+        assert_eq!(
+            agent_task_outcome(
+                AgentTaskStatus::Completed,
+                Some(json!({ "value": true })),
+                None
+            ),
+            NodeOutcome::Done(json!({ "value": true })),
+        );
+    }
 
     fn retry_test_def(max_attempts: Option<u32>) -> WorkflowDef {
         let mut nodes = BTreeMap::new();

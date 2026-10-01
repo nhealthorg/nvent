@@ -72,8 +72,24 @@ describe('defineWorkflow compilation', () => {
 
     const plan = await workflow.compile({})
 
-    expect(plan.nodes.var_agent.agentOptions.stream).toEqual({ enabled: false })
-    expect(plan.nodes.var_agent.result).toEqual({ returnType: 'memory' })
+    expect(plan.nodes.agent_agent.agentOptions.stream).toEqual({ enabled: false })
+    expect(plan.nodes.agent_agent.result).toEqual({ returnType: 'memory' })
+    expect(plan.nodes.agent_agent.label).toBe('Agent')
+  })
+
+  it('distinguishes named agent nodes from workflow variables', async () => {
+    const workflow = defineWorkflow({
+      name: 'named-agent',
+      async handler(_input, ctx) {
+        await ctx.var('extract_value', true)
+        return ctx.agent({ prompt: 'Extract value', task: { title: 'extract-value' } })
+      },
+    })
+
+    const plan = await workflow.compile({})
+    expect(plan.nodes.var_extract_value.function.id).toBe('nworkflow::internal-var-set')
+    expect(plan.nodes.agent_extract_value.label).toBe('Agent: extract-value')
+    expect(plan.nodes.agent_extract_value.agent).toBeDefined()
   })
 
   it('preserves harness provider and folder options in the workflow plan', async () => {
@@ -90,8 +106,8 @@ describe('defineWorkflow compilation', () => {
 
     const plan = await workflow.compile({})
 
-    expect(plan.nodes.var_agent.agentOptions.provider).toBe('test-provider')
-    expect(plan.nodes.var_agent.agentOptions.folder).toBe('/workspace/project')
+    expect(plan.nodes.agent_agent.agentOptions.provider).toBe('test-provider')
+    expect(plan.nodes.agent_agent.agentOptions.folder).toBe('/workspace/project')
   })
 
   it('keeps control-flow deps separate from older data refs after a parallel block', async () => {
