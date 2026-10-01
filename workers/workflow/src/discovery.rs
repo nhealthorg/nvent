@@ -143,6 +143,8 @@ pub async fn init(iii: &Arc<IIIClient>) -> DiscoveryRegistry {
         function_id: "discovery::on-functions".into(),
         config: json!({}),
         metadata: None,
+        namespace: None,
+        trigger_namespace: None,
     }) {
         tracing::error!(error = %e, "failed to register functions-available trigger");
     }

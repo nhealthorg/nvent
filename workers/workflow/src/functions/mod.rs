@@ -495,6 +495,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             "metadata": { "spawned_by": "agent" }
         }),
         metadata: None,
+        namespace: None,
+        trigger_namespace: None,
     });
 
     let d = deps.clone();
@@ -521,6 +523,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             "metadata": { "spawned_by": "agent" }
         }),
         metadata: None,
+        namespace: None,
+        trigger_namespace: None,
     });
 
     for trigger_type in [
@@ -533,6 +537,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             function_id: agent::AGENT_EVENT_ID.to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
+            trigger_namespace: None,
         });
     }
 }

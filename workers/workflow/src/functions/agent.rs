@@ -112,13 +112,18 @@ fn spawn_payload(
     folder: Option<&str>,
     task: &str,
     options: Value,
-    parent_session_id: &str,
+    parent_session_id: Option<&str>,
 ) -> Value {
     let mut payload = json!({
         "task": task,
         "options": options,
-        "parent_session_id": parent_session_id
     });
+
+    if let (Some(parent_session_id), Some(payload_obj)) =
+        (parent_session_id, payload.as_object_mut())
+    {
+        payload_obj.insert("parent_session_id".to_string(), json!(parent_session_id));
+    }
 
     if let (Some(agent_profile), Some(payload_obj)) = (agent_profile, payload.as_object_mut()) {
         if let Some(options_obj) = payload_obj
@@ -381,6 +386,10 @@ fn validate_folder(folder: Option<&str>, has_existing_session: bool) -> Result<(
     Ok(())
 }
 
+fn harness_parent_session_id(caller_session_id: Option<&str>) -> Option<&str> {
+    caller_session_id.filter(|session_id| !session_id.starts_with("wf_"))
+}
+
 fn harness_identity(
     spec: &AgentInvocationSpec,
 ) -> (Option<String>, Option<String>, Option<String>) {
@@ -595,7 +604,7 @@ pub async fn start_agent_task(
                 opts.folder.as_deref(),
                 &prompt_msg,
                 harness_options,
-                &workflow_session_id,
+                harness_parent_session_id(run_record.caller_session_id.as_deref()),
             ),
         )
     };
@@ -1174,7 +1183,7 @@ mod tests {
             Some("/workspace/project"),
             "Analyze this report",
             json!({}),
-            "workflow-session",
+            Some("workflow-session"),
         );
 
         assert_eq!(payload["task"], "Analyze this report");
@@ -1195,7 +1204,7 @@ mod tests {
             None,
             "Analyze this report",
             json!({ "system_prompt": "You are an analyst." }),
-            "workflow-session",
+            Some("workflow-session"),
         );
 
         assert!(payload.get("agent").is_none());
@@ -1215,12 +1224,39 @@ mod tests {
                 "system_prompt": "Conflicting identity",
                 "system_prompt_strategy": "override"
             }),
-            "workflow-session",
+            Some("workflow-session"),
         );
 
         assert_eq!(payload["agent"], "analyst");
         assert!(payload["options"].get("system_prompt").is_none());
         assert!(payload["options"].get("system_prompt_strategy").is_none());
+    }
+
+    #[test]
+    fn harness_spawn_payload_omits_parent_for_top_level_workflows() {
+        let payload = super::spawn_payload(
+            Some("analyst"),
+            Some("test-model"),
+            None,
+            None,
+            "Analyze this report",
+            json!({}),
+            None,
+        );
+
+        assert!(payload.get("parent_session_id").is_none());
+    }
+
+    #[test]
+    fn workflow_child_session_is_not_used_as_harness_parent() {
+        assert_eq!(
+            super::harness_parent_session_id(Some("wf_r_abc_node-0")),
+            None
+        );
+        assert_eq!(
+            super::harness_parent_session_id(Some("s_harness_parent")),
+            Some("s_harness_parent")
+        );
     }
 
     #[test]

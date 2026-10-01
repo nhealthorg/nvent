@@ -177,6 +177,8 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   console.log(`[nvent] iii-worker: connected to engine (worker: ${workerName})`)
 
+  nitroApp.$iii = iii
+
   // Define configured queues from Nuxt options with their concurrency & settings
   const userQueueConfigs = (cfg.queue?.queueConfigs ?? {}) as Record<string, any>
   const allQueueNames = new Set<string>(['default', ...Object.keys(userQueueConfigs)])
@@ -245,10 +247,6 @@ export default defineNitroPlugin(async (nitroApp) => {
     },
     { description: 'nvent browser RBAC auth function' },
   )
-
-  // Publish the client only after all local functions are registered. Routes
-  // must not start workflows while the engine still lacks their node handlers.
-  nitroApp.$iii = iii
 
   // Python workers — started here only in production.
   // In development, module.ts manages Python workers directly in the Nuxt process.

@@ -49,6 +49,7 @@ import { PythonWorkersOrchestrator } from './runtime/nitro/utils/workers/python'
 import { WorkflowWorkerManager } from './runtime/nitro/utils/workers/workflow'
 import { ComposeStartupError, createComposeManager } from './runtime/nitro/utils/compose'
 import { printNventStartupReport } from './runtime/nitro/utils/startup-report'
+import { guardDevWebSocketUpgrade } from './iii/dev-upgrade'
 
 import chokidar from 'chokidar'
 import { debounce } from 'perfect-debounce'
@@ -535,6 +536,13 @@ export default defineNuxtModule<NventIiiOptions>({
     // -------------------------------------------------------------------------
     // Nuxt / Nitro wiring (always, dev + prod)
     // -------------------------------------------------------------------------
+
+    if (nuxt.options.dev) {
+      nuxt.hook('listen', () => {
+        const server = (nuxt as any).server
+        if (typeof server?.upgrade === 'function') guardDevWebSocketUpgrade(server)
+      })
+    }
 
     // Server plugins: lifecycle first (starts the engine), workers second (connects).
     addServerPlugin(resolve('./runtime/nitro/plugins/00.iii-lifecycle'))
