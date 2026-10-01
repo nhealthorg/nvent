@@ -24,6 +24,14 @@ pub const AGENT_EVENT_ID: &str = "nworkflow::agent-event";
 pub const AGENT_MESSAGE_UPDATED_ID: &str = "nworkflow::agent-message-updated";
 pub const AGENT_MESSAGE_ADDED_ID: &str = "nworkflow::agent-message-added";
 
+pub(crate) fn message_updated_trigger_config() -> Value {
+    json!({ "roles": ["assistant"] })
+}
+
+pub(crate) fn message_added_trigger_config() -> Value {
+    json!({ "roles": ["assistant", "function_result"] })
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct AgentStartRequest {
     pub run_id: String,
@@ -248,6 +256,18 @@ fn message_stream_enabled(task: &AgentTaskRecord) -> bool {
     task.message_stream_enabled.unwrap_or(true)
 }
 
+fn event_is_stale(
+    expected_turn_id: Option<&str>,
+    event_turn_id: Option<&str>,
+    status_refreshed: bool,
+) -> bool {
+    !status_refreshed
+        && matches!(
+            (expected_turn_id, event_turn_id),
+            (Some(expected), Some(actual)) if expected != actual
+        )
+}
+
 fn parse_json_output(value: Value) -> Result<Value, String> {
     match value {
         Value::String(text) => {
@@ -287,8 +307,16 @@ fn validate_json_schema(value: &Value, schema: &Value, path: &str) -> Result<(),
     let Some(schema) = schema.as_object() else {
         return Ok(());
     };
-    if let Some(expected) = schema.get("type").and_then(Value::as_str) {
-        if !schema_type_matches(value, expected) {
+    if let Some(expected) = schema.get("type") {
+        let matches = match expected {
+            Value::String(kind) => schema_type_matches(value, kind),
+            Value::Array(kinds) => kinds.iter().any(|kind| {
+                kind.as_str()
+                    .is_some_and(|kind| schema_type_matches(value, kind))
+            }),
+            _ => true,
+        };
+        if !matches {
             return Err(format!("LLM_OUTPUT_INVALID: {path} must be {expected}"));
         }
     }
@@ -704,19 +732,9 @@ pub async fn handle_agent_event(
         return Ok(());
     };
 
-    if let (Some(expected), Some(actual)) = (task.turn_id.as_deref(), payload.turn_id.as_deref()) {
-        if expected != actual {
-            tracing::debug!(
-                session_id = %payload.session_id,
-                expected_turn_id = %expected,
-                actual_turn_id = %actual,
-                "ignoring stale harness event"
-            );
-            return Ok(());
-        }
-    }
-
     let status_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    let event_turn_id = payload.turn_id.clone();
+    let mut status_refreshed = false;
     if let Ok(status) = deps
         .trigger_bounded(
             iii_sdk::protocol::TriggerRequest {
@@ -732,6 +750,7 @@ pub async fn handle_agent_event(
         )
         .await
     {
+        status_refreshed = true;
         payload.status = status
             .get("status")
             .and_then(Value::as_str)
@@ -753,6 +772,23 @@ pub async fn handle_agent_event(
             .and_then(Value::as_str)
             .map(str::to_owned)
             .or(payload.error);
+    }
+
+    if event_is_stale(
+        task.turn_id.as_deref(),
+        event_turn_id.as_deref(),
+        status_refreshed,
+    ) {
+        tracing::debug!(
+            session_id = %payload.session_id,
+            expected_turn_id = ?task.turn_id,
+            event_turn_id = ?event_turn_id,
+            "ignoring stale harness event"
+        );
+        return Ok(());
+    }
+    if status_refreshed && payload.turn_id.is_some() {
+        task.turn_id = payload.turn_id.clone();
     }
 
     let now = deps.now_ms();
@@ -1061,6 +1097,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn json_schema_nullable_date_accepts_unknown_or_null_but_rejects_other_types() {
+        let schema = json!({ "type": "object", "properties": { "event_date": { "type": ["string", "null"] } } });
+        for date in [json!(null), json!("unknown"), json!("2026-10-01")] {
+            assert!(
+                super::validate_json_schema(&json!({ "event_date": date }), &schema, "$").is_ok()
+            );
+        }
+        for date in [json!(42), json!(true)] {
+            assert!(
+                super::validate_json_schema(&json!({ "event_date": date }), &schema, "$").is_err()
+            );
+        }
+    }
+
+    #[test]
     fn harness_stream_stays_local_for_nested_workflows() {
         let options = super::harness_stream_options("r_child");
         let spawned = super::spawn_payload(None, None, None, None, "prompt", options.clone(), None);
@@ -1070,12 +1121,37 @@ mod tests {
     }
 
     #[test]
+    fn message_triggers_do_not_require_harness_parent_metadata() {
+        let updated = super::message_updated_trigger_config();
+        let added = super::message_added_trigger_config();
+
+        assert!(updated.get("metadata").is_none());
+        assert!(added.get("metadata").is_none());
+        assert_eq!(updated["roles"], json!(["assistant"]));
+        assert_eq!(added["roles"], json!(["assistant", "function_result"]));
+    }
+
+    #[test]
     fn response_format_retry_keeps_agent_node_running() {
         assert!(!super::agent_node_is_terminal(&AgentTaskStatus::Pending));
         assert!(!super::agent_node_is_terminal(&AgentTaskStatus::Running));
         assert!(super::agent_node_is_terminal(&AgentTaskStatus::Completed));
         assert!(super::agent_node_is_terminal(&AgentTaskStatus::Failed));
         assert!(super::agent_node_is_terminal(&AgentTaskStatus::Cancelled));
+    }
+
+    #[test]
+    fn refreshed_harness_status_accepts_fast_retry_completion() {
+        assert!(super::event_is_stale(
+            Some("t_previous"),
+            Some("t_retry"),
+            false
+        ));
+        assert!(!super::event_is_stale(
+            Some("t_previous"),
+            Some("t_retry"),
+            true
+        ));
     }
 
     #[test]

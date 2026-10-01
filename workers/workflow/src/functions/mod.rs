@@ -490,10 +490,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let _ = iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
         trigger_type: "session::message-updated".to_string(),
         function_id: agent::AGENT_MESSAGE_UPDATED_ID.to_string(),
-        config: serde_json::json!({
-            "roles": ["assistant"],
-            "metadata": { "spawned_by": "agent" }
-        }),
+        config: agent::message_updated_trigger_config(),
         metadata: None,
         namespace: None,
         trigger_namespace: None,
@@ -518,10 +515,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let _ = iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
         trigger_type: "session::message-added".to_string(),
         function_id: agent::AGENT_MESSAGE_ADDED_ID.to_string(),
-        config: serde_json::json!({
-            "roles": ["assistant", "function_result"],
-            "metadata": { "spawned_by": "agent" }
-        }),
+        config: agent::message_added_trigger_config(),
         metadata: None,
         namespace: None,
         trigger_namespace: None,
