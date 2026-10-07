@@ -29,6 +29,8 @@ pub const CHILD_WORKFLOW_WRAPPER_KEY: &str = "_childWorkflow";
 pub struct ChildStartRequest {
     pub run_id: String,
     pub node_uid: String,
+    #[serde(default)]
+    pub attempt: u32,
     /// Registered function id of the target workflow.
     pub workflow: String,
     #[serde(default)]
@@ -85,6 +87,14 @@ fn wrapped_trigger_payload(caller_session_id: &str, idempotency_key: &str, input
     })
 }
 
+fn child_attempt_identity(run_id: &str, node_uid: &str, attempt: u32) -> (String, String) {
+    let attempt_node_uid = format!("{}@r{}", node_uid, attempt);
+    (
+        ids::child_session_id(run_id, &attempt_node_uid),
+        format!("child:{}:{}:attempt:{}", run_id, node_uid, attempt),
+    )
+}
+
 /// Fire a `child_workflow` node: start the target workflow as an independent
 /// run, link it back to this node, and return its `run_id` so the caller
 /// (`tick::fire_node`) can stamp `NodeCheckpoint.child_run_id` synchronously.
@@ -92,8 +102,8 @@ pub async fn start_child_workflow_task(
     deps: &Deps,
     req: ChildStartRequest,
 ) -> Result<ChildStartResponse, WorkflowError> {
-    let caller_session_id = ids::child_session_id(&req.run_id, &req.node_uid);
-    let idempotency_key = format!("child:{}:{}", req.run_id, req.node_uid);
+    let (caller_session_id, idempotency_key) =
+        child_attempt_identity(&req.run_id, &req.node_uid, req.attempt);
 
     // A retry after the child was accepted but before the response/link was
     // persisted must reuse the same start key. This also makes recovery safe
@@ -101,7 +111,7 @@ pub async fn start_child_workflow_task(
     if let Some(existing_link) = crate::state::list_child_workflow_links_for_run(&req.run_id)
         .await?
         .into_iter()
-        .find(|link| link.parent_node_uid == req.node_uid)
+        .find(|link| link.parent_node_uid == req.node_uid && link.attempt == req.attempt)
     {
         return Ok(ChildStartResponse {
             child_run_id: existing_link.child_run_id,
@@ -147,6 +157,7 @@ pub async fn start_child_workflow_task(
         child_run_id: child_run_id.clone(),
         parent_run_id: req.run_id.clone(),
         parent_node_uid: req.node_uid.clone(),
+        attempt: req.attempt,
         created_at: deps.now_ms(),
     })
     .await?;
@@ -179,6 +190,27 @@ pub async fn handle_completed(
         return Ok(());
     };
 
+    // A completion from a timed-out attempt must not complete a newer retry.
+    if let Some(parent_record) = crate::state::get_run(&deps.iii, &link.parent_run_id).await? {
+        let current_checkpoint = parent_record.nodes.get(&link.parent_node_uid);
+        let current_child = current_checkpoint
+            .and_then(|checkpoint| checkpoint.child_run_id.as_deref());
+        if current_child != Some(payload.run_id.as_str())
+            || current_checkpoint.is_none_or(|checkpoint| {
+                checkpoint.state != crate::types::NodeState::Running
+            })
+        {
+            tracing::warn!(
+                parent_run_id = %link.parent_run_id,
+                node_uid = %link.parent_node_uid,
+                stale_child_run_id = %payload.run_id,
+                current_child_run_id = ?current_child,
+                "ignoring stale child workflow completion"
+            );
+            return crate::state::delete_child_workflow_link(&payload.run_id).await;
+        }
+    }
+
     let (result, result_error) = match payload.status.as_str() {
         "completed" => {
             match resolve_completed_result(deps, &payload.run_id, payload.result).await? {
@@ -192,18 +224,46 @@ pub async fn handle_completed(
                 ),
             }
         }
-        "failed" => (
-            None,
-            Some(format!(
+        "failed" => {
+            let failure = format!(
                 "child workflow (run {}) failed: {}",
                 payload.run_id,
                 payload.result_error.as_deref().unwrap_or("failed")
-            )),
-        ),
-        _ => (
-            None,
-            Some(format!("child workflow (run {}) cancelled", payload.run_id)),
-        ),
+            );
+            let previous = crate::state::get_run(&deps.iii, &link.parent_run_id)
+                .await?
+                .and_then(|record| {
+                    record
+                        .nodes
+                        .get(&link.parent_node_uid)
+                        .and_then(|checkpoint| checkpoint.result_error.clone())
+                });
+            (
+                None,
+                Some(match previous {
+                    Some(previous) => format!("{previous}; {failure}"),
+                    None => failure,
+                }),
+            )
+        }
+        _ => {
+            let cancellation = format!("child workflow (run {}) cancelled", payload.run_id);
+            let previous = crate::state::get_run(&deps.iii, &link.parent_run_id)
+                .await?
+                .and_then(|record| {
+                    record
+                        .nodes
+                        .get(&link.parent_node_uid)
+                        .and_then(|checkpoint| checkpoint.result_error.clone())
+                });
+            (
+                None,
+                Some(match previous {
+                    Some(previous) => format!("{previous}; {cancellation}"),
+                    None => cancellation,
+                }),
+            )
+        }
     };
 
     node_completed::handle(
@@ -264,5 +324,15 @@ mod tests {
         let spec = notify_spec();
         assert_eq!(spec.function_id, CHILD_COMPLETED_ID);
         assert!(spec.queue.is_none());
+    }
+
+    #[test]
+    fn retry_attempts_have_distinct_stable_child_identity() {
+        let first = child_attempt_identity("r_parent", "patient#0", 0);
+        let retry = child_attempt_identity("r_parent", "patient#0", 1);
+        assert_ne!(first, retry);
+        assert_eq!(first, child_attempt_identity("r_parent", "patient#0", 0));
+        assert!(retry.0.ends_with("patient#0@r1"));
+        assert!(retry.1.ends_with(":attempt:1"));
     }
 }

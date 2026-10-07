@@ -781,18 +781,21 @@ mod tests {
             child_run_id: "r_child_a".to_string(),
             parent_run_id: "r_parent".to_string(),
             parent_node_uid: "invoice".to_string(),
+            attempt: 0,
             created_at: 100,
         };
         let link_b = ChildWorkflowLinkRecord {
             child_run_id: "r_child_b".to_string(),
             parent_run_id: "r_parent".to_string(),
             parent_node_uid: "ship".to_string(),
+            attempt: 0,
             created_at: 200,
         };
         let link_other = ChildWorkflowLinkRecord {
             child_run_id: "r_child_c".to_string(),
             parent_run_id: "r_other_parent".to_string(),
             parent_node_uid: "step".to_string(),
+            attempt: 0,
             created_at: 300,
         };
 

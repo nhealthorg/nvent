@@ -35,8 +35,8 @@ pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
         "name": "Workflow",
-        "description": "Workflow worker settings: default node-pending timeout, \
-                        cron sweep schedule, RPC dispatch timeout, and max node retries.",
+        "description": "Workflow worker settings: agent, queue, and child-workflow pending timeouts, \
+                cron sweep schedule, RPC dispatch timeout, and max node retries.",
         "schema": WorkerConfig::json_schema(),
     });
     if should_seed_default_value(iii).await? {

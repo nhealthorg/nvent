@@ -346,6 +346,10 @@ fn child_workflow_cancelled_message(child_run_id: &str) -> String {
     format!("child workflow (run {child_run_id}) cancelled")
 }
 
+fn child_has_progressed_since(cp: &NodeCheckpoint, child_updated_at: i64) -> bool {
+    child_updated_at > cp.pending_at.unwrap_or(0)
+}
+
 fn classify_child_terminal(
     child_run_id: &str,
     status: &str,
@@ -389,7 +393,18 @@ pub async fn reconcile_child_workflow_nodes(
 
         let status = match child_terminal_status_str(child_record.status) {
             Some(status) => status,
-            None => continue,
+            None => {
+                // `pending_at` is an inactivity guard for child workflows, not
+                // an absolute runtime limit. A durable child update proves that
+                // the nested workflow is still making progress, so extend the
+                // parent wait window from the latest observed progress.
+                if let Some(cp) = record.nodes.get_mut(&uid) {
+                    if child_has_progressed_since(cp, child_record.updated_at) {
+                        cp.pending_at = Some(now);
+                    }
+                }
+                continue;
+            }
         };
 
         let result = match child_record.result_ref.as_deref() {
@@ -431,7 +446,11 @@ pub async fn reconcile_child_workflow_nodes(
             }
             NodeOutcome::Failed(err) => {
                 if let Some(cp) = record.nodes.get_mut(&uid) {
-                    cp.result_error = Some(child_workflow_failed_message(&child_run_id, &err));
+                    let failure = child_workflow_failed_message(&child_run_id, &err);
+                    cp.result_error = Some(match cp.result_error.take() {
+                        Some(previous) => format!("{previous}; {failure}"),
+                        None => failure,
+                    });
                     cp.state = NodeState::Failed;
                     cp.completed_at = Some(now);
                     let dur = cp
@@ -443,7 +462,11 @@ pub async fn reconcile_child_workflow_nodes(
             }
             NodeOutcome::Cancelled => {
                 if let Some(cp) = record.nodes.get_mut(&uid) {
-                    cp.result_error = Some(child_workflow_cancelled_message(&child_run_id));
+                    let cancellation = child_workflow_cancelled_message(&child_run_id);
+                    cp.result_error = Some(match cp.result_error.take() {
+                        Some(previous) => format!("{previous}; {cancellation}"),
+                        None => cancellation,
+                    });
                     cp.state = NodeState::Cancelled;
                     cp.completed_at = Some(now);
                 }
@@ -921,6 +944,27 @@ mod tests {
             child_workflow_cancelled_message("r_child_1"),
             "child workflow (run r_child_1) cancelled"
         );
+    }
+
+    #[test]
+    fn child_progress_is_detected_after_parent_pending_timestamp() {
+        let checkpoint = NodeCheckpoint {
+            state: NodeState::Running,
+            session_id: None,
+            turn_id: None,
+            result_ref: None,
+            result_error: None,
+            child_run_id: Some("r_child".to_string()),
+            pending_at: Some(1_000),
+            pending_timeout_ms: Some(300_000),
+            retries: 0,
+            completed_at: None,
+            worker_name: None,
+        };
+
+        assert!(child_has_progressed_since(&checkpoint, 1_001));
+        assert!(!child_has_progressed_since(&checkpoint, 1_000));
+        assert!(!child_has_progressed_since(&checkpoint, 999));
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub mod log_delete;
 pub mod log_read;
 pub mod log_write;
 pub mod node_completed;
+pub mod node_started;
 pub mod node_result;
 pub mod node_result_write;
 pub mod run_delete;
@@ -407,6 +408,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(sweep::SWEEP_DESC),
     );
+    let d = deps.clone();
+    iii.register_function(
+        node_started::NODE_STARTED_ID,
+        RegisterFunction::new_async(move |event: node_started::NodeStartedEvent| {
+            let d = d.clone();
+            async move { node_started::handle(&d, event).await.map_err(Error::from) }
+        })
+        .description(node_started::NODE_STARTED_DESC),
+    );
+
     let d = deps.clone();
     iii.register_function(
         node_completed::NODE_COMPLETED_ID,

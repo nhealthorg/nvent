@@ -436,6 +436,8 @@ pub struct ChildWorkflowLinkRecord {
     pub child_run_id: String,
     pub parent_run_id: String,
     pub parent_node_uid: String,
+    #[serde(default)]
+    pub attempt: u32,
     pub created_at: i64,
 }
 
@@ -1209,6 +1211,7 @@ mod tests {
             child_run_id: "r_child".to_string(),
             parent_run_id: "r_parent".to_string(),
             parent_node_uid: "invoice".to_string(),
+            attempt: 0,
             created_at: 1_700_000_000,
         };
 

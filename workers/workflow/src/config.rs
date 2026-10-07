@@ -10,6 +10,15 @@ pub struct WorkerConfig {
     #[serde(default = "default_pending_timeout_ms")]
     pub default_pending_timeout_ms: u64,
 
+    /// Default completion guard for queue-backed function nodes, including
+    /// time spent waiting for worker capacity after queue admission.
+    #[serde(default = "default_queue_pending_timeout_ms")]
+    pub default_queue_pending_timeout_ms: u64,
+
+    /// Default completion guard for nested child workflows.
+    #[serde(default = "default_child_workflow_pending_timeout_ms")]
+    pub default_child_workflow_pending_timeout_ms: u64,
+
     /// Cron expression (6-field) for the pending-call expiry sweep. The one
     /// structural field: a change re-binds the cron trigger live.
     #[serde(default = "default_sweep_expression")]
@@ -85,6 +94,12 @@ pub struct WorkerConfig {
 fn default_pending_timeout_ms() -> u64 {
     300_000
 }
+fn default_queue_pending_timeout_ms() -> u64 {
+    24 * 60 * 60 * 1000
+}
+fn default_child_workflow_pending_timeout_ms() -> u64 {
+    24 * 60 * 60 * 1000
+}
 fn default_sweep_expression() -> String {
     "0 */5 * * * *".to_string()
 }
@@ -126,6 +141,8 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             default_pending_timeout_ms: default_pending_timeout_ms(),
+            default_queue_pending_timeout_ms: default_queue_pending_timeout_ms(),
+            default_child_workflow_pending_timeout_ms: default_child_workflow_pending_timeout_ms(),
             sweep_expression: default_sweep_expression(),
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
             cleanup_timeout_ms: default_cleanup_timeout_ms(),
@@ -179,6 +196,11 @@ mod tests {
         let cfg = WorkerConfig::from_json(&json!({})).expect("parse ok");
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.default_pending_timeout_ms, 300_000);
+        assert_eq!(cfg.default_queue_pending_timeout_ms, 24 * 60 * 60 * 1000);
+        assert_eq!(
+            cfg.default_child_workflow_pending_timeout_ms,
+            24 * 60 * 60 * 1000
+        );
         assert_eq!(cfg.sweep_expression, "0 */5 * * * *");
         assert_eq!(cfg.dispatch_timeout_ms, 30_000);
         assert_eq!(cfg.cleanup_timeout_ms, 3_000);

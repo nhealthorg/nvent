@@ -237,6 +237,9 @@ async fn sweep_one_run(
                         cfg.cleanup_timeout_ms,
                     )
                     .await;
+                    // The old attempt must no longer participate in link-based
+                    // deduplication or completion delivery.
+                    let _ = state::delete_child_workflow_link(child_run_id).await;
                 }
                 if let Some(c) = record.nodes.get_mut(&uid) {
                     c.retries = attempt;
@@ -251,6 +254,12 @@ async fn sweep_one_run(
                     &mut pending_stream_events,
                 )
                 .await?;
+                if let Some(c) = record.nodes.get_mut(&uid) {
+                    c.result_error = Some(format!(
+                        "engine_pending_timeout: retry attempt {} started after pending timeout_ms={}",
+                        attempt, effective_timeout_ms
+                    ));
+                }
                 timed_out_any = true;
             }
             crate::timeout::TimeoutAction::FailOut => {

@@ -1112,12 +1112,12 @@ fn effective_pending_timeout_ms(
     prior_timeout: Option<u64>,
     agent_timeout_ms: Option<u64>,
     function_timeout_ms: Option<u64>,
-    default_pending_timeout_ms: u64,
+    default_timeout_ms: u64,
 ) -> Option<u64> {
     prior_timeout
         .or(agent_timeout_ms)
         .or(function_timeout_ms)
-        .or(Some(default_pending_timeout_ms))
+        .or(Some(default_timeout_ms))
 }
 
 pub(crate) async fn fire_node(
@@ -1261,8 +1261,14 @@ pub(crate) async fn fire_node(
         node.agent_options
             .as_ref()
             .and_then(|options| options.timeout_ms),
-        function.timeout_ms,
-        cfg.default_pending_timeout_ms,
+        None,
+        if node.child_workflow.is_some() {
+            cfg.default_child_workflow_pending_timeout_ms
+        } else if node.agent.is_some() {
+            cfg.default_pending_timeout_ms
+        } else {
+            cfg.default_queue_pending_timeout_ms
+        },
     );
     if let Some(agent_spec) = &node.agent {
         let mut spec = agent_spec.clone();
@@ -1359,6 +1365,7 @@ pub(crate) async fn fire_node(
         let start_req = crate::functions::child_workflow::ChildStartRequest {
             run_id: record.run_id.clone(),
             node_uid: node_uid.to_string(),
+            attempt,
             workflow: child_workflow_spec.workflow.clone(),
             input: input_val,
         };
@@ -1717,7 +1724,10 @@ async fn finalize(
 pub(crate) fn summarize_failure(nodes: &BTreeMap<String, NodeCheckpoint>) -> Option<String> {
     let mut errs: Vec<String> = nodes
         .iter()
-        .filter(|(_, cp)| cp.state == NodeState::Failed)
+        .filter(|(_, cp)| {
+            cp.state == NodeState::Failed
+                || (cp.state == NodeState::Cancelled && cp.result_error.is_some())
+        })
         .map(|(uid, cp)| match &cp.result_error {
             Some(e) => format!("node '{uid}': {e}"),
             None => format!("node '{uid}' failed"),
@@ -2934,6 +2944,20 @@ mod tests {
         let mut nodes = BTreeMap::new();
         nodes.insert("a".to_string(), done_cp());
         assert_eq!(summarize_failure(&nodes), None);
+    }
+
+    #[test]
+    fn summarize_failure_includes_cancelled_node_with_diagnostic() {
+        let mut nodes = BTreeMap::new();
+        let mut cancelled = failed_cp(Some(
+            "engine_pending_timeout: retry attempt 1 started after pending timeout_ms=300000",
+        ));
+        cancelled.state = NodeState::Cancelled;
+        nodes.insert("patient#0".to_string(), cancelled);
+        assert_eq!(
+            summarize_failure(&nodes),
+            Some("node 'patient#0': engine_pending_timeout: retry attempt 1 started after pending timeout_ms=300000".to_string())
+        );
     }
 
     #[test]
