@@ -123,7 +123,8 @@ fn add_required_source(
     let source = source.strip_prefix("node:").unwrap_or(source);
     let node_id = source.split('.').next().unwrap_or(source);
     if !node_id.is_empty() {
-        add_required_node(def, record, required, node_id);
+        let resolved = resolve_output_node(def, record, node_id);
+        add_required_node(def, record, required, &resolved);
     }
 }
 
@@ -2997,6 +2998,54 @@ mod tests {
         assert!(required.contains("b"));
         assert!(required.contains("d"));
         assert!(!required.contains("orphan"));
+    }
+
+    #[test]
+    fn required_result_uids_resolve_selected_if_output_leaf() {
+        let d: WorkflowDef = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "output": {"from": "node:if"},
+            "nodes": {
+                "if": {
+                    "if": {"source": true},
+                    "input": {"from": "run_input", "template": "t"}
+                },
+                "then": {
+                    "ifBranch": {"if": "if", "path": "then"},
+                    "function": {"id": "fn-then"},
+                    "input": {"from": "run_input", "template": "t"}
+                },
+                "else": {
+                    "ifBranch": {"if": "if", "path": "else"},
+                    "function": {"id": "fn-else"},
+                    "input": {"from": "run_input", "template": "t"}
+                }
+            }
+        }))
+        .unwrap();
+        let mut r = record();
+        r.if_checkpoints.insert(
+            "if".into(),
+            IfCheckpoint {
+                state: IfState::Done,
+                selected: Some(IfBranchPath::Then),
+                error: None,
+            },
+        );
+        r.nodes.insert("if".into(), done_checkpoint());
+        r.nodes.insert("then".into(), done_checkpoint());
+        r.nodes.insert(
+            "else".into(),
+            NodeCheckpoint {
+                state: NodeState::Cancelled,
+                ..pending_checkpoint()
+            },
+        );
+
+        let required = required_result_uids(&d, &r);
+        assert!(required.contains("then"));
+        assert!(!required.contains("if"));
+        assert!(!required.contains("else"));
     }
 
     // -----------------------------------------------------------------------
