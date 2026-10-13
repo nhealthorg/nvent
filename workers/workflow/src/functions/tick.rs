@@ -315,6 +315,11 @@ fn collect_prunable_memory_result_uids(
         }
     }
 
+    for uid in dag::required_result_uids(def, record) {
+        required_by_active.insert(uid.clone());
+        required_by_active.insert(uid.split('#').next().unwrap_or(&uid).to_string());
+    }
+
     let mut to_prune: Vec<String> = Vec::new();
     for (uid, cp) in &record.nodes {
         if cp.state != NodeState::Done || cp.result_ref.is_none() {
@@ -2162,9 +2167,9 @@ pub async fn handle(
 mod tests {
     use super::*;
     use crate::types::{
-        FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
-        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, ReduceBodySpec, ReduceMode,
-        ReduceSpec, WorkflowDef, WorkflowRunRecord,
+        FanoutSpec, FunctionSpec, IfBranchPath, IfCheckpoint, IfState, InputSpec, NodeCheckpoint,
+        NodeDef, NodeMemoryFailPolicy, NodeResultReturnType, NodeResultSpec, NodeState, OutputRef,
+        ReduceBodySpec, ReduceMode, ReduceSpec, WorkflowDef, WorkflowRunRecord,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -2672,6 +2677,63 @@ mod tests {
         assert!(
             to_prune.is_empty(),
             "must not prune when downstream nodes still depend on the result"
+        );
+    }
+
+    #[test]
+    fn prune_selection_keeps_selected_if_output_leaf() {
+        let def: WorkflowDef = serde_json::from_value(json!({
+            "version": 1,
+            "output": {"from": "node:if"},
+            "nodes": {
+                "if": {"if": {"source": true}, "input": {"from": "run_input"}},
+                "then": {
+                    "ifBranch": {"if": "if", "path": "then"},
+                    "function": {"id": "then-fn"},
+                    "input": {"from": "run_input"}
+                },
+                "else": {
+                    "ifBranch": {"if": "if", "path": "else"},
+                    "function": {"id": "else-fn"},
+                    "input": {"from": "run_input"}
+                }
+            }
+        }))
+        .unwrap();
+
+        let mut record = fresh_record();
+        record.if_checkpoints.insert(
+            "if".into(),
+            IfCheckpoint {
+                state: IfState::Done,
+                selected: Some(IfBranchPath::Then),
+                error: None,
+            },
+        );
+        record.nodes.insert("if".into(), done_cp());
+        record.nodes.insert(
+            "then".into(),
+            NodeCheckpoint {
+                result_ref: Some("run_test/then".into()),
+                ..done_cp()
+            },
+        );
+        record.nodes.insert(
+            "else".into(),
+            NodeCheckpoint {
+                result_ref: Some("run_test/else".into()),
+                ..done_cp()
+            },
+        );
+
+        let to_prune = collect_prunable_memory_result_uids(&def, &record);
+        assert!(
+            !to_prune.contains(&"then".to_string()),
+            "selected branch result must remain available for workflow output"
+        );
+        assert!(
+            to_prune.contains(&"else".to_string()),
+            "unselected branch result may be released"
         );
     }
 
