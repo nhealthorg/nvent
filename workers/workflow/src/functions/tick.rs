@@ -1834,7 +1834,7 @@ pub async fn handle(
     crate::reconcile::reconcile_child_workflow_nodes(deps, &mut record).await?;
 
     // 6. Load done results.
-    let results = state::load_done_results(&deps.iii, &mut record).await?;
+    let mut results = state::load_done_results(&deps.iii, &mut record).await?;
 
     let advanced_reductions =
         advance_completed_reductions(deps, &def, &mut record, &results).await?;
@@ -1882,6 +1882,7 @@ pub async fn handle(
             }
         }
     }
+    dag::materialize_ready_batch_items(&def, &mut record);
 
     // Freeze reduce sources exactly once after their upstream results are
     // available. The checkpoint is persisted with the same run update as the
@@ -1981,7 +1982,9 @@ pub async fn handle(
             "materialized active reduce iterations"
         );
     }
-    let results = state::load_done_results(&deps.iii, &mut record).await?;
+    if !advanced_reductions.is_empty() || !completed_empty_reductions.is_empty() {
+        results = state::load_done_results(&deps.iii, &mut record).await?;
+    }
 
     // 7b. Enforce liveness-based memory lifecycle cleanup.
     // Important ordering: detach result refs now, but only delete payload rows

@@ -292,10 +292,20 @@ pub fn expand_ready_fanouts(
             continue;
         }
 
-        // Atomically snapshot + insert Pending checkpoints.
+        // Atomically snapshot + insert Pending checkpoints. Batch fanouts are
+        // materialized lazily so the parent run record stays bounded by the
+        // active batch instead of growing to the full input size immediately.
         let n = items.len();
         record.fanout_src.insert(node_id.to_string(), n);
-        for i in 0..n {
+        let materialized = match fanout_spec.mode {
+            Some(FanoutMode::Batch) => fanout_spec
+                .batch_size
+                .filter(|size| *size > 0)
+                .unwrap_or(DEFAULT_FANOUT_BATCH_SIZE)
+                .min(n),
+            _ => n,
+        };
+        for i in 0..materialized {
             let uid = node_uid(node_id, Some(i as u32));
             record.nodes.entry(uid).or_insert_with(pending_checkpoint);
         }
@@ -304,6 +314,50 @@ pub fn expand_ready_fanouts(
     }
 
     expanded
+}
+
+/// Materialize the active batch for already-expanded batch fanouts.
+///
+/// Only the first batch is created by `expand_ready_fanouts`; subsequent batches
+/// are added after the preceding batch has completed. This keeps the serialized
+/// workflow record proportional to the active batch rather than total fanout size.
+pub fn materialize_ready_batch_items(def: &WorkflowDef, record: &mut WorkflowRunRecord) {
+    let batch_nodes: Vec<String> = def
+        .nodes
+        .iter()
+        .filter_map(|(node_id, node)| {
+            (node.fanout.as_ref()?.mode == Some(FanoutMode::Batch)
+                && record.fanout_src.contains_key(node_id))
+            .then(|| node_id.clone())
+        })
+        .collect();
+
+    for node_id in batch_nodes {
+        let Some(node) = def.nodes.get(&node_id) else {
+            continue;
+        };
+        let Some(fanout) = node.fanout.as_ref() else {
+            continue;
+        };
+        let Some(total) = record.fanout_src.get(&node_id).copied() else {
+            continue;
+        };
+        let Some(start) = ordered_group_active_index(def, record, &node_id, FanoutMode::Batch)
+        else {
+            continue;
+        };
+        let batch_size = fanout
+            .batch_size
+            .filter(|size| *size > 0)
+            .unwrap_or(DEFAULT_FANOUT_BATCH_SIZE);
+        let end = start.saturating_add(batch_size).min(total);
+        for index in start..end {
+            record
+                .nodes
+                .entry(node_uid(&node_id, Some(index as u32)))
+                .or_insert_with(pending_checkpoint);
+        }
+    }
 }
 
 /// Initializes each reduce whose source result is available.
@@ -2372,15 +2426,18 @@ mod tests {
         let mut results = BTreeMap::new();
         results.insert("plan".to_string(), json!({"docs":["a","b","c","d"]}));
         expand_ready_fanouts(&d, &mut r, &results);
+        materialize_ready_batch_items(&d, &mut r);
 
         let frontier1 = ready_frontier(&d, &r);
         assert_eq!(frontier1, vec!["read#0".to_string(), "read#1".to_string()]);
 
         r.nodes.insert("read#0".into(), done_checkpoint());
+        materialize_ready_batch_items(&d, &mut r);
         let frontier2 = ready_frontier(&d, &r);
         assert_eq!(frontier2, vec!["read#1".to_string(), "read#2".to_string()]);
 
         r.nodes.insert("read#1".into(), done_checkpoint());
+        materialize_ready_batch_items(&d, &mut r);
         let frontier3 = ready_frontier(&d, &r);
         assert_eq!(frontier3, vec!["read#2".to_string(), "read#3".to_string()]);
     }

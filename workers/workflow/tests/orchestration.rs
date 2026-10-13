@@ -205,6 +205,7 @@ fn drive_step(
     results: &BTreeMap<String, Value>,
 ) -> TickDecision {
     dag::expand_ready_fanouts(def, record, results);
+    dag::materialize_ready_batch_items(def, record);
     let decision = decide(def, record);
     if let TickDecision::Fire(ref uids) = decision {
         for uid in uids {
@@ -408,7 +409,7 @@ fn batch_child_workflow_materializes_final_progress_item() {
             fanout: Some(FanoutSpec {
                 over: "node:source.items".to_string(),
                 mode: Some(FanoutMode::Batch),
-                batch_size: Some(3),
+                batch_size: Some(50),
                 item_return_type: Some(NodeInputReturnType::Store),
             }),
             input: InputSpec {
@@ -436,7 +437,7 @@ fn batch_child_workflow_materializes_final_progress_item() {
             fanout: Some(FanoutSpec {
                 over: "node:source.items".to_string(),
                 mode: Some(FanoutMode::Batch),
-                batch_size: Some(3),
+                batch_size: Some(50),
                 item_return_type: Some(NodeInputReturnType::Memory),
             }),
             input: InputSpec {
@@ -489,7 +490,7 @@ fn batch_child_workflow_materializes_final_progress_item() {
     let mut record = new_record(json!({}));
     let mut results = BTreeMap::new();
     let mut source_items = vec![];
-    for index in 0..4 {
+    for index in 0..750 {
         source_items.push(json!({"id": index}));
     }
     match drive_step(&def, &mut record, &results) {
@@ -503,61 +504,46 @@ fn batch_child_workflow_materializes_final_progress_item() {
         json!({"items": source_items}),
     );
 
-    let first_batch = drive_step(&def, &mut record, &results);
-    match first_batch {
-        TickDecision::Fire(uids) => assert_eq!(
-            uids,
-            vec![
-                "children#0".to_string(),
-                "children#1".to_string(),
-                "children#2".to_string(),
-            ]
-        ),
-        other => panic!("expected first child batch, got {:?}", other),
-    }
-    for index in 0..3 {
-        complete(
-            &mut record,
-            &mut results,
-            &format!("children#{index}"),
-            json!({"ok": true, "id": index}),
-        );
-    }
-    let first_progress = drive_step(&def, &mut record, &results);
-    match first_progress {
-        TickDecision::Fire(uids) => assert_eq!(
-            uids,
-            vec![
-                "progress#0".to_string(),
-                "progress#1".to_string(),
-                "progress#2".to_string(),
-            ]
-        ),
-        other => panic!("expected first progress batch, got {:?}", other),
-    }
-    for index in 0..3 {
-        complete(
-            &mut record,
-            &mut results,
-            &format!("progress#{index}"),
-            json!({"ok": true}),
-        );
-    }
+    for start in (0..750).step_by(50) {
+        let end = (start + 50).min(750);
+        let expected_children: Vec<String> = (start..end)
+            .map(|index| format!("children#{index}"))
+            .collect();
+        match drive_step(&def, &mut record, &results) {
+            TickDecision::Fire(uids) => assert_eq!(uids, expected_children),
+            other => panic!("expected child batch {start}..{end}, got {:?}", other),
+        }
+        if start == 0 {
+            assert_eq!(
+                record.nodes.len(),
+                101,
+                "only source plus two active batches should exist"
+            );
+        }
+        for index in start..end {
+            complete(
+                &mut record,
+                &mut results,
+                &format!("children#{index}"),
+                json!({"ok": true, "id": index}),
+            );
+        }
 
-    match drive_step(&def, &mut record, &results) {
-        TickDecision::Fire(uids) => assert_eq!(uids, vec!["children#3".to_string()]),
-        other => panic!("expected final child, got {:?}", other),
-    }
-    complete(
-        &mut record,
-        &mut results,
-        "children#3",
-        json!({"ok": true, "id": 3}),
-    );
-
-    match drive_step(&def, &mut record, &results) {
-        TickDecision::Fire(uids) => assert_eq!(uids, vec!["progress#3".to_string()]),
-        other => panic!("expected final progress, got {:?}", other),
+        let expected_progress: Vec<String> = (start..end)
+            .map(|index| format!("progress#{index}"))
+            .collect();
+        match drive_step(&def, &mut record, &results) {
+            TickDecision::Fire(uids) => assert_eq!(uids, expected_progress),
+            other => panic!("expected progress batch {start}..{end}, got {:?}", other),
+        }
+        for index in start..end {
+            complete(
+                &mut record,
+                &mut results,
+                &format!("progress#{index}"),
+                json!({"ok": true}),
+            );
+        }
     }
 }
 
