@@ -37,8 +37,40 @@ fn has_running_nodes(record: &WorkflowRunRecord) -> bool {
         .any(|cp| matches!(cp.state, NodeState::Running))
 }
 
+fn has_pending_nodes(record: &WorkflowRunRecord) -> bool {
+    record
+        .nodes
+        .values()
+        .any(|cp| matches!(cp.state, NodeState::Pending))
+}
+
 fn parked_run_is_stuck(record: &WorkflowRunRecord) -> bool {
-    !has_running_nodes(record)
+    !has_running_nodes(record) && !has_pending_nodes(record)
+}
+
+fn has_unmaterialized_nodes(def: &WorkflowDef, record: &WorkflowRunRecord) -> bool {
+    def.nodes.iter().any(|(node_id, node)| {
+        if node.reduce_body.is_some() {
+            return false;
+        }
+        if node.reduce.is_some() {
+            return !record.reduce_checkpoints.contains_key(node_id);
+        }
+        if node.fanout.is_some() {
+            let Some(total) = record.fanout_src.get(node_id) else {
+                return true;
+            };
+            return (0..*total).any(|index| {
+                !record
+                    .nodes
+                    .contains_key(&ids::node_uid(node_id, Some(index as u32)))
+            });
+        }
+        if record.skipped_nodes.contains(node_id) {
+            return false;
+        }
+        !record.nodes.contains_key(node_id)
+    })
 }
 
 fn is_transient_dispatch_error(error: &str) -> bool {
@@ -2029,7 +2061,7 @@ pub async fn handle(
             Ok(super::TickResponse { skipped: false })
         }
         TickDecision::Park => {
-            if parked_run_is_stuck(&record) {
+            if parked_run_is_stuck(&record) && !has_unmaterialized_nodes(&def, &record) {
                 tracing::warn!(
                     run_id = %req.run_id,
                     "run is parked without running nodes; marking as failed to avoid hang"
@@ -3018,6 +3050,29 @@ mod tests {
     fn parked_run_is_stuck_without_running_nodes() {
         let record = fresh_record();
         assert!(parked_run_is_stuck(&record));
+    }
+
+    #[test]
+    fn parked_run_with_pending_nodes_is_not_stuck() {
+        let mut record = fresh_record();
+        record.nodes.insert(
+            "pending-successor".to_string(),
+            NodeCheckpoint {
+                state: NodeState::Pending,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                child_run_id: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+
+        assert!(!parked_run_is_stuck(&record));
     }
 
     #[test]

@@ -13,7 +13,8 @@ use workflow::{
     reconcile::{classify_terminal, NodeOutcome},
     types::{
         ChildWorkflowSpec, FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint,
-        NodeDef, NodeState, OutputRef, RunStatus, WorkflowDef, WorkflowRunRecord,
+        NodeDef, NodeInputReturnType, NodeState, OutputRef, RunStatus, WorkflowDef,
+        WorkflowRunRecord,
     },
 };
 
@@ -393,6 +394,171 @@ fn fanout_barrier_synthesize_completes_in_order() {
         RunStatus::Completed,
         "run must be Completed after synthesize done"
     );
+}
+
+#[test]
+fn batch_child_workflow_materializes_final_progress_item() {
+    let mut nodes = BTreeMap::new();
+    nodes.insert(
+        "children".to_string(),
+        NodeDef {
+            child_workflow: Some(ChildWorkflowSpec {
+                workflow: "child-workflow".to_string(),
+            }),
+            fanout: Some(FanoutSpec {
+                over: "node:source.items".to_string(),
+                mode: Some(FanoutMode::Batch),
+                batch_size: Some(3),
+                item_return_type: Some(NodeInputReturnType::Store),
+            }),
+            input: InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+                value: None,
+            },
+            depends_on: vec!["source".to_string()],
+            label: None,
+            function: None,
+            agent: None,
+            agent_options: None,
+            reduce: None,
+            reduce_body: None,
+            if_spec: None,
+            if_branch: None,
+            result: None,
+            input_policy: None,
+        },
+    );
+    nodes.insert(
+        "progress".to_string(),
+        NodeDef {
+            child_workflow: None,
+            fanout: Some(FanoutSpec {
+                over: "node:source.items".to_string(),
+                mode: Some(FanoutMode::Batch),
+                batch_size: Some(3),
+                item_return_type: Some(NodeInputReturnType::Memory),
+            }),
+            input: InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+                value: None,
+            },
+            depends_on: vec!["children".to_string()],
+            label: None,
+            function: Some(FunctionSpec {
+                id: "publish-progress".to_string(),
+                timeout_ms: None,
+                queue: None,
+                engine_retry: None,
+                runtime: None,
+            }),
+            agent: None,
+            agent_options: None,
+            reduce: None,
+            reduce_body: None,
+            if_spec: None,
+            if_branch: None,
+            result: None,
+            input_policy: None,
+        },
+    );
+    nodes.insert(
+        "source".to_string(),
+        function_node(
+            "source-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+
+    let def = WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:progress".to_string(),
+        },
+        default_functions: None,
+        metadata: None,
+    };
+    let mut record = new_record(json!({}));
+    let mut results = BTreeMap::new();
+    let mut source_items = vec![];
+    for index in 0..4 {
+        source_items.push(json!({"id": index}));
+    }
+    match drive_step(&def, &mut record, &results) {
+        TickDecision::Fire(uids) => assert_eq!(uids, vec!["source".to_string()]),
+        other => panic!("expected source node, got {:?}", other),
+    }
+    complete(
+        &mut record,
+        &mut results,
+        "source",
+        json!({"items": source_items}),
+    );
+
+    let first_batch = drive_step(&def, &mut record, &results);
+    match first_batch {
+        TickDecision::Fire(uids) => assert_eq!(
+            uids,
+            vec![
+                "children#0".to_string(),
+                "children#1".to_string(),
+                "children#2".to_string(),
+            ]
+        ),
+        other => panic!("expected first child batch, got {:?}", other),
+    }
+    for index in 0..3 {
+        complete(
+            &mut record,
+            &mut results,
+            &format!("children#{index}"),
+            json!({"ok": true, "id": index}),
+        );
+    }
+    let first_progress = drive_step(&def, &mut record, &results);
+    match first_progress {
+        TickDecision::Fire(uids) => assert_eq!(
+            uids,
+            vec![
+                "progress#0".to_string(),
+                "progress#1".to_string(),
+                "progress#2".to_string(),
+            ]
+        ),
+        other => panic!("expected first progress batch, got {:?}", other),
+    }
+    for index in 0..3 {
+        complete(
+            &mut record,
+            &mut results,
+            &format!("progress#{index}"),
+            json!({"ok": true}),
+        );
+    }
+
+    match drive_step(&def, &mut record, &results) {
+        TickDecision::Fire(uids) => assert_eq!(uids, vec!["children#3".to_string()]),
+        other => panic!("expected final child, got {:?}", other),
+    }
+    complete(
+        &mut record,
+        &mut results,
+        "children#3",
+        json!({"ok": true, "id": 3}),
+    );
+
+    match drive_step(&def, &mut record, &results) {
+        TickDecision::Fire(uids) => assert_eq!(uids, vec!["progress#3".to_string()]),
+        other => panic!("expected final progress, got {:?}", other),
+    }
 }
 
 #[test]
