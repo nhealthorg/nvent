@@ -6,6 +6,7 @@ export interface WorkflowRunStatusResponse {
   nodes: Record<string, any>
   created_at: number
   updated_at: number
+  result_ref?: string
   result?: any
 }
 

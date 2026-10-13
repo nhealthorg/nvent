@@ -57,6 +57,44 @@ static NODE_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .build()
 });
 
+static RUN_CHECKPOINT_BYTES: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .f64_histogram("workflow.run.checkpoint_bytes")
+        .with_description("Serialized workflow run checkpoint payload size")
+        .with_unit("bytes")
+        .build()
+});
+
+static RUN_CHECKPOINT_NODES: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .f64_histogram("workflow.run.checkpoint_nodes")
+        .with_description("Number of node checkpoints in a persisted workflow run")
+        .build()
+});
+
+static RUN_PUT_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .f64_histogram("workflow.run.put_duration_ms")
+        .with_description("Duration of persisting a workflow run checkpoint")
+        .with_unit("ms")
+        .build()
+});
+
+static DONE_RESULT_LOAD_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .f64_histogram("workflow.run.done_result_load_duration_ms")
+        .with_description("Duration of loading done node results for a workflow tick")
+        .with_unit("ms")
+        .build()
+});
+
+static DONE_RESULT_LOAD_COUNT: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .f64_histogram("workflow.run.done_result_load_count")
+        .with_description("Number of done node results loaded for a workflow tick")
+        .build()
+});
+
 /// Backing value for the active-runs gauge; refreshed by the sweep each cycle.
 static ACTIVE_RUNS: AtomicU64 = AtomicU64::new(0);
 
@@ -121,6 +159,20 @@ pub fn record_node_terminal(done: bool, duration_ms: f64) {
 
 pub fn record_timeout(refire: bool) {
     NODE_TIMEOUTS.add(1, &[KeyValue::new("action", action_label(refire))]);
+}
+
+pub fn record_run_checkpoint(bytes: usize, nodes: usize) {
+    RUN_CHECKPOINT_BYTES.record(bytes as f64, &[]);
+    RUN_CHECKPOINT_NODES.record(nodes as f64, &[]);
+}
+
+pub fn record_run_put_duration(duration_ms: f64) {
+    RUN_PUT_DURATION_MS.record(duration_ms, &[]);
+}
+
+pub fn record_done_result_load(duration_ms: f64, count: usize) {
+    DONE_RESULT_LOAD_DURATION_MS.record(duration_ms, &[]);
+    DONE_RESULT_LOAD_COUNT.record(count as f64, &[]);
 }
 
 pub fn set_active_runs(n: u64) {

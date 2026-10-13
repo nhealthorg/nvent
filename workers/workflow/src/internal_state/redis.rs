@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -258,6 +259,7 @@ impl RedisWorkflowInternalStateStore {
             .unwrap_or(0);
         let next_version = current_version.saturating_add(1);
         let payload = serde_json::to_string(record).map_err(WorkflowError::Serde)?;
+        crate::telemetry::record_run_checkpoint(payload.len(), record.nodes.len());
         let run_key = self.run_key(&record.run_id);
         let run_ver_key = self.run_ver_key(&record.run_id);
         let workflow_index_keys = self.workflow_trigram_index_keys_for_run(record);
@@ -321,6 +323,7 @@ impl RedisWorkflowInternalStateStore {
         let run_key = self.run_key(&record.run_id);
         let run_ver_key = self.run_ver_key(&record.run_id);
         let payload = serde_json::to_string(record).map_err(WorkflowError::Serde)?;
+        crate::telemetry::record_run_checkpoint(payload.len(), record.nodes.len());
         let workflow_index_keys = self.workflow_trigram_index_keys_for_run(record);
 
         for _ in 0..16 {
@@ -541,7 +544,10 @@ fn latest_page_bounds(total: i64, offset: u32, limit: u32) -> Option<(i64, i64, 
 
 #[cfg(test)]
 mod tests {
-    use super::latest_page_bounds;
+    use super::{latest_page_bounds, RedisWorkflowInternalStateStore};
+    use crate::config::WorkerConfig;
+    use crate::internal_state::WorkflowInternalStateStore;
+    use serde_json::json;
 
     fn apply_latest_page(values: &[i32], offset: u32, limit: u32) -> Vec<i32> {
         let Some((start, end, _)) = latest_page_bounds(values.len() as i64, offset, limit) else {
@@ -561,6 +567,36 @@ mod tests {
         assert_eq!(apply_latest_page(&values, 1, 2), vec![4, 3]);
         assert_eq!(apply_latest_page(&values, 4, 2), vec![1]);
         assert!(apply_latest_page(&values, 5, 2).is_empty());
+    }
+
+    #[tokio::test]
+    async fn redis_batch_node_result_delete_when_configured() {
+        let Ok(url) = std::env::var("NVENT_REDIS_URL") else {
+            return;
+        };
+        let mut cfg = WorkerConfig::default();
+        cfg.internal_state_redis_url = Some(url);
+        let store = RedisWorkflowInternalStateStore::new(&cfg);
+        let run_id = format!("run-batch-delete-test-{}", uuid::Uuid::new_v4());
+        let node_uids = vec!["children#0".to_string(), "children#1".to_string()];
+
+        for node_uid in &node_uids {
+            store
+                .put_node_result(run_id.as_str(), node_uid, &json!({"node_uid": node_uid}))
+                .await
+                .expect("put Redis result");
+        }
+        store
+            .delete_node_results(run_id.as_str(), &node_uids)
+            .await
+            .expect("delete Redis results");
+        for node_uid in &node_uids {
+            assert!(store
+                .get_node_result(run_id.as_str(), node_uid)
+                .await
+                .expect("get deleted Redis result")
+                .is_none());
+        }
     }
 }
 
@@ -609,12 +645,15 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             return self.fallback.put_run(record, expected_version).await;
         }
 
+        let started = Instant::now();
         let mut conn = self.conn().await?;
-        if let Some(expected_version) = expected_version {
+        let result = if let Some(expected_version) = expected_version {
             self.put_run_cas(&mut conn, record, expected_version).await
         } else {
             self.put_run_non_cas(&mut conn, record).await
-        }
+        };
+        crate::telemetry::record_run_put_duration(started.elapsed().as_secs_f64() * 1_000.0);
+        result
     }
 
     async fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
@@ -1065,6 +1104,34 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                     "redis delete node result failed for {run_id}/{node_uid}: {err}"
                 ))
             })
+    }
+
+    async fn delete_node_results(
+        &self,
+        run_id: &str,
+        node_uids: &[String],
+    ) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.delete_node_results(run_id, node_uids).await;
+        }
+        if node_uids.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn().await?;
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for node_uid in node_uids {
+            pipe.cmd("DEL")
+                .arg(self.result_key(run_id, node_uid))
+                .ignore();
+        }
+        let _: () = pipe.query_async(&mut conn).await.map_err(|err| {
+            WorkflowError::State(format!(
+                "redis delete node results failed for {run_id}: {err}"
+            ))
+        })?;
+        Ok(())
     }
 
     async fn put_agent_task(&self, task: &AgentTaskRecord) -> Result<(), WorkflowError> {

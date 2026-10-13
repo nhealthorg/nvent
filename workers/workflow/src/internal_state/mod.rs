@@ -149,6 +149,17 @@ pub trait WorkflowInternalStateStore: Send + Sync {
     ) -> Result<(), WorkflowError>;
     async fn delete_node_result(&self, run_id: &str, node_uid: &str) -> Result<(), WorkflowError>;
 
+    async fn delete_node_results(
+        &self,
+        run_id: &str,
+        node_uids: &[String],
+    ) -> Result<(), WorkflowError> {
+        for node_uid in node_uids {
+            self.delete_node_result(run_id, node_uid).await?;
+        }
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------
     // Agent tasks
     // ---------------------------------------------------------------------

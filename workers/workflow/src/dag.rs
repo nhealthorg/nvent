@@ -24,6 +24,160 @@ const DEFAULT_FANOUT_BATCH_SIZE: usize = 50;
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Return result UIDs that may be needed by the next orchestration step.
+///
+/// Completed leaf results with no active consumer are intentionally excluded;
+/// their durable payload remains available through the result API. Fanout and
+/// reduce sources are expanded to item UIDs because their consumers need the
+/// ordered collection, not only the source checkpoint.
+pub fn required_result_uids(def: &WorkflowDef, record: &WorkflowRunRecord) -> BTreeSet<String> {
+    let mut required = BTreeSet::new();
+
+    add_required_source(def, record, &mut required, &def.output.from);
+
+    for (node_id, node) in &def.nodes {
+        let active = record
+            .nodes
+            .get(node_id)
+            .map(|checkpoint| {
+                !matches!(
+                    checkpoint.state,
+                    NodeState::Done | NodeState::Failed | NodeState::Cancelled
+                )
+            })
+            .unwrap_or(true);
+        if !active {
+            continue;
+        }
+
+        for dependency in &node.depends_on {
+            add_required_node(def, record, &mut required, dependency);
+        }
+        for source in node.input.from.sources() {
+            add_required_source(def, record, &mut required, source);
+        }
+        if let Some(fanout) = &node.fanout {
+            if record.fanout_src.get(node_id).is_none() {
+                add_required_source(def, record, &mut required, &fanout.over);
+            }
+        }
+        if let Some(if_spec) = &node.if_spec {
+            if let Some(source) = if_spec.source.as_str() {
+                add_required_source(def, record, &mut required, source);
+            }
+            collect_predicate_sources(def, record, &mut required, &if_spec.predicate);
+        }
+    }
+
+    for (reduce_id, checkpoint) in &record.reduce_checkpoints {
+        if matches!(
+            checkpoint.state,
+            ReduceState::Pending | ReduceState::Running
+        ) {
+            for uid in &checkpoint.active_body_uids {
+                required.insert(uid.clone());
+            }
+            if let Some(reduce) = def
+                .nodes
+                .get(reduce_id)
+                .and_then(|node| node.reduce.as_ref())
+            {
+                add_required_source(def, record, &mut required, &reduce.over);
+            }
+        }
+    }
+
+    required
+}
+
+fn add_required_node(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    required: &mut BTreeSet<String>,
+    node_id: &str,
+) {
+    if def
+        .nodes
+        .get(node_id)
+        .and_then(|node| node.fanout.as_ref())
+        .is_some()
+    {
+        if let Some(total) = record.fanout_src.get(node_id) {
+            for index in 0..*total {
+                required.insert(node_uid(node_id, Some(index as u32)));
+            }
+        } else {
+            required.insert(node_id.to_string());
+        }
+    } else {
+        required.insert(node_id.to_string());
+    }
+}
+
+fn add_required_source(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    required: &mut BTreeSet<String>,
+    source: &str,
+) {
+    let source = source.strip_prefix("node:").unwrap_or(source);
+    let node_id = source.split('.').next().unwrap_or(source);
+    if !node_id.is_empty() {
+        add_required_node(def, record, required, node_id);
+    }
+}
+
+fn collect_predicate_sources(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    required: &mut BTreeSet<String>,
+    predicate: &Option<IfPredicate>,
+) {
+    fn collect_value(
+        def: &WorkflowDef,
+        record: &WorkflowRunRecord,
+        required: &mut BTreeSet<String>,
+        value: &Value,
+    ) {
+        if let Value::String(source) = value {
+            if source.starts_with("node:") {
+                add_required_source(def, record, required, source);
+            }
+        }
+    }
+
+    fn collect(
+        def: &WorkflowDef,
+        record: &WorkflowRunRecord,
+        required: &mut BTreeSet<String>,
+        predicate: &IfPredicate,
+    ) {
+        match predicate {
+            IfPredicate::Equals { left, right } | IfPredicate::NotEquals { left, right } => {
+                collect_value(def, record, required, left);
+                collect_value(def, record, required, right);
+            }
+            IfPredicate::Gt { left, right }
+            | IfPredicate::Gte { left, right }
+            | IfPredicate::Lt { left, right }
+            | IfPredicate::Lte { left, right } => {
+                collect_value(def, record, required, left);
+                collect_value(def, record, required, right);
+            }
+            IfPredicate::And { args } | IfPredicate::Or { args } => {
+                for arg in args {
+                    collect(def, record, required, arg);
+                }
+            }
+            IfPredicate::Not { arg } => collect(def, record, required, arg),
+        }
+    }
+
+    if let Some(predicate) = predicate {
+        collect(def, record, required, predicate);
+    }
+}
+
 /// Returns a zeroed-out Pending checkpoint (caller sets node_uid as the map key).
 fn pending_checkpoint() -> NodeCheckpoint {
     NodeCheckpoint {
@@ -297,6 +451,9 @@ pub fn expand_ready_fanouts(
         // active batch instead of growing to the full input size immediately.
         let n = items.len();
         record.fanout_src.insert(node_id.to_string(), n);
+        if fanout_spec.mode == Some(FanoutMode::Batch) {
+            record.fanout_active.insert(node_id.to_string(), 0);
+        }
         let materialized = match fanout_spec.mode {
             Some(FanoutMode::Batch) => fanout_spec
                 .batch_size
@@ -333,6 +490,7 @@ pub fn materialize_ready_batch_items(def: &WorkflowDef, record: &mut WorkflowRun
         .collect();
 
     for node_id in batch_nodes {
+        advance_batch_cursor(def, record, &node_id);
         let Some(node) = def.nodes.get(&node_id) else {
             continue;
         };
@@ -356,6 +514,110 @@ pub fn materialize_ready_batch_items(def: &WorkflowDef, record: &mut WorkflowRun
                 .nodes
                 .entry(node_uid(&node_id, Some(index as u32)))
                 .or_insert_with(pending_checkpoint);
+        }
+    }
+}
+
+/// Removes completed item checkpoints from batches that are behind the durable
+/// cursor. The active batch remains in `record.nodes`; historical batches are
+/// reconstructible from `fanout_src` and `fanout_active` and do not need to be
+/// retained in the parent record.
+pub fn compact_completed_batch_checkpoints(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    seed: &str,
+) -> Vec<String> {
+    let members = ordered_group_members(def, seed, FanoutMode::Batch);
+    if members.is_empty() || batch_group_has_external_consumers(def, &members) {
+        return Vec::new();
+    }
+
+    let cursor = members
+        .iter()
+        .filter_map(|member| record.fanout_active.get(member).copied())
+        .min()
+        .unwrap_or(0);
+    if cursor == 0 {
+        return Vec::new();
+    }
+    if members
+        .iter()
+        .all(|member| cursor >= record.fanout_src.get(member).copied().unwrap_or(0))
+    {
+        return Vec::new();
+    }
+
+    let mut removed = Vec::new();
+    for member in members {
+        for index in 0..cursor.min(record.fanout_src.get(&member).copied().unwrap_or(0)) {
+            let uid = node_uid(&member, Some(index as u32));
+            if record.nodes.get(&uid).is_some_and(|checkpoint| {
+                matches!(
+                    checkpoint.state,
+                    NodeState::Done | NodeState::Failed | NodeState::Cancelled
+                )
+            }) {
+                if record.nodes.remove(&uid).is_some() {
+                    removed.push(uid);
+                }
+            }
+        }
+    }
+    removed
+}
+
+fn batch_group_has_external_consumers(def: &WorkflowDef, members: &[String]) -> bool {
+    def.nodes.iter().any(|(node_id, node)| {
+        if members.iter().any(|member| member == node_id) {
+            return false;
+        }
+        node.depends_on
+            .iter()
+            .any(|dependency| members.iter().any(|member| member == dependency))
+            || node.input.from.sources().iter().any(|source| {
+                let base = source
+                    .strip_prefix("node:")
+                    .unwrap_or(source)
+                    .split('#')
+                    .next()
+                    .unwrap_or(source);
+                members.iter().any(|member| member == base)
+            })
+    })
+}
+
+fn advance_batch_cursor(def: &WorkflowDef, record: &mut WorkflowRunRecord, seed: &str) {
+    let members = ordered_group_members(def, seed, FanoutMode::Batch);
+    let Some(seed_node) = def.nodes.get(seed) else {
+        return;
+    };
+    let Some(fanout) = seed_node.fanout.as_ref() else {
+        return;
+    };
+    let batch_size = fanout
+        .batch_size
+        .filter(|size| *size > 0)
+        .unwrap_or(DEFAULT_FANOUT_BATCH_SIZE);
+    let start = members
+        .iter()
+        .filter_map(|member| record.fanout_active.get(member).copied())
+        .max()
+        .unwrap_or(0);
+    let end = start.saturating_add(batch_size);
+
+    let complete = members.iter().all(|member| {
+        let total = record.fanout_src.get(member).copied().unwrap_or(0);
+        (start..end.min(total)).all(|index| {
+            let uid = node_uid(member, Some(index as u32));
+            matches!(
+                record.nodes.get(&uid),
+                Some(cp) if cp.state == NodeState::Done && checkpoint_done_with_result(record, &uid)
+            )
+        })
+    });
+    if complete {
+        for member in members {
+            record.fanout_active.insert(member, end);
         }
     }
 }
@@ -923,6 +1185,15 @@ fn ordered_group_active_index(
         return None;
     }
 
+    if mode == FanoutMode::Batch {
+        if let Some(index) = members
+            .iter()
+            .find_map(|member| record.fanout_active.get(member).copied())
+        {
+            return (index < record.fanout_src.get(seed).copied().unwrap_or(0)).then_some(index);
+        }
+    }
+
     let mut max_len = 0usize;
     for member in &members {
         let len = record.fanout_src.get(member).copied().unwrap_or(0);
@@ -1300,6 +1571,16 @@ pub fn quiescence(def: &WorkflowDef, record: &WorkflowRunRecord) -> RunStatus {
             .get(node_id.as_str())
             .map(|n| n.fanout.is_some())
             .unwrap_or(false);
+        if is_fanout
+            && node_def.fanout.as_ref().and_then(|fanout| fanout.mode) == Some(FanoutMode::Batch)
+            && record
+                .fanout_src
+                .get(node_id)
+                .zip(record.fanout_active.get(node_id))
+                .is_some_and(|(total, cursor)| cursor >= total)
+        {
+            continue;
+        }
         // Expand a node to the uids that actually carry state: a fanout
         // node contributes all its #i items, a normal node is itself.
         let uids = if is_fanout {
@@ -1616,6 +1897,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            fanout_active: BTreeMap::new(),
             skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
@@ -2434,7 +2716,7 @@ mod tests {
         r.nodes.insert("read#0".into(), done_checkpoint());
         materialize_ready_batch_items(&d, &mut r);
         let frontier2 = ready_frontier(&d, &r);
-        assert_eq!(frontier2, vec!["read#1".to_string(), "read#2".to_string()]);
+        assert_eq!(frontier2, vec!["read#1".to_string()]);
 
         r.nodes.insert("read#1".into(), done_checkpoint());
         materialize_ready_batch_items(&d, &mut r);
@@ -2689,6 +2971,32 @@ mod tests {
         let req = required_set(&d);
         assert!(req.contains("a") && req.contains("b") && req.contains("d"));
         assert!(!req.contains("orphan"));
+    }
+
+    #[test]
+    fn required_result_uids_exclude_completed_orphans() {
+        let d: WorkflowDef = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "output": {"from": "node:d"},
+            "nodes": {
+                "a": {"function": {"id": "fn-a"}, "input": {"from": "run_input", "template": "t"}},
+                "b": {"depends_on": ["a"], "function": {"id": "fn-b"}, "input": {"from": "node:a", "template": "t"}},
+                "d": {"depends_on": ["b"], "function": {"id": "fn-d"}, "input": {"from": "node:b", "template": "t"}},
+                "orphan": {"function": {"id": "fn-orphan"}, "input": {"from": "run_input", "template": "t"}}
+            }
+        }))
+        .unwrap();
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), pending_checkpoint());
+        r.nodes.insert("d".into(), pending_checkpoint());
+        r.nodes.insert("orphan".into(), done_checkpoint());
+
+        let required = required_result_uids(&d, &r);
+        assert!(required.contains("a"));
+        assert!(required.contains("b"));
+        assert!(required.contains("d"));
+        assert!(!required.contains("orphan"));
     }
 
     // -----------------------------------------------------------------------

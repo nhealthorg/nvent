@@ -194,6 +194,7 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
                         record.run_id, expected, stored.version
                     )));
                 }
+
                 None => {
                     return Err(WorkflowError::State(format!(
                         "put_run CAS conflict for {}: expected_version={} but run does not exist",
@@ -840,6 +841,42 @@ mod tests {
             .await
             .expect("list after delete");
         assert_eq!(remaining, vec![link_b]);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn batch_node_result_delete_is_idempotent() {
+        let dir = temp_store_dir();
+        let mut cfg = WorkerConfig::default();
+        cfg.internal_state_backend = "file".to_string();
+        cfg.internal_state_file_dir = dir.to_string_lossy().into_owned();
+
+        let store = FileWorkflowInternalStateStore::new(&cfg);
+        let run_id = "run-batch-delete";
+        let node_uids = vec!["children#0".to_string(), "children#1".to_string()];
+        for node_uid in &node_uids {
+            store
+                .put_node_result(run_id, node_uid, &serde_json::json!({"node_uid": node_uid}))
+                .await
+                .expect("put result");
+        }
+
+        store
+            .delete_node_results(run_id, &node_uids)
+            .await
+            .expect("delete results");
+        for node_uid in &node_uids {
+            assert!(store
+                .get_node_result(run_id, node_uid)
+                .await
+                .expect("get deleted result")
+                .is_none());
+        }
+        store
+            .delete_node_results(run_id, &node_uids)
+            .await
+            .expect("repeated delete is idempotent");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

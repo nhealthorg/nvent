@@ -839,6 +839,28 @@ async fn advance_completed_reductions(
     Ok(advanced)
 }
 
+async fn refresh_reduction_results(
+    deps: &Deps,
+    record: &WorkflowRunRecord,
+    results: &mut BTreeMap<String, Value>,
+    reduce_ids: &[String],
+) -> Result<(), WorkflowError> {
+    for reduce_id in reduce_ids {
+        if record
+            .nodes
+            .get(reduce_id)
+            .is_some_and(|checkpoint| checkpoint.state == NodeState::Done)
+        {
+            if let Some(result) =
+                state::get_node_result(&deps.iii, &record.run_id, reduce_id).await?
+            {
+                results.insert(reduce_id.clone(), result);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn complete_empty_reductions(
     deps: &Deps,
     record: &mut WorkflowRunRecord,
@@ -1834,7 +1856,9 @@ pub async fn handle(
     crate::reconcile::reconcile_child_workflow_nodes(deps, &mut record).await?;
 
     // 6. Load done results.
-    let mut results = state::load_done_results(&deps.iii, &mut record).await?;
+    let required_result_uids = dag::required_result_uids(&def, &record);
+    let mut results =
+        state::load_done_results_for_uids(&deps.iii, &mut record, &required_result_uids).await?;
 
     let advanced_reductions =
         advance_completed_reductions(deps, &def, &mut record, &results).await?;
@@ -1982,14 +2006,26 @@ pub async fn handle(
             "materialized active reduce iterations"
         );
     }
-    if !advanced_reductions.is_empty() || !completed_empty_reductions.is_empty() {
-        results = state::load_done_results(&deps.iii, &mut record).await?;
-    }
+    let mut refreshed_reduction_ids = advanced_reductions;
+    refreshed_reduction_ids.extend(completed_empty_reductions);
+    refresh_reduction_results(deps, &record, &mut results, &refreshed_reduction_ids).await?;
 
     // 7b. Enforce liveness-based memory lifecycle cleanup.
     // Important ordering: detach result refs now, but only delete payload rows
     // after the updated run record is persisted to avoid ref/payload skew.
-    let detached_result_uids = release_consumed_memory_artifacts(deps, &def, &mut record).await?;
+    let mut detached_result_uids =
+        release_consumed_memory_artifacts(deps, &def, &mut record).await?;
+    for node_id in def.nodes.iter().filter_map(|(node_id, node)| {
+        (node.fanout.as_ref()?.mode == Some(crate::types::FanoutMode::Batch)).then_some(node_id)
+    }) {
+        detached_result_uids.extend(dag::compact_completed_batch_checkpoints(
+            &def,
+            &mut record,
+            node_id,
+        ));
+    }
+    detached_result_uids.sort();
+    detached_result_uids.dedup();
 
     // 8. Decide and act.
     let decision = decide(&def, &record);
@@ -2009,15 +2045,14 @@ pub async fn handle(
             finalize(deps, &def, &mut record, status, &results).await?;
             state::put_run(&deps.iii, &record).await?;
 
-            for uid in &detached_result_uids {
-                if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
-                    tracing::warn!(
-                        run_id = %record.run_id,
-                        node_uid = %uid,
-                        error = %e,
-                        "failed to delete detached node result payload"
-                    );
-                }
+            if let Err(e) =
+                state::delete_node_results(&deps.iii, &record.run_id, &detached_result_uids).await
+            {
+                tracing::warn!(
+                    run_id = %record.run_id,
+                    error = %e,
+                    "failed to delete detached node result payloads"
+                );
             }
 
             // Terminal runs do not need in-process per-run payload caches.
@@ -2051,15 +2086,14 @@ pub async fn handle(
             record.updated_at = deps.now_ms();
             state::put_run(&deps.iii, &record).await?;
 
-            for uid in &detached_result_uids {
-                if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await {
-                    tracing::warn!(
-                        run_id = %record.run_id,
-                        node_uid = %uid,
-                        error = %e,
-                        "failed to delete detached node result payload"
-                    );
-                }
+            if let Err(e) =
+                state::delete_node_results(&deps.iii, &record.run_id, &detached_result_uids).await
+            {
+                tracing::warn!(
+                    run_id = %record.run_id,
+                    error = %e,
+                    "failed to delete detached node result payloads"
+                );
             }
             Ok(super::TickResponse { skipped: false })
         }
@@ -2076,16 +2110,15 @@ pub async fn handle(
                 finalize(deps, &def, &mut record, RunStatus::Failed, &results).await?;
                 state::put_run(&deps.iii, &record).await?;
 
-                for uid in &detached_result_uids {
-                    if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await
-                    {
-                        tracing::warn!(
-                            run_id = %record.run_id,
-                            node_uid = %uid,
-                            error = %e,
-                            "failed to delete detached node result payload"
-                        );
-                    }
+                if let Err(e) =
+                    state::delete_node_results(&deps.iii, &record.run_id, &detached_result_uids)
+                        .await
+                {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        error = %e,
+                        "failed to delete detached node result payloads"
+                    );
                 }
 
                 let _ = state::delete_run_input_memory(&record.run_id);
@@ -2101,16 +2134,15 @@ pub async fn handle(
                 record.updated_at = deps.now_ms();
                 state::put_run(&deps.iii, &record).await?;
 
-                for uid in &detached_result_uids {
-                    if let Err(e) = state::delete_node_result(&deps.iii, &record.run_id, uid).await
-                    {
-                        tracing::warn!(
-                            run_id = %record.run_id,
-                            node_uid = %uid,
-                            error = %e,
-                            "failed to delete detached node result payload"
-                        );
-                    }
+                if let Err(e) =
+                    state::delete_node_results(&deps.iii, &record.run_id, &detached_result_uids)
+                        .await
+                {
+                    tracing::warn!(
+                        run_id = %record.run_id,
+                        error = %e,
+                        "failed to delete detached node result payloads"
+                    );
                 }
                 Ok(super::TickResponse { skipped: false })
             }
@@ -2279,6 +2311,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            fanout_active: BTreeMap::new(),
             skipped_nodes: Default::default(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),

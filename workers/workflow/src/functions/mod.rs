@@ -356,8 +356,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { run_result::handle(&d, req).await.map_err(Error::from) }
         })
         .description(
-            "Fetch the terminal workflow output payload by run_id. Use this after nworkflow::status \
-             with include_result=false to keep polling lightweight for large outputs.",
+            "Fetch the terminal workflow output by run_id. Set include_result=false to return only \
+             the result_ref, keeping retrieval lightweight for large outputs; the default still \
+             returns the payload.",
         ),
     );
 

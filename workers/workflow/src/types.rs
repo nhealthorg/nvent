@@ -887,6 +887,9 @@ pub struct WorkflowRunRecord {
     /// node_id -> frozen fanout item count (payload lives in internal state store)
     #[serde(default)]
     pub fanout_src: BTreeMap<String, usize>,
+    /// node_id -> next active item index for batch fanouts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fanout_active: BTreeMap<String, usize>,
     /// Node uids skipped because their conditional branch was not selected.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub skipped_nodes: BTreeSet<String>,
@@ -1067,6 +1070,7 @@ mod tests {
                 m
             },
             fanout_src: BTreeMap::new(),
+            fanout_active: BTreeMap::new(),
             skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),
@@ -1370,6 +1374,7 @@ mod tests {
             queue_receipts: Vec::new(),
             nodes: BTreeMap::new(),
             fanout_src: BTreeMap::new(),
+            fanout_active: BTreeMap::new(),
             skipped_nodes: BTreeSet::new(),
             reduce_checkpoints: BTreeMap::new(),
             if_checkpoints: BTreeMap::new(),

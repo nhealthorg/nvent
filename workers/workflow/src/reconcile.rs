@@ -365,6 +365,29 @@ fn classify_child_terminal(
     classify_terminal(status, result, result_error)
 }
 
+const CHILD_RECONCILE_CONCURRENCY: usize = 16;
+
+async fn load_child_reconciliation(
+    store: std::sync::Arc<dyn crate::internal_state::WorkflowInternalStateStore>,
+    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    uid: String,
+    child_run_id: String,
+) -> Result<(String, String, Option<WorkflowRunRecord>, Option<Value>), WorkflowError> {
+    let _permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| WorkflowError::State("child reconciliation semaphore closed".to_string()))?;
+    let child_record = store.get_run(&child_run_id).await?;
+    let result = match child_record
+        .as_ref()
+        .and_then(|run| run.result_ref.as_deref())
+    {
+        Some(result_ref) => store.get_run_result(result_ref).await?,
+        None => None,
+    };
+    Ok((uid, child_run_id, child_record, result))
+}
+
 /// Poll Running `child_workflow` nodes against their target run's own status.
 /// This is the pull-side fallback for `child_workflow::handle_completed` (the
 /// push path via `notify`): if that callback is ever lost — worker restart,
@@ -377,9 +400,22 @@ pub async fn reconcile_child_workflow_nodes(
     let running_children = collect_running_child_workflow_nodes(&record.nodes);
 
     let now = deps.now_ms();
-
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(CHILD_RECONCILE_CONCURRENCY));
+    let mut tasks = tokio::task::JoinSet::new();
     for (uid, child_run_id) in running_children {
-        let Some(child_record) = state::get_run(&deps.iii, &child_run_id).await? else {
+        tasks.spawn(load_child_reconciliation(
+            deps.internal_state.clone(),
+            semaphore.clone(),
+            uid,
+            child_run_id,
+        ));
+    }
+
+    while let Some(task) = tasks.join_next().await {
+        let (uid, child_run_id, child_record, result) = task.map_err(|error| {
+            WorkflowError::State(format!("child reconciliation task failed: {error}"))
+        })??;
+        let Some(child_record) = child_record else {
             // Vanished before reporting back (swept/deleted). Leave Running — the
             // timeout sweep is the backstop so the parent node doesn't hang forever.
             tracing::warn!(
@@ -405,11 +441,6 @@ pub async fn reconcile_child_workflow_nodes(
                 }
                 continue;
             }
-        };
-
-        let result = match child_record.result_ref.as_deref() {
-            Some(result_ref) => state::get_run_result(&deps.iii, result_ref).await?,
-            None => None,
         };
 
         tracing::info!(

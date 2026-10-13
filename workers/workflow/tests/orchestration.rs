@@ -5,6 +5,7 @@
 /// `WorkflowRunRecord` + `BTreeMap<String, Value>` results map, simulating
 /// the tick loop.
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use serde_json::{json, Value};
 use workflow::{
@@ -179,6 +180,7 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         queue_receipts: Vec::new(),
         nodes: BTreeMap::new(),
         fanout_src: BTreeMap::new(),
+        fanout_active: BTreeMap::new(),
         skipped_nodes: BTreeSet::new(),
         reduce_checkpoints: BTreeMap::new(),
         if_checkpoints: BTreeMap::new(),
@@ -206,6 +208,15 @@ fn drive_step(
 ) -> TickDecision {
     dag::expand_ready_fanouts(def, record, results);
     dag::materialize_ready_batch_items(def, record);
+    for (node_id, node) in &def.nodes {
+        if node
+            .fanout
+            .as_ref()
+            .is_some_and(|fanout| fanout.mode == Some(FanoutMode::Batch))
+        {
+            dag::compact_completed_batch_checkpoints(def, record, node_id);
+        }
+    }
     let decision = decide(def, record);
     if let TickDecision::Fire(ref uids) = decision {
         for uid in uids {
@@ -228,6 +239,52 @@ fn drive_step(
         }
     }
     decision
+}
+
+fn drive_child_batch_step(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+) -> (TickDecision, Vec<String>) {
+    dag::expand_ready_fanouts(def, record, results);
+    dag::materialize_ready_batch_items(def, record);
+    let mut detached_result_uids = Vec::new();
+    for (node_id, node) in &def.nodes {
+        if node
+            .fanout
+            .as_ref()
+            .is_some_and(|fanout| fanout.mode == Some(FanoutMode::Batch))
+        {
+            detached_result_uids.extend(dag::compact_completed_batch_checkpoints(
+                def, record, node_id,
+            ));
+        }
+    }
+    detached_result_uids.sort();
+    detached_result_uids.dedup();
+
+    let decision = decide(def, record);
+    if let TickDecision::Fire(ref uids) = decision {
+        for uid in uids {
+            record.nodes.insert(
+                uid.clone(),
+                NodeCheckpoint {
+                    state: NodeState::Running,
+                    session_id: None,
+                    turn_id: None,
+                    result_ref: None,
+                    result_error: None,
+                    child_run_id: Some(format!("child_run_{}", uid)),
+                    pending_at: Some(1_000_000),
+                    pending_timeout_ms: None,
+                    retries: 0,
+                    completed_at: None,
+                    worker_name: None,
+                },
+            );
+        }
+    }
+    (decision, detached_result_uids)
 }
 
 /// Mark a node checkpoint as Done and store its result in the results map.
@@ -504,20 +561,49 @@ fn batch_child_workflow_materializes_final_progress_item() {
         json!({"items": source_items}),
     );
 
+    let mut tick_durations = Vec::new();
     for start in (0..750).step_by(50) {
         let end = (start + 50).min(750);
         let expected_children: Vec<String> = (start..end)
             .map(|index| format!("children#{index}"))
             .collect();
+        let tick_started = Instant::now();
         match drive_step(&def, &mut record, &results) {
             TickDecision::Fire(uids) => assert_eq!(uids, expected_children),
             other => panic!("expected child batch {start}..{end}, got {:?}", other),
         }
+        tick_durations.push(tick_started.elapsed());
         if start == 0 {
             assert_eq!(
                 record.nodes.len(),
                 101,
                 "only source plus two active batches should exist"
+            );
+            let active_bytes = serde_json::to_vec(&record)
+                .expect("serialize active record")
+                .len();
+            let mut fully_materialized = record.clone();
+            let template = fully_materialized
+                .nodes
+                .get("children#0")
+                .cloned()
+                .expect("first batch checkpoint");
+            for index in 0..750 {
+                fully_materialized
+                    .nodes
+                    .entry(format!("children#{index}"))
+                    .or_insert_with(|| template.clone());
+                fully_materialized
+                    .nodes
+                    .entry(format!("progress#{index}"))
+                    .or_insert_with(|| template.clone());
+            }
+            let fully_materialized_bytes = serde_json::to_vec(&fully_materialized)
+                .expect("serialize fully materialized record")
+                .len();
+            assert!(
+                active_bytes * 5 < fully_materialized_bytes,
+                "lazy batch record should be substantially smaller: active={active_bytes}, full={fully_materialized_bytes}"
             );
         }
         for index in start..end {
@@ -532,10 +618,17 @@ fn batch_child_workflow_materializes_final_progress_item() {
         let expected_progress: Vec<String> = (start..end)
             .map(|index| format!("progress#{index}"))
             .collect();
+        let tick_started = Instant::now();
         match drive_step(&def, &mut record, &results) {
             TickDecision::Fire(uids) => assert_eq!(uids, expected_progress),
             other => panic!("expected progress batch {start}..{end}, got {:?}", other),
         }
+        tick_durations.push(tick_started.elapsed());
+        assert!(
+            record.nodes.len() <= 101,
+            "completed batches must be compacted: start={start} nodes={}",
+            record.nodes.len()
+        );
         for index in start..end {
             complete(
                 &mut record,
@@ -545,6 +638,353 @@ fn batch_child_workflow_materializes_final_progress_item() {
             );
         }
     }
+
+    let early: u128 = tick_durations
+        .iter()
+        .take(4)
+        .map(|duration| duration.as_nanos())
+        .sum();
+    let late: u128 = tick_durations
+        .iter()
+        .rev()
+        .take(4)
+        .map(|duration| duration.as_nanos())
+        .sum();
+    assert!(
+        late <= early.saturating_mul(4).saturating_add(5_000_000),
+        "late batch ticks degraded unexpectedly: early={early}ns late={late}ns"
+    );
+}
+
+#[test]
+fn batch_record_scaling_stays_bounded_for_750_and_2000_items() {
+    let mut nodes = BTreeMap::new();
+    nodes.insert(
+        "source".to_string(),
+        function_node(
+            "source-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+    nodes.insert(
+        "children".to_string(),
+        function_node(
+            "child-fn",
+            InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+                value: None,
+            },
+            vec!["source".to_string()],
+            Some(FanoutSpec {
+                over: "node:source.items".to_string(),
+                mode: Some(FanoutMode::Batch),
+                batch_size: Some(50),
+                item_return_type: Some(NodeInputReturnType::Store),
+            }),
+        ),
+    );
+    let def = WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:children".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    };
+
+    struct BatchMeasurement {
+        item_count: usize,
+        max_nodes: usize,
+        max_payload_bytes: usize,
+        early_tick_nanos: u128,
+        late_tick_nanos: u128,
+    }
+
+    let mut measurements = Vec::new();
+    for item_count in [750usize, 2_000] {
+        let mut record = new_record(json!({}));
+        let mut results = BTreeMap::new();
+        let items = (0..item_count)
+            .map(|index| json!({"id": index}))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            drive_step(&def, &mut record, &results),
+            TickDecision::Fire(ref uids) if uids == &["source".to_string()]
+        ));
+        complete(&mut record, &mut results, "source", json!({"items": items}));
+
+        let mut max_nodes = record.nodes.len();
+        let mut max_payload_bytes = serde_json::to_vec(&record).unwrap().len();
+        let mut tick_nanos = Vec::new();
+        for start in (0..item_count).step_by(50) {
+            let end = (start + 50).min(item_count);
+            let tick_started = Instant::now();
+            let decision = drive_step(&def, &mut record, &results);
+            tick_nanos.push(tick_started.elapsed().as_nanos());
+            let expected = (start..end)
+                .map(|index| format!("children#{index}"))
+                .collect::<Vec<_>>();
+            assert!(matches!(decision, TickDecision::Fire(ref uids) if uids == &expected));
+            for index in start..end {
+                complete(
+                    &mut record,
+                    &mut results,
+                    &format!("children#{index}"),
+                    json!({"ok": true}),
+                );
+            }
+            max_nodes = max_nodes.max(record.nodes.len());
+            max_payload_bytes = max_payload_bytes.max(serde_json::to_vec(&record).unwrap().len());
+        }
+
+        let early_tick_nanos = tick_nanos.iter().take(4).sum();
+        let late_tick_nanos = tick_nanos.iter().rev().take(4).sum();
+        eprintln!(
+            "batch baseline items={item_count} max_nodes={max_nodes} max_payload_bytes={max_payload_bytes} early_ticks={early_tick_nanos}ns late_ticks={late_tick_nanos}ns"
+        );
+        measurements.push(BatchMeasurement {
+            item_count,
+            max_nodes,
+            max_payload_bytes,
+            early_tick_nanos,
+            late_tick_nanos,
+        });
+    }
+
+    let first = &measurements[0];
+    let second = &measurements[1];
+    assert_eq!(first.item_count, 750);
+    assert_eq!(second.item_count, 2_000);
+    assert!(
+        first.max_nodes <= 51,
+        "750-item batch state grew beyond one active batch"
+    );
+    assert!(
+        second.max_nodes <= 51,
+        "2000-item batch state grew beyond one active batch"
+    );
+    assert!(second.max_payload_bytes <= first.max_payload_bytes.saturating_mul(2));
+    assert!(
+        second.late_tick_nanos
+            <= first
+                .late_tick_nanos
+                .saturating_mul(8)
+                .saturating_add(20_000_000)
+    );
+    assert!(
+        first.late_tick_nanos
+            <= first
+                .early_tick_nanos
+                .saturating_mul(8)
+                .saturating_add(20_000_000)
+    );
+}
+
+#[test]
+fn batch_child_workflow_lifecycle_releases_results_for_750_and_2000_items() {
+    let mut nodes = BTreeMap::new();
+    nodes.insert(
+        "source".to_string(),
+        function_node(
+            "source-fn",
+            InputSpec {
+                from: "run_input".into(),
+                template: None,
+                value: None,
+            },
+            vec![],
+            None,
+        ),
+    );
+    let mut children_node = function_node(
+        "unused",
+        InputSpec {
+            from: "fanout_item".into(),
+            template: None,
+            value: None,
+        },
+        vec!["source".to_string()],
+        Some(FanoutSpec {
+            over: "node:source.items".to_string(),
+            mode: Some(FanoutMode::Batch),
+            batch_size: Some(50),
+            item_return_type: Some(NodeInputReturnType::Store),
+        }),
+    );
+    children_node.function = None;
+    children_node.child_workflow = Some(ChildWorkflowSpec {
+        workflow: "cohort::patient-extraction".to_string(),
+    });
+    nodes.insert("children".to_string(), children_node);
+    let def = WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:children".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    };
+
+    for item_count in [750usize, 2_000] {
+        let mut record = new_record(json!({}));
+        let mut results = BTreeMap::new();
+        let items = (0..item_count)
+            .map(|index| json!({"patient_id": format!("patient-{index}")}))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            drive_step(&def, &mut record, &results),
+            TickDecision::Fire(ref uids) if uids == &["source".to_string()]
+        ));
+        complete(&mut record, &mut results, "source", json!({"items": items}));
+
+        let mut completed_children = 0;
+        let mut max_nodes = record.nodes.len();
+        let mut max_result_bytes = 0;
+        let mut max_record_bytes = serde_json::to_vec(&record).unwrap().len();
+        loop {
+            let (decision, detached_result_uids) =
+                drive_child_batch_step(&def, &mut record, &results);
+            results.remove("source");
+            for uid in detached_result_uids {
+                assert!(
+                    results.remove(&uid).is_some(),
+                    "cleanup UID must identify a stored child result: {uid}"
+                );
+            }
+            max_nodes = max_nodes.max(record.nodes.len());
+            max_result_bytes = max_result_bytes.max(
+                results
+                    .values()
+                    .map(|value| serde_json::to_vec(value).unwrap().len())
+                    .sum::<usize>(),
+            );
+            max_record_bytes = max_record_bytes.max(serde_json::to_vec(&record).unwrap().len());
+
+            match decision {
+                TickDecision::Fire(uids) => {
+                    assert!(uids.iter().all(|uid| uid.starts_with("children#")));
+                    for uid in &uids {
+                        complete(
+                            &mut record,
+                            &mut results,
+                            uid,
+                            json!({
+                                "patient_id": uid,
+                                "extraction": "x".repeat(4096)
+                            }),
+                        );
+                    }
+                    completed_children += uids.len();
+                }
+                TickDecision::Finalize(status) => {
+                    assert_eq!(status, RunStatus::Completed);
+                    break;
+                }
+                TickDecision::Park => panic!("child batch unexpectedly parked"),
+            }
+        }
+
+        eprintln!(
+            "child batch lifecycle items={item_count} completed={completed_children} max_nodes={max_nodes} max_result_bytes={max_result_bytes} max_record_bytes={max_record_bytes}"
+        );
+        assert_eq!(completed_children, item_count);
+        assert!(record.nodes.len() <= 51);
+        assert_eq!(results.len(), 50);
+        assert!(max_nodes <= 51);
+        assert!(max_result_bytes <= 50 * 5_000);
+    }
+}
+
+#[test]
+fn batch_compaction_returns_removed_result_uids_for_cleanup() {
+    let mut nodes = BTreeMap::new();
+    nodes.insert(
+        "children".to_string(),
+        function_node(
+            "child-fn",
+            InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+                value: None,
+            },
+            vec![],
+            Some(FanoutSpec {
+                over: "node:source.items".to_string(),
+                mode: Some(FanoutMode::Batch),
+                batch_size: Some(50),
+                item_return_type: Some(NodeInputReturnType::Store),
+            }),
+        ),
+    );
+    let def = WorkflowDef {
+        version: 1,
+        nodes,
+        output: OutputRef {
+            from: "node:children".into(),
+        },
+        default_functions: None,
+        metadata: None,
+    };
+    let mut record = new_record(json!({}));
+    record.fanout_src.insert("children".to_string(), 100);
+    record.fanout_active.insert("children".to_string(), 50);
+    for index in 0..50 {
+        record.nodes.insert(
+            format!("children#{index}"),
+            NodeCheckpoint {
+                state: NodeState::Done,
+                session_id: None,
+                turn_id: None,
+                result_ref: Some(format!("run_test/children#{index}")),
+                result_error: None,
+                child_run_id: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: Some(1),
+                worker_name: None,
+            },
+        );
+    }
+    for index in 50..100 {
+        record.nodes.insert(
+            format!("children#{index}"),
+            NodeCheckpoint {
+                state: NodeState::Pending,
+                session_id: None,
+                turn_id: None,
+                result_ref: None,
+                result_error: None,
+                child_run_id: None,
+                pending_at: None,
+                pending_timeout_ms: None,
+                retries: 0,
+                completed_at: None,
+                worker_name: None,
+            },
+        );
+    }
+
+    let removed = dag::compact_completed_batch_checkpoints(&def, &mut record, "children");
+    let expected_removed: Vec<String> = (0..50).map(|index| format!("children#{index}")).collect();
+    assert_eq!(removed, expected_removed);
+    assert_eq!(record.nodes.len(), 50);
+    assert!(record.nodes.keys().all(|uid| {
+        uid.strip_prefix("children#")
+            .and_then(|index| index.parse::<usize>().ok())
+            .is_some_and(|index| index >= 50)
+    }));
+    assert_eq!(record.fanout_active["children"], 50);
+    assert_eq!(record.fanout_src["children"], 100);
 }
 
 #[test]

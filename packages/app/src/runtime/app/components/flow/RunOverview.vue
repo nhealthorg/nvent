@@ -142,6 +142,13 @@ const props = defineProps<{
     prunedMemory: number
     pending: number
   }
+  telemetry?: {
+    checkpointBytes: number
+    nodeCount: number
+    activeNodes: number
+    doneResults: number
+    batchProgress?: string
+  }
   runResultMode?: 'memory' | 'store' | 'stream' | 'none'
   storeKey?: string
 }>()
@@ -231,8 +238,26 @@ const overviewFacts = computed(() => {
     })
   }
 
+  if (props.telemetry) {
+    facts.push({
+      label: 'telemetry',
+      value: `${formatBytes(props.telemetry.checkpointBytes)} · ${props.telemetry.activeNodes} active · ${props.telemetry.doneResults} results`,
+      icon: 'i-lucide-activity',
+      iconClass: 'text-amber-500',
+      title: props.telemetry.batchProgress
+        ? `Checkpoint approx. ${formatBytes(props.telemetry.checkpointBytes)}, ${props.telemetry.nodeCount} nodes, batch ${props.telemetry.batchProgress}`
+        : `Checkpoint approx. ${formatBytes(props.telemetry.checkpointBytes)}, ${props.telemetry.nodeCount} nodes`,
+    })
+  }
+
   return facts
 })
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
 
 const primaryOverviewFacts = computed(() => overviewFacts.value.slice(0, 3))
 const additionalOverviewFacts = computed(() => overviewFacts.value.slice(3))

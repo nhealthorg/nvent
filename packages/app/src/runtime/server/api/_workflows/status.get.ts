@@ -16,7 +16,10 @@ export default defineEventHandler(async (event) => {
   // Fetch status using the orchestrator's function
   const status = await iii.trigger({ 
     function_id: 'nworkflow::status', 
-    payload: { run_id: runId } 
+    payload: {
+      run_id: runId,
+      include_result: false,
+    },
   })
 
   return status

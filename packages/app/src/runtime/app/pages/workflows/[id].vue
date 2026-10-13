@@ -1546,6 +1546,21 @@ const nodeStats = computed(() => {
   return stats;
 });
 
+const telemetryOverview = computed(() => {
+  const nodes = status.value?.nodes ?? {};
+  const loopStats = Object.values(status.value?.loop_stats ?? {}) as any[];
+  const totalItems = loopStats.reduce((sum, loop) => sum + Number(loop?.total_items || 0), 0);
+  const completedItems = loopStats.reduce((sum, loop) => sum + Number(loop?.completed_items || 0), 0);
+
+  return {
+    checkpointBytes: JSON.stringify(nodes).length,
+    nodeCount: Object.keys(nodes).length,
+    activeNodes: nodeStats.value.running,
+    doneResults: Object.values(nodes).filter((node: any) => Boolean(node?.result_ref)).length,
+    batchProgress: totalItems > 0 ? `${completedItems}/${totalItems}` : undefined,
+  };
+});
+
 const statusQueueReceipts = computed(() => status.value?.queue_receipts ?? []);
 const statusQueueReceiptCount = computed(
   () => statusQueueReceipts.value.length,
@@ -2471,6 +2486,7 @@ const formattedNodeResult = computed(() => {
                 :completed-at="status.updated_at"
                 :loop-overview="loopOverviewStats"
                 :result-overview="resultOverview"
+                :telemetry="telemetryOverview"
                 :run-result-mode="runResultStorageMode"
                 :store-key="status.store_key"
                 :result="status.result"
@@ -2576,6 +2592,7 @@ const formattedNodeResult = computed(() => {
             :completed-at="status.updated_at"
             :loop-overview="loopOverviewStats"
             :result-overview="resultOverview"
+            :telemetry="telemetryOverview"
             :run-result-mode="runResultStorageMode"
             :store-key="status.store_key"
             :result="status.result"

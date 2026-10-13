@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -681,14 +682,16 @@ pub async fn list_child_workflow_links_for_run(
 /// result/def/index rows forever. (`state::delete` is idempotent on a missing key,
 /// so a retry that re-deletes an already-removed child is a harmless no-op.)
 pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(), WorkflowError> {
+    let mut node_result_uids = Vec::new();
     for (node_uid, cp) in &record.nodes {
         if cp.result_ref.is_some() {
-            delete_node_result(iii, &record.run_id, node_uid).await?;
+            node_result_uids.push(node_uid.clone());
         }
         if let Some(session_id) = cp.session_id.as_deref() {
             delete_session_index(iii, session_id).await?;
         }
     }
+    delete_node_results(iii, &record.run_id, &node_result_uids).await?;
     delete_run_state_entries_from_registry(iii, record).await?;
 
     // The physical stream group a run's events are published/read under is
@@ -984,16 +987,42 @@ pub async fn delete_node_result_store(
         .await
 }
 
+pub async fn delete_node_results(
+    _iii: &IIIClient,
+    run_id: &str,
+    node_uids: &[String],
+) -> Result<(), WorkflowError> {
+    for node_uid in node_uids {
+        let _ = delete_node_result_memory(run_id, node_uid);
+    }
+    require_internal_state_store()?
+        .delete_node_results(run_id, node_uids)
+        .await
+}
+
 /// For each `NodeState::Done` checkpoint that has a `result_ref`, fetch the
 /// stored result and collect into a `node_uid → result` map.
 pub async fn load_done_results(
     iii: &IIIClient,
     record: &mut WorkflowRunRecord,
 ) -> Result<BTreeMap<String, Value>, WorkflowError> {
+    let required = record.nodes.keys().cloned().collect::<BTreeSet<_>>();
+    load_done_results_for_uids(iii, record, &required).await
+}
+
+pub async fn load_done_results_for_uids(
+    iii: &IIIClient,
+    record: &mut WorkflowRunRecord,
+    required_uids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Value>, WorkflowError> {
+    let started = Instant::now();
     let mut out = BTreeMap::new();
     let mut corrupt: Vec<String> = Vec::new();
     for (node_uid, checkpoint) in &record.nodes {
-        if checkpoint.state == NodeState::Done && checkpoint.result_ref.is_some() {
+        if required_uids.contains(node_uid)
+            && checkpoint.state == NodeState::Done
+            && checkpoint.result_ref.is_some()
+        {
             match get_node_result(iii, &record.run_id, node_uid).await? {
                 Some(result) => {
                     out.insert(node_uid.clone(), result);
@@ -1003,6 +1032,7 @@ pub async fn load_done_results(
         }
     }
     mark_missing_done_results_failed(record, corrupt);
+    crate::telemetry::record_done_result_load(started.elapsed().as_secs_f64() * 1_000.0, out.len());
     Ok(out)
 }
 
