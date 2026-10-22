@@ -576,7 +576,25 @@ pub async fn start_agent_task(
         prompt_parts.join("\n\n")
     };
 
-    let model = opts.model.as_ref().or(profile_model.as_ref());
+    let model = opts
+        .model
+        .as_ref()
+        .map(|value| {
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                WorkflowError::State("agentOptions.model must resolve to a string".to_string())
+            })
+        })
+        .transpose()?
+        .or(profile_model);
+    let provider = opts
+        .provider
+        .as_ref()
+        .map(|value| {
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                WorkflowError::State("agentOptions.provider must resolve to a string".to_string())
+            })
+        })
+        .transpose()?;
     let mut harness_options = harness_stream_options(&run_id);
 
     if let Some(opts_obj) = harness_options.as_object_mut() {
@@ -623,8 +641,8 @@ pub async fn start_agent_task(
             send_payload(
                 session_id,
                 &prompt_msg,
-                model.map(String::as_str),
-                opts.provider.as_deref(),
+                model.as_deref(),
+                provider.as_deref(),
                 harness_options,
             ),
         )
@@ -633,8 +651,8 @@ pub async fn start_agent_task(
             "harness::spawn",
             spawn_payload(
                 agent_profile.as_deref(),
-                model.map(String::as_str),
-                opts.provider.as_deref(),
+                model.as_deref(),
+                provider.as_deref(),
                 opts.folder.as_deref(),
                 &prompt_msg,
                 harness_options,

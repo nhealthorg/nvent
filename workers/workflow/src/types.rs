@@ -317,9 +317,9 @@ pub struct AgentResponseSpec {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AgentRuntimeOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub provider: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxTurns")]

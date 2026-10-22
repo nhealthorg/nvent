@@ -924,6 +924,32 @@ fn resolve_dynamic_template(
     )
 }
 
+fn resolve_agent_payload<T: serde::de::DeserializeOwned + serde::Serialize>(
+    value: &T,
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    run_input: &Value,
+    node_uid: &str,
+    fanout_item: Option<&Value>,
+    results: &BTreeMap<String, Value>,
+) -> Result<T, WorkflowError> {
+    let payload = serde_json::to_value(value).map_err(|error| {
+        WorkflowError::State(format!("agent payload serialization failed: {error}"))
+    })?;
+    let resolved = resolve_dynamic_payload_value(
+        def,
+        record,
+        run_input,
+        node_uid,
+        &payload,
+        fanout_item,
+        results,
+    );
+    serde_json::from_value(resolved).map_err(|error| {
+        WorkflowError::State(format!("resolved agent payload is invalid: {error}"))
+    })
+}
+
 fn flatten_object_paths(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
     match value {
         Value::Object(map) => {
@@ -1298,6 +1324,36 @@ pub(crate) async fn fire_node(
     );
 
     let function = node.effective_function();
+    let resolved_agent_spec = node
+        .agent
+        .as_ref()
+        .map(|spec| {
+            resolve_agent_payload(
+                spec,
+                def,
+                record,
+                &run_input,
+                node_uid,
+                fanout_item.as_ref(),
+                results,
+            )
+        })
+        .transpose()?;
+    let resolved_agent_options = node
+        .agent_options
+        .as_ref()
+        .map(|options| {
+            resolve_agent_payload(
+                options,
+                def,
+                record,
+                &run_input,
+                node_uid,
+                fanout_item.as_ref(),
+                results,
+            )
+        })
+        .transpose()?;
 
     if function.id == "nworkflow::internal-var-set" {
         execute_internal_var_set(deps, record, node_uid, &input_val).await?;
@@ -1317,7 +1373,7 @@ pub(crate) async fn fire_node(
     // Fire the function or agent asynchronously via queue / harness (non-blocking)
     let node_pending_timeout_ms = effective_pending_timeout_ms(
         prior_timeout,
-        node.agent_options
+        resolved_agent_options
             .as_ref()
             .and_then(|options| options.timeout_ms),
         None,
@@ -1329,7 +1385,7 @@ pub(crate) async fn fire_node(
             cfg.default_queue_pending_timeout_ms
         },
     );
-    if let Some(agent_spec) = &node.agent {
+    if let Some(agent_spec) = &resolved_agent_spec {
         let mut spec = agent_spec.clone();
         if !input_val.is_null() {
             spec.input = Some(input_val);
@@ -1339,7 +1395,7 @@ pub(crate) async fn fire_node(
             run_id: record.run_id.clone(),
             node_uid: node_uid.to_string(),
             spec,
-            options: node.agent_options.clone(),
+            options: resolved_agent_options.clone(),
         };
 
         // Persist run record (including completions of previous steps & this node's Running state) BEFORE harness::spawn RPC
@@ -2167,9 +2223,10 @@ pub async fn handle(
 mod tests {
     use super::*;
     use crate::types::{
-        FanoutSpec, FunctionSpec, IfBranchPath, IfCheckpoint, IfState, InputSpec, NodeCheckpoint,
-        NodeDef, NodeMemoryFailPolicy, NodeResultReturnType, NodeResultSpec, NodeState, OutputRef,
-        ReduceBodySpec, ReduceMode, ReduceSpec, WorkflowDef, WorkflowRunRecord,
+        AgentInvocationSpec, AgentRuntimeOptions, FanoutSpec, FunctionSpec, IfBranchPath,
+        IfCheckpoint, IfState, InputSpec, NodeCheckpoint, NodeDef, NodeMemoryFailPolicy,
+        NodeResultReturnType, NodeResultSpec, NodeState, OutputRef, ReduceBodySpec,
+        ReduceCheckpoint, ReduceMode, ReduceSpec, WorkflowDef, WorkflowRunRecord,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -3393,6 +3450,164 @@ mod tests {
         );
 
         assert_eq!(value, json!({ "summary": "B" }));
+    }
+
+    #[test]
+    fn resolve_agent_options_resolves_runtime_model_in_reduce_body() {
+        let mut def = three_node_def();
+        let mut agent = NodeDef {
+            label: Some("Cohort extraction".to_string()),
+            function: None,
+            agent: Some(
+                serde_json::from_value(json!({
+                    "prompt": "Extract the configured value.",
+                    "input": { "record": { "$wf_ref": "fanout_item", "$wf_path": ["record"] } },
+                    "task": { "title": "cohort-extraction" }
+                }))
+                .unwrap(),
+            ),
+            agent_options: Some(
+                serde_json::from_value(json!({
+                    "model": { "$wf_ref": "node:model", "$wf_path": ["model"] },
+                    "provider": { "$wf_ref": "node:model", "$wf_path": ["provider"] }
+                }))
+                .unwrap(),
+            ),
+            child_workflow: None,
+            reduce: None,
+            reduce_body: Some(ReduceBodySpec {
+                reduce: "steps".to_string(),
+            }),
+            if_spec: None,
+            if_branch: None,
+            input: InputSpec {
+                from: "fanout_item".into(),
+                template: None,
+                value: None,
+            },
+            depends_on: vec![],
+            fanout: None,
+            result: None,
+            input_policy: None,
+        };
+        agent.input.value = Some(json!({
+            "record": { "$wf_ref": "fanout_item", "$wf_path": ["record"] }
+        }));
+        def.nodes.insert("agent".to_string(), agent);
+        def.nodes.insert(
+            "model".to_string(),
+            NodeDef {
+                label: None,
+                function: Some(FunctionSpec {
+                    id: "resolve-model".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                }),
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                reduce: None,
+                reduce_body: None,
+                if_spec: None,
+                if_branch: None,
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+        def.nodes.insert(
+            "steps".to_string(),
+            NodeDef {
+                label: None,
+                function: Some(FunctionSpec {
+                    id: "step-source".to_string(),
+                    timeout_ms: None,
+                    queue: None,
+                    engine_retry: None,
+                    runtime: None,
+                }),
+                agent: None,
+                agent_options: None,
+                child_workflow: None,
+                reduce: Some(ReduceSpec {
+                    over: "node:plan.result.docs".to_string(),
+                    mode: ReduceMode::Sequential,
+                    initial: json!({}),
+                    item_return_type: None,
+                    accumulator_return_type: None,
+                    body: vec!["agent".to_string()],
+                }),
+                reduce_body: None,
+                if_spec: None,
+                if_branch: None,
+                input: InputSpec {
+                    from: "node:plan".into(),
+                    template: None,
+                    value: None,
+                },
+                depends_on: vec!["plan".to_string()],
+                fanout: None,
+                result: None,
+                input_policy: None,
+            },
+        );
+
+        let mut record = fresh_record();
+        let mut results = BTreeMap::new();
+        results.insert(
+            "model".to_string(),
+            json!({ "model": "project-model", "provider": "openai" }),
+        );
+        results.insert(
+            "plan".to_string(),
+            json!({ "docs": [{ "record": "record-a" }] }),
+        );
+        record.reduce_checkpoints.insert(
+            "steps".to_string(),
+            ReduceCheckpoint {
+                state: ReduceState::Running,
+                next_index: 0,
+                total_items: 1,
+                accumulator: json!({}),
+                active_body_uids: vec![],
+                error: None,
+            },
+        );
+
+        let node = def.nodes.get("agent").unwrap();
+        let item = json!({ "record": "record-a" });
+        let resolved_spec: AgentInvocationSpec = resolve_agent_payload(
+            node.agent.as_ref().unwrap(),
+            &def,
+            &record,
+            &json!({}),
+            "agent#0",
+            Some(&item),
+            &results,
+        )
+        .unwrap();
+        let resolved_options: AgentRuntimeOptions = resolve_agent_payload(
+            node.agent_options.as_ref().unwrap(),
+            &def,
+            &record,
+            &json!({}),
+            "agent#0",
+            Some(&item),
+            &results,
+        )
+        .unwrap();
+
+        assert_eq!(resolved_spec.input, Some(json!({ "record": "record-a" })));
+        assert_eq!(resolved_options.model, Some(json!("project-model")));
+        assert_eq!(resolved_options.provider, Some(json!("openai")));
     }
 
     #[test]

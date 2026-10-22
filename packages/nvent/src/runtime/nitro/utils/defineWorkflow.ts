@@ -106,8 +106,8 @@ export interface AgentInvocationSpec {
 }
 
 export interface AgentRuntimeOptions {
-  model?: string
-  provider?: string
+  model?: string | WorkflowValueRef
+  provider?: string | WorkflowValueRef
   folder?: string
   maxTurns?: number
   timeoutMs?: number
