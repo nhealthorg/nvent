@@ -235,6 +235,32 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
+    let run_index_migration_task = tokio::spawn(async move {
+        let mut migrated_batches = 0u64;
+        loop {
+            match state::backfill_run_list_indexes().await {
+                Ok(false) => {
+                    tracing::info!(migrated_batches, "workflow run list index is ready");
+                    break;
+                }
+                Ok(true) => {
+                    migrated_batches += 1;
+                    if migrated_batches % 100 == 0 {
+                        tracing::info!(
+                            migrated_batches,
+                            "workflow run list index backfill progressing"
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "workflow run list index backfill failed; retrying");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    });
+
     // Registration is not readiness: the engine may still be converging its
     // function table while state/queue/stream workers are coming online.
     // Refresh after all internal functions exist, but keep the gate closed
@@ -322,6 +348,7 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     tracing::info!("workflow shutting down");
     recovery_task.abort();
+    run_index_migration_task.abort();
     iii.shutdown_async().await;
     Ok(())
 }

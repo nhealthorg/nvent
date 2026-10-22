@@ -33,6 +33,8 @@ const MAX_WORKFLOW_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, JsonSchema)]
 pub struct StartRequest {
+    #[serde(default)]
+    pub workflow_id: Option<String>,
     /// The workflow DAG to run. See `WorkflowDef`. (`workflow` is accepted as an
     /// alias for the wrapper key.)
     pub definition: WorkflowDef,
@@ -63,6 +65,8 @@ pub struct StartRequest {
 /// `Deserialize` has normalized the payload and collected structural problems.
 #[derive(Deserialize)]
 struct StartRequestRaw {
+    #[serde(default)]
+    workflow_id: Option<String>,
     #[serde(alias = "workflow")]
     definition: WorkflowDef,
     #[serde(default)]
@@ -145,6 +149,7 @@ impl<'de> Deserialize<'de> for StartRequest {
         }
         serde_json::from_value::<StartRequestRaw>(v)
             .map(|r| StartRequest {
+                workflow_id: r.workflow_id,
                 definition: r.definition,
                 input: r.input,
                 input_policy: r.input_policy,
@@ -629,12 +634,10 @@ fn new_run_reference_set() -> RunReferenceSet {
 // Validation
 // ---------------------------------------------------------------------------
 
-/// Fold each node's `input.from` / `fanout.over` `"node:<id>"` reads into its
-/// `depends_on` (deduped; any explicitly-declared entries are kept and ordered
-/// first). A read is a data dependency, but scheduling consults only `depends_on`
-/// (see `dag::deps_done` / `ready_frontier`); aligning them here means a node never
-/// fires before a node it reads — without forcing callers to restate the edge — and
-/// keeps `validate_def`'s cycle check honest about the graph that actually executes.
+/// Fold each node's input, fanout, agent spec, and agent option `"node:<id>"`
+/// reads into its `depends_on` (deduped; explicitly-declared entries stay first).
+/// Scheduling consults only `depends_on`, so every dynamic reference must be
+/// represented here, including runtime-selected LLM model/provider values.
 /// Run BEFORE `validate_def`. Idempotent.
 fn add_read_dependencies(def: &mut WorkflowDef) {
     fn collect_value_node_refs(value: &Value, refs: &mut Vec<String>) {
@@ -667,6 +670,16 @@ fn add_read_dependencies(def: &mut WorkflowDef) {
         }
         if let Some(payload) = node.input.value.as_ref() {
             collect_value_node_refs(payload, &mut refs);
+        }
+        if let Some(agent) = node.agent.as_ref() {
+            if let Ok(payload) = serde_json::to_value(agent) {
+                collect_value_node_refs(&payload, &mut refs);
+            }
+        }
+        if let Some(options) = node.agent_options.as_ref() {
+            if let Ok(payload) = serde_json::to_value(options) {
+                collect_value_node_refs(&payload, &mut refs);
+            }
         }
         if let Some(fanout) = &node.fanout {
             if let Some(rest) = fanout.over.strip_prefix("node:") {
@@ -1098,6 +1111,7 @@ pub async fn handle(deps: &Deps, req: StartRequest) -> Result<StartResponse, Wor
 
     let record = WorkflowRunRecord {
         run_id: run_id.clone(),
+        workflow_id: req.workflow_id.clone(),
         workflow_name,
         workflow_trace_id: Some(new_trace_id()),
         state_scope_id: Some(refs.state_scope_id),
@@ -1235,6 +1249,7 @@ mod tests {
     fn bare_run_record(run_id: &str) -> WorkflowRunRecord {
         WorkflowRunRecord {
             run_id: run_id.to_string(),
+            workflow_id: None,
             workflow_name: None,
             workflow_trace_id: None,
             state_scope_id: None,
@@ -1345,6 +1360,33 @@ mod tests {
         let deps = &def.nodes["summarize"].depends_on;
         assert!(deps.contains(&"plan".to_string()));
         assert!(deps.contains(&"read".to_string()));
+    }
+
+    #[test]
+    fn add_read_dependencies_includes_agent_model_and_input_refs() {
+        let mut def = well_formed_def();
+        let agent = def.nodes.get_mut("summarize").unwrap();
+        agent.depends_on.clear();
+        agent.agent = Some(
+            serde_json::from_value(json!({
+                "prompt": "Extract",
+                "input": { "artifact": { "$wf_ref": "node:read", "$wf_path": ["artifact"] } }
+            }))
+            .unwrap(),
+        );
+        agent.agent_options = Some(
+            serde_json::from_value(json!({
+                "model": { "$wf_ref": "node:plan", "$wf_path": ["model"] },
+                "provider": { "$wf_ref": "node:plan", "$wf_path": ["provider"] }
+            }))
+            .unwrap(),
+        );
+
+        add_read_dependencies(&mut def);
+
+        let dependencies = &def.nodes["summarize"].depends_on;
+        assert!(dependencies.contains(&"plan".to_string()));
+        assert!(dependencies.contains(&"read".to_string()));
     }
 
     #[test]

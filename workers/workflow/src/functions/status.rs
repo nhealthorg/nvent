@@ -644,6 +644,7 @@ mod tests {
 
         let mut record = WorkflowRunRecord {
             run_id: "r_loop".to_string(),
+            workflow_id: None,
             workflow_name: None,
             workflow_trace_id: None,
             state_scope_id: None,

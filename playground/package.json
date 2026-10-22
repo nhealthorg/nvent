@@ -8,8 +8,8 @@
     "generate": "nuxi generate"
   },
   "dependencies": {
-    "nuxt": "4.5.2",
-    "@nuxt/ui": "4.11.2",
+    "nuxt": "4.6.2",
+    "@nuxt/ui": "4.12.0",
     "nvent": "workspace:*",
     "@nvent-addon/app": "workspace:*"
   }

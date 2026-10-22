@@ -78,7 +78,7 @@ export interface NventComposeOptions {
     shell?: string
   }
   /** Workflow worker source type in compose. Default: 'path' */
-  workflowWorkerSource?: 'path' | 'package' | 'cargo'
+  workflowWorkerSource?: 'path' | 'package'
   /** Optional workflow container name override. Default: 'workflow' */
   workflowWorkerContainerName?: string
   /** Package to use when workflowWorkerSource='package'. */

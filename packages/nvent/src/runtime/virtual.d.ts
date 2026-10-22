@@ -55,5 +55,6 @@ declare module '#nvent/types' {
     WorkflowMetadata,
     NodeCheckpoint,
     WorkflowRunRecord,
+    WorkflowRunSummary,
   } from './nitro/utils/workflow-types'
 }

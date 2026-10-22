@@ -2,18 +2,21 @@
 import { computed, ref, useFetch, useComponentRouter, onMounted, onUnmounted, watch, useRoute } from '#imports'
 import type { TableColumn, TableRow } from '@nuxt/ui'
 import { h, resolveComponent } from 'vue'
-import { type WorkflowRunRecord, RunStatus, type NodeCheckpoint } from '#nvent/types'
+import { RunStatus } from '#nvent/types'
+import type { WorkflowRunSummary } from '#nvent/types'
 
 const UBadge = resolveComponent('UBadge')
 const UProgress = resolveComponent('UProgress')
 const UButton = resolveComponent('UButton')
 
 interface RunsResponse {
-  runs: WorkflowRunRecord[]
+  runs: WorkflowRunSummary[]
   pagination: {
     total: number
     limit: number
     offset: number
+    next_cursor?: string
+    has_more: boolean
   }
 }
 
@@ -22,17 +25,19 @@ const route = useRoute()
 
 const status = ref((route.query.status as string) || 'all')
 const workflow = ref((route.query.workflow as string) || 'all')
-const page = ref(Number(route.query.page) || 1)
+const page = ref(1)
 const limit = ref(20)
+const pageCursors = ref<string[]>([])
 
 const params = computed(() => ({
   status: (status.value && status.value !== 'all') ? status.value : undefined,
-  workflow: (workflow.value && workflow.value !== 'all') ? workflow.value : undefined,
+  workflow_id: (workflow.value && workflow.value !== 'all') ? workflow.value : undefined,
   limit: limit.value,
-  offset: (page.value - 1) * limit.value
+  cursor: page.value > 1 ? pageCursors.value[page.value - 2] : undefined,
+  offset: 0
 }))
 
-const { data, refresh, pending } = useFetch<RunsResponse>('/api/_workflows/runs', {
+const { data, refresh, pending, error } = useFetch<RunsResponse>('/api/_workflows/runs', {
   query: params
 })
 
@@ -51,10 +56,17 @@ const { data: workflowOptions } = useFetch('/api/_workflows', {
 // Reset to page 1 when filters change
 watch([status, workflow], () => {
   page.value = 1
+  pageCursors.value = []
 })
 
 const runs = computed(() => data.value?.runs || [])
-const total = computed(() => data.value?.pagination?.total || 0)
+const hasMore = computed(() => data.value?.pagination?.has_more || false)
+function nextPage() {
+  const cursor = data.value?.pagination?.next_cursor
+  if (!hasMore.value || !cursor) return
+  pageCursors.value[page.value - 1] = cursor
+  page.value += 1
+}
 const cancelingRunIds = ref<string[]>([])
 const deletingRunIds = ref<string[]>([])
 const cancelError = ref<string | null>(null)
@@ -123,7 +135,7 @@ async function cancelRun(runId: string) {
   }
 }
 
-function openDeleteModal(run: WorkflowRunRecord) {
+function openDeleteModal(run: WorkflowRunSummary) {
   const currentStatus = String(run.status || '')
   if (!isTerminalStatus(currentStatus)) return
   deleteTarget.value = {
@@ -157,7 +169,7 @@ async function confirmDeleteRun() {
   }
 }
 
-const columns: TableColumn<WorkflowRunRecord>[]  = [
+const columns: TableColumn<WorkflowRunSummary>[]  = [
   {
     id: 'workflow',
     accessorFn: row => row.workflow_name || row.def_ref,
@@ -267,39 +279,18 @@ function formatDate(timestamp: number) {
   return new Date(timestamp).toLocaleString()
 }
 
-function getNodesProgress(run: WorkflowRunRecord) {
-  const nodeEntries = Object.entries(run.nodes || {}) as Array<[string, NodeCheckpoint]>
-  if (nodeEntries.length === 0) return { finished: 0, total: 0, percent: 0 }
-
-  const skippedNodes = new Set(run.skipped_nodes || [])
-  const effectiveEntries = nodeEntries.filter(([id]) =>
-    !skippedNodes.has(id)
-  )
-
-  // Loop fanout creates node ids like "step#0", while the base id can remain non-terminal.
-  // Exclude base nodes when itemized children exist to avoid under-reporting progress.
-  const loopBaseIds = new Set(
-    effectiveEntries
-      .filter(([id]) => id.includes('#'))
-      .map(([id]) => id.split('#')[0])
-      .filter((id): id is string => Boolean(id))
-  )
-
-  const effectiveNodes = effectiveEntries
-    .filter(([id]) => !(loopBaseIds.has(id) && !id.includes('#')))
-    .map(([, node]) => node)
-
-  if (effectiveNodes.length === 0) return { finished: 0, total: 0, percent: 0 }
-
-  const finished = effectiveNodes.filter(n => n.state === 'done' || n.state === 'failed' || n.state === 'cancelled').length
+function getNodesProgress(run: WorkflowRunSummary) {
+  const total = run.node_counts?.total || 0
+  const finished = run.node_counts?.finished || 0
+  if (total === 0) return { finished: 0, total: 0, percent: 0 }
   return {
     finished,
-    total: effectiveNodes.length,
-    percent: Math.round((finished / effectiveNodes.length) * 100)
+    total,
+    percent: Math.round((finished / total) * 100)
   }
 }
 
-function formatDuration(run: WorkflowRunRecord) {
+function formatDuration(run: WorkflowRunSummary) {
   const end = run.status === RunStatus.Running || run.status === RunStatus.AwaitingNodes 
     ? Date.now() 
     : run.updated_at
@@ -404,13 +395,17 @@ function formatDuration(run: WorkflowRunRecord) {
         <div v-if="deleteError" class="mb-3 text-xs text-red-600 dark:text-red-400">
           {{ deleteError }}
         </div>
+        <div v-if="error" class="mb-3 flex items-center justify-between gap-3 text-xs text-red-600 dark:text-red-400">
+          <span>Workflow runs are temporarily unavailable.</span>
+          <UButton size="xs" color="error" variant="ghost" icon="i-lucide-refresh-cw" :loading="pending" @click="refresh" />
+        </div>
         <div class="bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
           <UTable
             ref="table"
             :data="runs"
             :columns="columns"
             :loading="pending"
-            @select="(e: Event, row: TableRow<WorkflowRunRecord>) => push(`/workflows/runs/${row.original.run_id}`)"
+            @select="(e: Event, row: TableRow<WorkflowRunSummary>) => push(`/workflows/runs/${row.original.run_id}`)"
             :ui="{
               wrapper: 'overflow-x-auto',
               thead: {
@@ -428,18 +423,28 @@ function formatDuration(run: WorkflowRunRecord) {
           />
 
           <!-- Pagination -->
-          <div v-if="total > limit" class="px-6 py-4 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-zinc-50/50 dark:bg-zinc-900/20">
-            <span class="text-xs text-zinc-500">
-              Showing {{ (page - 1) * limit + 1 }} to {{ Math.min(page * limit, total) }} of {{ total }} runs
-            </span>
-            <UPagination
-              v-model:page="page"
-              :total="total"
-              :items-per-page="limit"
-              size="xs"
-              color="gray"
-              @update:model-value="(p: number) => page = p"
-            />
+          <div v-if="page > 1 || hasMore" class="px-6 py-4 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-zinc-50/50 dark:bg-zinc-900/20">
+            <span class="text-xs text-zinc-500">Page {{ page }}{{ hasMore ? '' : ' (last)' }}</span>
+            <div class="flex items-center gap-2">
+              <UButton
+                icon="i-lucide-chevron-left"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                :disabled="page <= 1"
+                title="Previous page"
+                @click="page = Math.max(1, page - 1)"
+              />
+              <UButton
+                icon="i-lucide-chevron-right"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                :disabled="!hasMore"
+                title="Next page"
+                @click="nextPage"
+              />
+            </div>
           </div>
         </div>
       </div>

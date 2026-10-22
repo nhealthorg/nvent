@@ -997,6 +997,12 @@ export function defineWorkflow<
     // When called as a standard function (e.g. via iii.trigger), it compiles 
     // the workflow and starts the execution via the workflow-worker.
     async handler(rawInput: TInput) {
+      let registeredWorkflowId: string | undefined
+      if (rawInput && typeof rawInput === 'object' && '_nventRegisteredWorkflow' in (rawInput as Record<string, unknown>)) {
+        const registration = (rawInput as any)._nventRegisteredWorkflow
+        registeredWorkflowId = typeof registration?.id === 'string' ? registration.id : undefined
+        rawInput = registration?.input as TInput
+      }
       // ctx.callWorkflow(...) triggers the target workflow's own registered
       // function id wrapped in `_childWorkflow` (see child_workflow.rs), so the
       // caller_session_id/notify needed for parent/root linkage and completion
@@ -1020,6 +1026,7 @@ export function defineWorkflow<
         ...plan,
         // Add workflow metadata for UI display
         metadata: {
+          workflow_id: registeredWorkflowId,
           name: options.name,
           description: options.description,
           hooks: options.hooks ? {
@@ -1040,6 +1047,7 @@ export function defineWorkflow<
           function_id: 'nworkflow::start',
           payload: {
             definition,
+            ...(registeredWorkflowId ? { workflow_id: registeredWorkflowId } : {}),
             input,
             ...(workflowInputPolicy ? { inputPolicy: workflowInputPolicy } : {}),
             ...(childWorkflowCallerSessionId ? { caller_session_id: childWorkflowCallerSessionId } : {}),

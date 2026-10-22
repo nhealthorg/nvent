@@ -2357,6 +2357,7 @@ mod tests {
     fn fresh_record() -> WorkflowRunRecord {
         WorkflowRunRecord {
             run_id: "run_test".to_string(),
+            workflow_id: None,
             workflow_name: None,
             workflow_trace_id: Some("trace_test".to_string()),
             state_scope_id: Some("run_test".to_string()),

@@ -8,7 +8,7 @@ use crate::error::WorkflowError;
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
 use crate::types::{
     AgentTaskRecord, ChildWorkflowLinkRecord, QueueReceiptRecord, RunStatus, WorkflowDef,
-    WorkflowRunRecord,
+    WorkflowRunRecord, WorkflowRunSummary,
 };
 
 pub mod file;
@@ -51,6 +51,7 @@ pub fn build_store(
 pub struct ListRunsFilter {
     pub status: Option<RunStatus>,
     pub workflow: Option<String>,
+    pub workflow_id: Option<String>,
 }
 
 pub fn run_matches_workflow_filter(run: &WorkflowRunRecord, lowercase_filter: &str) -> bool {
@@ -87,6 +88,46 @@ pub trait WorkflowInternalStateStore: Send + Sync {
     ) -> Result<(), WorkflowError>;
 
     async fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError>;
+    async fn list_run_summaries(
+        &self,
+        filter: &ListRunsFilter,
+        limit: usize,
+        cursor: Option<&str>,
+        offset: usize,
+    ) -> Result<(Vec<WorkflowRunSummary>, Option<String>, bool, usize), WorkflowError> {
+        let mut runs = self.list_runs().await?;
+        if let Some(status) = filter.status {
+            runs.retain(|run| run.status == status);
+        }
+        if let Some(workflow_id) = filter.workflow_id.as_deref().or(filter.workflow.as_deref()) {
+            runs.retain(|run| run.workflow_id.as_deref() == Some(workflow_id));
+        }
+        runs.sort_by_key(WorkflowRunSummary::sort_key);
+        runs.reverse();
+        let total = runs.len();
+        if let Some(cursor) = cursor {
+            runs.retain(|run| WorkflowRunSummary::sort_key(run).as_str() < cursor);
+        } else {
+            runs.dedup_by(|a, b| a.run_id == b.run_id);
+            let start = offset.min(runs.len());
+            runs.drain(..start);
+        }
+        let mut page = runs
+            .into_iter()
+            .take(limit.max(1).saturating_add(1))
+            .map(|run| WorkflowRunSummary::from_record(&run))
+            .collect::<Vec<_>>();
+        let has_more = page.len() > limit.max(1);
+        if has_more {
+            page.pop();
+        }
+        let next_cursor = page.last().map(WorkflowRunSummary::cursor);
+        Ok((page, next_cursor, has_more, total))
+    }
+
+    async fn backfill_run_list_indexes(&self) -> Result<bool, WorkflowError> {
+        Ok(false)
+    }
     async fn list_runs_filtered(
         &self,
         filter: &ListRunsFilter,

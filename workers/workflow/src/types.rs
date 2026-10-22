@@ -141,6 +141,8 @@ fn default_def_version() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
     /// Worker that created this workflow (e.g. "nvent-python-12345").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_worker: Option<String>,
@@ -846,6 +848,8 @@ pub struct ReduceCheckpoint {
 pub struct WorkflowRunRecord {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_trace_id: Option<String>,
@@ -928,6 +932,73 @@ pub struct WorkflowRunRecord {
     pub root_stream_scope_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowRunSummary {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_name: Option<String>,
+    pub def_ref: String,
+    pub status: RunStatus,
+    pub step: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub workflow_trace_id: Option<String>,
+    pub node_counts: NodeCounts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct NodeCounts {
+    pub total: usize,
+    pub finished: usize,
+}
+
+impl WorkflowRunSummary {
+    pub fn sort_key(record: &WorkflowRunRecord) -> String {
+        format!("{:020}:{}", record.created_at.max(0), record.run_id)
+    }
+
+    pub fn cursor(&self) -> String {
+        format!("{:020}:{}", self.created_at.max(0), self.run_id)
+    }
+
+    pub fn from_record(record: &WorkflowRunRecord) -> Self {
+        let itemized_bases: BTreeSet<&str> = record
+            .nodes
+            .keys()
+            .filter_map(|uid| uid.split_once('#').map(|(base, _)| base))
+            .collect();
+        let effective_nodes = record.nodes.iter().filter(|(uid, _)| {
+            !record.skipped_nodes.contains(*uid)
+                && !(itemized_bases.contains(uid.as_str()) && !uid.contains('#'))
+        });
+        let mut total = 0;
+        let mut finished = 0;
+        for (_, node) in effective_nodes {
+            total += 1;
+            if matches!(
+                node.state,
+                NodeState::Done | NodeState::Failed | NodeState::Cancelled
+            ) {
+                finished += 1;
+            }
+        }
+        Self {
+            run_id: record.run_id.clone(),
+            workflow_id: record.workflow_id.clone(),
+            workflow_name: record.workflow_name.clone(),
+            def_ref: record.def_ref.clone(),
+            status: record.status,
+            step: record.step,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            workflow_trace_id: record.workflow_trace_id.clone(),
+            node_counts: NodeCounts { total, finished },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1015,6 +1086,84 @@ mod tests {
     }
 
     #[test]
+    fn run_summary_excludes_node_payloads() {
+        let record = WorkflowRunRecord {
+            run_id: "run_summary".into(),
+            workflow_id: None,
+            workflow_name: Some("wf".into()),
+            workflow_trace_id: None,
+            state_scope_id: None,
+            stream_scope_id: None,
+            agent_session_id: None,
+            step: 3,
+            status: RunStatus::AwaitingNodes,
+            abort: false,
+            def_ref: "def".into(),
+            input_ref: "input".into(),
+            vars_ref: None,
+            state_keys_map: BTreeMap::new(),
+            stream_ids: Vec::new(),
+            queue_receipts: Vec::new(),
+            nodes: BTreeMap::from([(
+                "node".into(),
+                NodeCheckpoint {
+                    state: NodeState::Done,
+                    session_id: None,
+                    turn_id: None,
+                    result_ref: Some("large-result".into()),
+                    result_error: None,
+                    child_run_id: None,
+                    pending_at: None,
+                    pending_timeout_ms: None,
+                    retries: 0,
+                    completed_at: Some(1),
+                    worker_name: None,
+                },
+            )]),
+            fanout_src: BTreeMap::new(),
+            fanout_active: BTreeMap::new(),
+            skipped_nodes: BTreeSet::new(),
+            reduce_checkpoints: BTreeMap::new(),
+            if_checkpoints: BTreeMap::new(),
+            result_ref: Some("run-result".into()),
+            result_error: Some("large error detail".repeat(100)),
+            notify: None,
+            caller_session_id: None,
+            parent_run_id: None,
+            parent_node_uid: None,
+            root_run_id: None,
+            root_stream_scope_id: None,
+            created_at: 1,
+            updated_at: 2,
+        };
+
+        let summary = WorkflowRunSummary::from_record(&record);
+        let json = serde_json::to_value(summary).unwrap();
+        assert_eq!(json["node_counts"]["total"], 1);
+        assert!(json.get("nodes").is_none());
+        assert!(json.get("result").is_none());
+        assert!(json.get("result_error").is_none());
+    }
+
+    #[test]
+    fn run_summary_cursor_is_stable_and_orders_equal_timestamps_by_id() {
+        let mut first = fresh_minimal_run_record();
+        first.run_id = "run_a".into();
+        first.created_at = 42;
+        let mut second = first.clone();
+        second.run_id = "run_b".into();
+
+        let first_summary = WorkflowRunSummary::from_record(&first);
+        let second_summary = WorkflowRunSummary::from_record(&second);
+        assert_eq!(first_summary.cursor(), "00000000000000000042:run_a");
+        assert!(second_summary.cursor() > first_summary.cursor());
+        assert_eq!(
+            WorkflowRunSummary::sort_key(&second),
+            second_summary.cursor()
+        );
+    }
+
+    #[test]
     fn reduce_checkpoint_round_trips_resume_state() {
         let checkpoint = ReduceCheckpoint {
             next_index: 2,
@@ -1035,6 +1184,7 @@ mod tests {
     fn record_round_trips_through_json() {
         let record = WorkflowRunRecord {
             run_id: "run_abc123".to_string(),
+            workflow_id: None,
             workflow_name: Some("demo".to_string()),
             workflow_trace_id: Some("trace_abc123".to_string()),
             state_scope_id: Some("run_abc123".to_string()),
@@ -1358,6 +1508,7 @@ mod tests {
     fn fresh_minimal_run_record() -> WorkflowRunRecord {
         WorkflowRunRecord {
             run_id: "r_1".to_string(),
+            workflow_id: None,
             workflow_name: None,
             workflow_trace_id: None,
             state_scope_id: None,

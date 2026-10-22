@@ -22,6 +22,7 @@ export enum FunctionRuntime {
 }
 
 export interface WorkflowMetadata {
+  workflow_id?: string
   created_by_worker?: string
   name?: string
   description?: string
@@ -65,6 +66,9 @@ export interface WorkflowReduceSpec {
   accumulatorReturnType?: 'memory' | 'store'
   body?: string[]
 }
+
+export type WorkflowReduceContext = import('./defineWorkflow').WorkflowReduceContext
+export type WorkflowExecutionContext = import('./defineWorkflow').WorkflowContext
 
 export interface WorkflowReduceBodySpec {
   reduce: string
@@ -189,6 +193,7 @@ export interface WorkflowRunResultResponse {
 
 export interface WorkflowRunRecord {
   run_id: string
+  workflow_id?: string
   workflow_name?: string
   def_ref: string
   status: RunStatus
@@ -218,4 +223,17 @@ export interface WorkflowRunRecord {
   stream_ids: string[]
   state_keys_map: Record<string, boolean>
   workflow_trace_id?: string
+}
+
+export interface WorkflowRunSummary {
+  run_id: string
+  workflow_id?: string
+  workflow_name?: string
+  def_ref: string
+  status: RunStatus
+  step: number
+  created_at: number
+  updated_at: number
+  workflow_trace_id?: string
+  node_counts: { total: number, finished: number }
 }

@@ -15,7 +15,7 @@ use crate::internal_state::{
 use crate::state::{WorkflowRunLogRecord, WorkflowRunTraceRecord};
 use crate::types::{
     AgentTaskRecord, ChildWorkflowLinkRecord, QueueReceiptRecord, RunStatus, WorkflowDef,
-    WorkflowRunRecord,
+    WorkflowRunRecord, WorkflowRunSummary,
 };
 
 pub struct RedisWorkflowInternalStateStore {
@@ -94,6 +94,64 @@ impl RedisWorkflowInternalStateStore {
 
     fn run_key(&self, run_id: &str) -> String {
         format!("nvent:wf:run:{}", sanitize_segment(run_id))
+    }
+
+    fn run_summary_key(&self, run_id: &str) -> String {
+        format!("nvent:wf:run-summary:v2:{}", sanitize_segment(run_id))
+    }
+
+    fn runs_created_index_key(&self) -> &'static str {
+        "nvent:wf:runs:v2:created"
+    }
+
+    fn runs_status_created_index_key(&self, status: RunStatus) -> String {
+        format!(
+            "nvent:wf:runs:v2:status-created:{}",
+            status_index_name(status)
+        )
+    }
+
+    fn runs_workflow_created_index_key(&self, workflow: &str) -> String {
+        format!(
+            "nvent:wf:runs:v2:workflow-created:{}",
+            sanitize_segment(&workflow.trim().to_lowercase())
+        )
+    }
+
+    fn runs_status_workflow_created_index_key(&self, status: RunStatus, workflow: &str) -> String {
+        format!(
+            "nvent:wf:runs:v2:status-workflow-created:{}:{}",
+            status_index_name(status),
+            sanitize_segment(&workflow.trim().to_lowercase())
+        )
+    }
+
+    fn run_list_migration_cursor_key(&self) -> &'static str {
+        "nvent:wf:runs:v2:list-index-migration:cursor"
+    }
+
+    fn run_list_migration_lock_key(&self) -> &'static str {
+        "nvent:wf:runs:v2:list-index-migration:lock"
+    }
+
+    fn run_list_migration_version_key(&self) -> &'static str {
+        "nvent:wf:runs:v2:list-index-migration:version"
+    }
+
+    fn run_order_member(record: &WorkflowRunRecord) -> String {
+        WorkflowRunSummary::sort_key(record)
+    }
+
+    fn run_workflow_index_values(record: &WorkflowRunRecord) -> Vec<String> {
+        let Some(value) = record.workflow_id.as_deref() else {
+            return Vec::new();
+        };
+        let value = value.trim().to_lowercase();
+        if value.is_empty() {
+            Vec::new()
+        } else {
+            vec![value]
+        }
     }
 
     fn run_ver_key(&self, run_id: &str) -> String {
@@ -238,6 +296,184 @@ impl RedisWorkflowInternalStateStore {
         Ok(out)
     }
 
+    async fn load_run_summaries_by_ids(
+        &self,
+        conn: &mut redis::aio::MultiplexedConnection,
+        run_ids: &[String],
+    ) -> Result<Vec<WorkflowRunSummary>, WorkflowError> {
+        if run_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys = run_ids
+            .iter()
+            .map(|run_id| self.run_summary_key(run_id))
+            .collect::<Vec<_>>();
+        let values: Vec<Option<String>> = redis::cmd("MGET")
+            .arg(keys)
+            .query_async(conn)
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!("redis mget run summaries failed: {err}"))
+            })?;
+        values
+            .into_iter()
+            .flatten()
+            .map(|raw| serde_json::from_str(&raw).map_err(WorkflowError::Serde))
+            .collect()
+    }
+
+    async fn migrate_run_list_index_batch(&self) -> Result<bool, WorkflowError> {
+        if !self.has_redis() {
+            return Ok(false);
+        }
+        let mut conn = self.conn().await?;
+        let version: Option<String> = conn
+            .get(self.run_list_migration_version_key())
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!("redis read run index version failed: {err}"))
+            })?;
+        if version.as_deref() == Some("1") {
+            return Ok(false);
+        }
+
+        let lock_token = uuid::Uuid::new_v4().to_string();
+        let acquired: Option<String> = redis::cmd("SET")
+            .arg(self.run_list_migration_lock_key())
+            .arg(&lock_token)
+            .arg("NX")
+            .arg("PX")
+            .arg(30_000)
+            .query_async(&mut conn)
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!(
+                    "redis acquire run index migration lock failed: {err}"
+                ))
+            })?;
+        if acquired.is_none() {
+            return Ok(true);
+        }
+
+        let result = async {
+            let cursor: Option<u64> = conn
+                .get(self.run_list_migration_cursor_key())
+                .await
+                .map_err(|err| {
+                    WorkflowError::State(format!(
+                        "redis read run index migration cursor failed: {err}"
+                    ))
+                })?;
+            let cursor = cursor.unwrap_or(0);
+            let (next_cursor, run_ids): (u64, Vec<String>) = redis::cmd("SSCAN")
+                .arg(self.runs_index_key())
+                .arg(cursor)
+                .arg("COUNT")
+                .arg(16)
+                .query_async(&mut conn)
+                .await
+                .map_err(|err| {
+                    WorkflowError::State(format!(
+                        "redis scan run index for migration failed: {err}"
+                    ))
+                })?;
+
+            let keys = run_ids
+                .iter()
+                .map(|id| self.run_key(id))
+                .collect::<Vec<_>>();
+            let records: Vec<Option<String>> = if keys.is_empty() {
+                Vec::new()
+            } else {
+                redis::cmd("MGET")
+                    .arg(keys)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|err| {
+                        WorkflowError::State(format!(
+                            "redis load runs for index migration failed: {err}"
+                        ))
+                    })?
+            };
+            let mut pipe = redis::pipe();
+            pipe.atomic();
+            for raw in records.into_iter().flatten() {
+                let record: WorkflowRunRecord =
+                    serde_json::from_str(&raw).map_err(WorkflowError::Serde)?;
+                let summary = serde_json::to_string(&WorkflowRunSummary::from_record(&record))
+                    .map_err(WorkflowError::Serde)?;
+                let member = Self::run_order_member(&record);
+                let workflow = Self::run_workflow_index_values(&record).into_iter().next();
+                let workflow_index = workflow
+                    .as_deref()
+                    .map(|value| self.runs_workflow_created_index_key(value))
+                    .unwrap_or_default();
+                let status_workflow_index = workflow
+                    .as_deref()
+                    .map(|value| self.runs_status_workflow_created_index_key(record.status, value))
+                    .unwrap_or_default();
+                pipe.cmd("EVAL")
+                    .arg("if redis.call('EXISTS', KEYS[1]) == 0 then redis.call('SET', KEYS[1], ARGV[1]); redis.call('ZADD', KEYS[2], 0, ARGV[2]); redis.call('ZADD', KEYS[3], 0, ARGV[2]); if ARGV[3] == '1' then redis.call('ZADD', KEYS[4], 0, ARGV[2]); redis.call('ZADD', KEYS[5], 0, ARGV[2]); end; return 1; else return 0; end")
+                    .arg(5)
+                    .arg(self.run_summary_key(&record.run_id))
+                    .arg(self.runs_created_index_key())
+                    .arg(self.runs_status_created_index_key(record.status))
+                    .arg(workflow_index)
+                    .arg(status_workflow_index)
+                    .arg(summary)
+                    .arg(member)
+                    .arg(if workflow.is_some() { 1 } else { 0 })
+                    .ignore();
+            }
+            if !run_ids.is_empty() {
+                let _: () = pipe.query_async(&mut conn).await.map_err(|err| {
+                    WorkflowError::State(format!(
+                        "redis write run list migration batch failed: {err}"
+                    ))
+                })?;
+            }
+            if next_cursor == 0 {
+                let _: () = redis::pipe()
+                    .atomic()
+                    .cmd("SET")
+                    .arg(self.run_list_migration_version_key())
+                    .arg("1")
+                    .ignore()
+                    .cmd("DEL")
+                    .arg(self.run_list_migration_cursor_key())
+                    .ignore()
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|err| {
+                        WorkflowError::State(format!(
+                            "redis complete run index migration failed: {err}"
+                        ))
+                    })?;
+                Ok(false)
+            } else {
+                let _: () = conn
+                    .set(self.run_list_migration_cursor_key(), next_cursor)
+                    .await
+                    .map_err(|err| {
+                        WorkflowError::State(format!(
+                            "redis persist run index migration cursor failed: {err}"
+                        ))
+                    })?;
+                Ok(true)
+            }
+        }
+        .await;
+
+        let _: Result<(), redis::RedisError> = redis::cmd("EVAL")
+            .arg("if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end")
+            .arg(1)
+            .arg(self.run_list_migration_lock_key())
+            .arg(lock_token)
+            .query_async(&mut conn)
+            .await;
+        result
+    }
+
     async fn get_run_version(
         &self,
         conn: &mut redis::aio::MultiplexedConnection,
@@ -263,6 +499,10 @@ impl RedisWorkflowInternalStateStore {
         let run_key = self.run_key(&record.run_id);
         let run_ver_key = self.run_ver_key(&record.run_id);
         let workflow_index_keys = self.workflow_trigram_index_keys_for_run(record);
+        let summary = serde_json::to_string(&WorkflowRunSummary::from_record(record))
+            .map_err(WorkflowError::Serde)?;
+        let member = Self::run_order_member(record);
+        let workflow_values = Self::run_workflow_index_values(record);
 
         let mut pipe = redis::pipe();
         pipe.atomic()
@@ -273,6 +513,15 @@ impl RedisWorkflowInternalStateStore {
             .cmd("SET")
             .arg(&run_ver_key)
             .arg(next_version)
+            .ignore()
+            .cmd("SET")
+            .arg(self.run_summary_key(&record.run_id))
+            .arg(summary)
+            .ignore()
+            .cmd("ZADD")
+            .arg(self.runs_created_index_key())
+            .arg(0)
+            .arg(&member)
             .ignore()
             .cmd("SADD")
             .arg(self.runs_index_key())
@@ -298,10 +547,60 @@ impl RedisWorkflowInternalStateStore {
             .arg(self.runs_status_index_key(RunStatus::Cancelled))
             .arg(&record.run_id)
             .ignore()
+            .cmd("ZREM")
+            .arg(self.runs_status_created_index_key(RunStatus::Running))
+            .arg(&member)
+            .ignore()
+            .cmd("ZREM")
+            .arg(self.runs_status_created_index_key(RunStatus::AwaitingNodes))
+            .arg(&member)
+            .ignore()
+            .cmd("ZREM")
+            .arg(self.runs_status_created_index_key(RunStatus::Completed))
+            .arg(&member)
+            .ignore()
+            .cmd("ZREM")
+            .arg(self.runs_status_created_index_key(RunStatus::Failed))
+            .arg(&member)
+            .ignore()
+            .cmd("ZREM")
+            .arg(self.runs_status_created_index_key(RunStatus::Cancelled))
+            .arg(&member)
+            .ignore()
             .cmd("SADD")
             .arg(self.runs_status_index_key(record.status))
             .arg(&record.run_id)
             .ignore();
+
+        pipe.cmd("ZADD")
+            .arg(self.runs_status_created_index_key(record.status))
+            .arg(0)
+            .arg(&member)
+            .ignore();
+        for workflow in workflow_values {
+            for status in [
+                RunStatus::Running,
+                RunStatus::AwaitingNodes,
+                RunStatus::Completed,
+                RunStatus::Failed,
+                RunStatus::Cancelled,
+            ] {
+                pipe.cmd("ZREM")
+                    .arg(self.runs_status_workflow_created_index_key(status, &workflow))
+                    .arg(&member)
+                    .ignore();
+            }
+            pipe.cmd("ZADD")
+                .arg(self.runs_workflow_created_index_key(&workflow))
+                .arg(0)
+                .arg(&member)
+                .ignore()
+                .cmd("ZADD")
+                .arg(self.runs_status_workflow_created_index_key(record.status, &workflow))
+                .arg(0)
+                .arg(&member)
+                .ignore();
+        }
 
         for key in workflow_index_keys {
             pipe.cmd("SADD").arg(key).arg(&record.run_id).ignore();
@@ -323,8 +622,12 @@ impl RedisWorkflowInternalStateStore {
         let run_key = self.run_key(&record.run_id);
         let run_ver_key = self.run_ver_key(&record.run_id);
         let payload = serde_json::to_string(record).map_err(WorkflowError::Serde)?;
+        let summary = serde_json::to_string(&WorkflowRunSummary::from_record(record))
+            .map_err(WorkflowError::Serde)?;
         crate::telemetry::record_run_checkpoint(payload.len(), record.nodes.len());
         let workflow_index_keys = self.workflow_trigram_index_keys_for_run(record);
+        let member = Self::run_order_member(record);
+        let workflow_values = Self::run_workflow_index_values(record);
 
         for _ in 0..16 {
             redis::cmd("WATCH")
@@ -387,6 +690,15 @@ impl RedisWorkflowInternalStateStore {
                 .arg(&run_ver_key)
                 .arg(next_version)
                 .ignore()
+                .cmd("SET")
+                .arg(self.run_summary_key(&record.run_id))
+                .arg(&summary)
+                .ignore()
+                .cmd("ZADD")
+                .arg(self.runs_created_index_key())
+                .arg(0)
+                .arg(&member)
+                .ignore()
                 .cmd("SADD")
                 .arg(self.runs_index_key())
                 .arg(&record.run_id)
@@ -410,11 +722,54 @@ impl RedisWorkflowInternalStateStore {
                 .cmd("SREM")
                 .arg(self.runs_status_index_key(RunStatus::Cancelled))
                 .arg(&record.run_id)
+                .ignore();
+
+            for status in [
+                RunStatus::Running,
+                RunStatus::AwaitingNodes,
+                RunStatus::Completed,
+                RunStatus::Failed,
+                RunStatus::Cancelled,
+            ] {
+                pipe.cmd("ZREM")
+                    .arg(self.runs_status_created_index_key(status))
+                    .arg(&member)
+                    .ignore();
+            }
+            pipe.cmd("ZADD")
+                .arg(self.runs_status_created_index_key(record.status))
+                .arg(0)
+                .arg(&member)
                 .ignore()
                 .cmd("SADD")
                 .arg(self.runs_status_index_key(record.status))
                 .arg(&record.run_id)
                 .ignore();
+
+            for workflow in &workflow_values {
+                pipe.cmd("ZADD")
+                    .arg(self.runs_workflow_created_index_key(workflow))
+                    .arg(0)
+                    .arg(&member)
+                    .ignore();
+                for status in [
+                    RunStatus::Running,
+                    RunStatus::AwaitingNodes,
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                ] {
+                    pipe.cmd("ZREM")
+                        .arg(self.runs_status_workflow_created_index_key(status, workflow))
+                        .arg(&member)
+                        .ignore();
+                }
+                pipe.cmd("ZADD")
+                    .arg(self.runs_status_workflow_created_index_key(record.status, workflow))
+                    .arg(0)
+                    .arg(&member)
+                    .ignore();
+            }
 
             for key in &workflow_index_keys {
                 pipe.cmd("SADD").arg(key).arg(&record.run_id).ignore();
@@ -609,6 +964,16 @@ fn sanitize_segment(raw: &str) -> String {
     out
 }
 
+fn status_index_name(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Running => "running",
+        RunStatus::AwaitingNodes => "awaiting_nodes",
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+    }
+}
+
 fn hex(v: u8) -> char {
     match v {
         0..=9 => (b'0' + v) as char,
@@ -668,6 +1033,86 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             .map_err(|err| WorkflowError::State(format!("redis list runs index failed: {err}")))?;
 
         self.load_runs_by_ids(&mut conn, &run_ids).await
+    }
+
+    async fn backfill_run_list_indexes(&self) -> Result<bool, WorkflowError> {
+        self.migrate_run_list_index_batch().await
+    }
+
+    async fn list_run_summaries(
+        &self,
+        filter: &ListRunsFilter,
+        limit: usize,
+        cursor: Option<&str>,
+        offset: usize,
+    ) -> Result<(Vec<WorkflowRunSummary>, Option<String>, bool, usize), WorkflowError> {
+        if !self.has_redis() {
+            return self
+                .fallback
+                .list_run_summaries(filter, limit, cursor, offset)
+                .await;
+        }
+
+        let mut conn = self.conn().await?;
+        let version: Option<String> = conn
+            .get(self.run_list_migration_version_key())
+            .await
+            .map_err(|err| {
+                WorkflowError::State(format!("redis check run list index version failed: {err}"))
+            })?;
+        if version.as_deref() != Some("1") {
+            return Err(WorkflowError::State(
+                "workflow run list index is being backfilled; retry shortly".to_string(),
+            ));
+        }
+        let workflow_id = filter
+            .workflow_id
+            .as_deref()
+            .or(filter.workflow.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let index = match (filter.status, workflow_id) {
+            (Some(status), Some(workflow_id)) => {
+                self.runs_status_workflow_created_index_key(status, workflow_id)
+            }
+            (Some(status), None) => self.runs_status_created_index_key(status),
+            (None, Some(workflow_id)) => self.runs_workflow_created_index_key(workflow_id),
+            (None, None) => self.runs_created_index_key().to_string(),
+        };
+        let total: usize = conn.zcard(&index).await.map_err(|err| {
+            WorkflowError::State(format!("redis count run summaries failed: {err}"))
+        })?;
+        let members: Vec<String> = if cursor.is_none() && offset > 0 {
+            redis::cmd("ZREVRANGE")
+                .arg(&index)
+                .arg(offset)
+                .arg(offset.saturating_add(limit))
+                .query_async(&mut conn)
+                .await
+        } else {
+            let max = cursor
+                .map(|value| format!("({value}"))
+                .unwrap_or_else(|| "+".to_string());
+            redis::cmd("ZREVRANGEBYLEX")
+                .arg(&index)
+                .arg(max)
+                .arg("-")
+                .arg("LIMIT")
+                .arg(0)
+                .arg(limit.saturating_add(1))
+                .query_async(&mut conn)
+                .await
+        }
+        .map_err(|err| WorkflowError::State(format!("redis list run summaries failed: {err}")))?;
+        let has_more = members.len() > limit;
+        let page_members = members.into_iter().take(limit).collect::<Vec<_>>();
+        let ids = page_members
+            .iter()
+            .filter_map(|member| member.split_once(':').map(|(_, id)| id.to_string()))
+            .collect::<Vec<_>>();
+        let summaries = self.load_run_summaries_by_ids(&mut conn, &ids).await?;
+        let next_cursor = page_members.last().cloned();
+        Ok((summaries, next_cursor, has_more, total))
     }
 
     async fn list_runs_filtered(
@@ -747,16 +1192,61 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             WorkflowError::State(format!("redis get run failed for {run_id}: {err}"))
         })?;
 
-        let workflow_index_keys = raw_run
+        let indexed_record = raw_run
             .as_deref()
-            .and_then(|json| serde_json::from_str::<WorkflowRunRecord>(json).ok())
-            .map(|record| self.workflow_trigram_index_keys_for_run(&record))
+            .and_then(|json| serde_json::from_str::<WorkflowRunRecord>(json).ok());
+        let workflow_index_keys = indexed_record
+            .as_ref()
+            .map(|record| self.workflow_trigram_index_keys_for_run(record))
             .unwrap_or_default();
+        let member = indexed_record
+            .as_ref()
+            .map(Self::run_order_member)
+            .unwrap_or_else(|| format!("{:020}:{run_id}", 0));
 
         let mut pipe = redis::pipe();
         pipe.atomic();
         for key in workflow_index_keys {
             pipe.cmd("SREM").arg(key).arg(run_id).ignore();
+        }
+        if let Some(record) = indexed_record.as_ref() {
+            for workflow in Self::run_workflow_index_values(record) {
+                pipe.cmd("ZREM")
+                    .arg(self.runs_workflow_created_index_key(&workflow))
+                    .arg(&member)
+                    .ignore();
+                for status in [
+                    RunStatus::Running,
+                    RunStatus::AwaitingNodes,
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                ] {
+                    pipe.cmd("ZREM")
+                        .arg(self.runs_status_workflow_created_index_key(status, &workflow))
+                        .arg(&member)
+                        .ignore();
+                }
+            }
+        }
+        pipe.cmd("DEL")
+            .arg(self.run_summary_key(run_id))
+            .ignore()
+            .cmd("ZREM")
+            .arg(self.runs_created_index_key())
+            .arg(&member)
+            .ignore();
+        for status in [
+            RunStatus::Running,
+            RunStatus::AwaitingNodes,
+            RunStatus::Completed,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+        ] {
+            pipe.cmd("ZREM")
+                .arg(self.runs_status_created_index_key(status))
+                .arg(&member)
+                .ignore();
         }
 
         let _: () = pipe
@@ -1548,7 +2038,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.list_run_traces(run_id).await;
         }
-
         let mut conn = self.conn().await?;
         self.list_json_records(&mut conn, &self.run_trace_key(run_id), "run traces")
             .await
@@ -1566,7 +2055,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 .list_run_traces_paged(run_id, offset, limit)
                 .await;
         }
-
         let mut conn = self.conn().await?;
         self.list_json_records_latest_page(
             &mut conn,
@@ -1582,14 +2070,11 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.delete_run_trace_key(run_id, id).await;
         }
-
         let mut rows = self.list_run_traces(run_id).await?;
         rows.retain(|row| row.id != id);
-
         let mut conn = self.conn().await?;
         self.overwrite_json_records(&mut conn, &self.run_trace_key(run_id), &rows)
             .await?;
-
         if self.redis_global_log_trace_index {
             let member = format!("{}:{}", run_id, id);
             conn.zrem::<_, _, ()>(self.run_trace_global_index_key(), member)
@@ -1600,7 +2085,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                     ))
                 })?;
         }
-
         Ok(())
     }
 
@@ -1615,7 +2099,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 .prune_run_traces_before(run_id, cutoff_unix_ms)
                 .await;
         }
-
         let rows = self.list_run_traces(run_id).await?;
         let mut kept = Vec::with_capacity(rows.len());
         let mut removed_ids = Vec::new();
@@ -1627,11 +2110,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             }
         }
         let removed = removed_ids.len() as u64;
-
         let mut conn = self.conn().await?;
         self.overwrite_json_records(&mut conn, &self.run_trace_key(run_id), &kept)
             .await?;
-
         if self.redis_global_log_trace_index && !removed_ids.is_empty() {
             let members: Vec<String> = removed_ids
                 .iter()
@@ -1643,7 +2124,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                     WorkflowError::State(format!("redis zrem run trace index failed: {err}"))
                 })?;
         }
-
         Ok(removed)
     }
 
@@ -1651,7 +2131,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.put_session_index(session_id, run_id).await;
         }
-
         let mut conn = self.conn().await?;
         conn.set(self.session_key(session_id), run_id)
             .await
@@ -1666,7 +2145,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.run_id_for_session(session_id).await;
         }
-
         let mut conn = self.conn().await?;
         conn.get(self.session_key(session_id)).await.map_err(|err| {
             WorkflowError::State(format!(
@@ -1679,7 +2157,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.delete_session_index(session_id).await;
         }
-
         let mut conn = self.conn().await?;
         conn.del::<_, ()>(self.session_key(session_id))
             .await
@@ -1699,11 +2176,9 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.put_idempotency_key(key, run_id, ttl_ms).await;
         }
-
         let mut conn = self.conn().await?;
         let ttl = ttl_ms.unwrap_or(self.idempotency_ttl_ms);
         let key = self.idempotency_key(key);
-
         if ttl == 0 {
             conn.set::<_, _, ()>(&key, run_id).await.map_err(|err| {
                 WorkflowError::State(format!("redis put idempotency failed for {key}: {err}"))
@@ -1727,7 +2202,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         if !self.has_redis() {
             return self.fallback.run_id_for_idempotency_key(key).await;
         }
-
         let mut conn = self.conn().await?;
         conn.get(self.idempotency_key(key)).await.map_err(|err| {
             WorkflowError::State(format!("redis get idempotency failed for {key}: {err}"))
@@ -1741,7 +2215,6 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
                 receipt.run_id
             ))
         })?;
-
         if let Some(existing) = run.queue_receipts.iter_mut().find(|r| r.id == receipt.id) {
             *existing = receipt.clone();
         } else {
@@ -1758,7 +2231,7 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
         Ok(self
             .get_run(run_id)
             .await?
-            .map(|r| r.queue_receipts)
+            .map(|run| run.queue_receipts)
             .unwrap_or_default())
     }
 

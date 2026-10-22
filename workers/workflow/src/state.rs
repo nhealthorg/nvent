@@ -14,7 +14,7 @@ use crate::{
     internal_state::{ListRunsFilter, WorkflowInternalStateStore},
     types::{
         AgentTaskRecord, NodeState, QueueReceiptRecord, RunStatus, WorkflowDef, WorkflowRunRecord,
-        WorkflowVarRecord,
+        WorkflowRunSummary, WorkflowVarRecord,
     },
 };
 
@@ -581,7 +581,40 @@ pub async fn list_runs_filtered(
     workflow: Option<String>,
 ) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
     require_internal_state_store()?
-        .list_runs_filtered(&ListRunsFilter { status, workflow })
+        .list_runs_filtered(&ListRunsFilter {
+            status,
+            workflow,
+            workflow_id: None,
+        })
+        .await
+}
+
+pub async fn list_run_summaries(
+    _iii: &IIIClient,
+    status: Option<RunStatus>,
+    workflow_id: Option<String>,
+    workflow: Option<String>,
+    limit: usize,
+    cursor: Option<&str>,
+    offset: usize,
+) -> Result<(Vec<WorkflowRunSummary>, Option<String>, bool, usize), WorkflowError> {
+    require_internal_state_store()?
+        .list_run_summaries(
+            &ListRunsFilter {
+                status,
+                workflow,
+                workflow_id,
+            },
+            limit,
+            cursor,
+            offset,
+        )
+        .await
+}
+
+pub async fn backfill_run_list_indexes() -> Result<bool, WorkflowError> {
+    require_internal_state_store()?
+        .backfill_run_list_indexes()
         .await
 }
 

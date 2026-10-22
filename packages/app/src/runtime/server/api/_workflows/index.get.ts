@@ -8,15 +8,19 @@ export default defineEventHandler(async () => {
   // 1. Get workflow definitions from registry
   const workflowDefinitions = registry?.workflows ?? []
 
-  // 2. Fetch live status if engine is available
-  // We use state::list to get all runs and filter for active ones
-  const runsResult = await iii.trigger({ 
-    function_id: 'state::list', 
-    payload: { scope: 'workflow_run' } 
-  }).catch(() => ({ values: [] }))
-
-  const runs = Array.isArray(runsResult) ? runsResult : (runsResult as any)?.values || []
-  const activeRuns = runs.filter((r: any) => r.status === 'running' || r.status === 'pending')
+  const [running, awaiting] = await Promise.all([
+    iii.trigger({
+      function_id: 'nworkflow::list-runs',
+      payload: { status: 'running', limit: 100 },
+    }).catch(() => ({ runs: [] })),
+    iii.trigger({
+      function_id: 'nworkflow::list-runs',
+      payload: { status: 'awaiting_nodes', limit: 100 },
+    }).catch(() => ({ runs: [] })),
+  ])
+  const runningRuns = (running as any)?.runs ?? []
+  const awaitingRuns = (awaiting as any)?.runs ?? []
+  const activeRuns = [...runningRuns, ...awaitingRuns]
 
   return {
     definitions: workflowDefinitions.map((w: any) => ({

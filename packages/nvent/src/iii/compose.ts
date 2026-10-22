@@ -1,14 +1,13 @@
 import { parseYAML, stringifyYAML } from 'confbox'
 import type { ComposeEngineWorkerOverrides } from './compose-advanced'
 
-export type WorkflowWorkerSource = 'path' | 'package' | 'cargo'
+export type WorkflowWorkerSource = 'path' | 'package'
 
 export interface ComposeWorkflowWorkerOptions {
   containerName?: string
   source?: WorkflowWorkerSource
   packageName?: string
   packageVersion?: string
-  manifestPath?: string
   startupTimeout?: string
   configArg?: string
 }
@@ -99,21 +98,6 @@ function createWorkflowContainer(worker: ComposeWorkflowWorkerOptions | undefine
       entry.version = worker.packageVersion.trim()
     }
     return { containerName, entry }
-  }
-
-  if (source === 'cargo') {
-    const manifestPath = (worker?.manifestPath || 'workers/workflow/Cargo.toml').trim()
-    return {
-      containerName,
-      entry: {
-        worker: 'path://./workers/workflow',
-        working_dir: '.',
-        startup_timeout: startupTimeout,
-        scripts: {
-          run: `cargo run --manifest-path ${shellQuote(manifestPath)} -- --url "$III_URL"${worker?.configArg ? ` --config ${shellQuote(worker.configArg)}` : ''}`,
-        },
-      },
-    }
   }
 
   return {
