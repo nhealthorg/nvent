@@ -1,30 +1,22 @@
 <template>
   <div :class="ui.root">
     <component
-      :is="item.clickable !== false ? 'button' : 'div'"
+      :is="item.outlineNode.kind !== 'step' || item.clickable === false ? 'div' : 'button'"
       v-for="item in visibleItems"
       :key="item.value"
       :type="item.clickable !== false ? 'button' : undefined"
+      :aria-pressed="item.outlineNode.kind === 'step' && item.clickable !== false ? props.modelValue === item.value : undefined"
       :class="itemClasses(item)"
-      @click="item.clickable !== false ? $emit('update:modelValue', item.value) : undefined"
+      @click="item.outlineNode.kind === 'step' && item.clickable !== false ? $emit('update:modelValue', item.value) : undefined"
     >
-      <RunIfBlock
-        v-if="item.step?.nodeKind === 'if_group'"
-        :step="item.step"
+      <RunOutlineNode
+        v-if="item.outlineNode.kind !== 'step'"
+        :node="item.outlineNode"
         :model-value="props.modelValue"
         @select="$emit('update:modelValue', $event)"
-      />
-      <RunLoopBlock
-        v-else-if="item.step?.isLoopGroup"
-        :step="item.step"
-        :model-value="props.modelValue"
-        @select="$emit('update:modelValue', $event)"
-      />
-      <RunReduceBlock
-        v-else-if="item.step?.nodeKind === 'reduce_group'"
-        :step="item.step"
-        :model-value="props.modelValue"
-        @select="$emit('update:modelValue', $event)"
+        @inspect-step-result="emit('inspect-step-result', $event)"
+        @open-child-run="emit('open-child-run', $event)"
+        @view-child-runs="emit('view-child-runs', $event)"
       />
       <RunControlBlock
         v-else-if="isControlStep(item.step)"
@@ -420,7 +412,7 @@
 
         <!-- Additional Details (from description slot) -->
         <div
-          v-if="!item.step.showAllIndicator && !item.step.isLoopGroup && (item.step.startedAt || item.step.completedAt || item.step.error || item.step.awaitType || item.step.canInspectResult)"
+          v-if="!item.step.showAllIndicator && !item.step.isLoopGroup && (item.step.startedAt || item.step.completedAt || item.step.error || item.step.awaitType || item.step.canInspectResult || item.step.childRunId)"
           class="mt-3 text-xs"
         >
           <!-- Timing Info -->
@@ -671,6 +663,17 @@
             </div>
           </div>
 
+          <div v-if="item.step.childRunId" class="mt-2 flex justify-end">
+            <UButton
+              icon="i-lucide-external-link"
+              size="xs"
+              variant="ghost"
+              color="neutral"
+              label="Open child run"
+              @click.stop="emit('open-child-run', { runId: item.step.childRunId })"
+            />
+          </div>
+
           <!-- Result Button -->
           <div
             v-if="item.step.canInspectResult"
@@ -704,9 +707,8 @@ import { tv } from 'tailwind-variants'
 import { twMerge } from 'tailwind-merge'
 import type { ClassValue } from 'tailwind-variants'
 import RunControlBlock from './RunControlBlock.vue'
-import RunIfBlock from './RunIfBlock.vue'
-import RunReduceBlock from './RunReduceBlock.vue'
-import RunLoopBlock from './RunLoopBlock.vue'
+import RunOutlineNode from './RunOutlineNode.vue'
+import { buildRunOutline } from './run-outline'
 import {
   formatDuration,
   formatScheduledTime,
@@ -813,12 +815,12 @@ const itemVariants = computed(() => tv({
 
 // Compute classes for each item
 const itemClasses = (item: any) => {
-  const isClickable = item.clickable !== false
+  const isClickable = item.outlineNode.kind === 'step' && item.clickable !== false
   const classes = itemVariants.value({
     selected: isClickable && props.modelValue === item.value,
     clickable: isClickable,
   })
-  const isControl = ['if_group', 'reduce_group', 'var', 'workflow_event'].includes(item?.step?.nodeKind)
+  const isControl = item.outlineNode.kind !== 'step' || ['var', 'workflow_event'].includes(item?.step?.nodeKind)
   return isControl
     ? twMerge(classes, item?.step?.nodeKind === 'workflow_event'
       ? 'border-dashed border-slate-300/80 bg-slate-50/50 p-2 dark:border-slate-700/80 dark:bg-slate-900/20'
@@ -827,15 +829,11 @@ const itemClasses = (item: any) => {
 }
 
 const visibleItems = computed(() => {
-  return props.items.filter((item) => !shouldHideTopLevelItem(item))
+  return buildRunOutline(props.items).map(node => ({ ...node.item, outlineNode: node }))
 })
 
 function isControlStep(step: any): boolean {
-  return step?.nodeKind === 'var' || step?.nodeKind === 'if' || step?.nodeKind === 'if_branch'
-}
-
-function shouldHideTopLevelItem(item: any): boolean {
-  return Boolean(item?.step?.inLoopGroup)
+  return step?.nodeKind === 'var'
 }
 
 function getLoopChildren(groupItem: any): any[] {

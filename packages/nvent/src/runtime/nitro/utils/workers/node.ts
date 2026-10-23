@@ -22,12 +22,12 @@ async function reportNodeCompleted(
       await iii.trigger({
         function_id: 'nworkflow::node-completed',
         payload,
+        timeoutMs: 10_000,
       })
       return
     } catch (error) {
       if (attempt === 3) {
-        console.warn('[nvent/workflow] completion fast-path abandoned after retries', error)
-        return
+        throw new Error('Workflow completion delivery failed after retries', { cause: error })
       }
       await sleep(delayMs)
       delayMs = Math.min(delayMs * 2, 1_000)
@@ -675,8 +675,8 @@ export async function registerNodeFunctions(iii: IiiClient, fns: NodeFnInfo[], o
           }
           
         } catch (err) {
-          // Log but don't throw - result is still returned
           console.error(`[nvent/workflow] completion failed for ${workflow.node_uid}:`, err)
+          throw err
         }
       }
       

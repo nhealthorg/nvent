@@ -104,6 +104,7 @@
 
       <FlowStepSelector
         v-else
+        :key="runId"
         v-model="selectedStep"
         :items="radioItems"
         @inspect-step-result="emit('inspect-step-result', $event)"
@@ -125,6 +126,7 @@ const props = defineProps<{
   steps: any[]
   flowName?: string
   runId?: string
+  selectedStepKey?: string | null
   triggerName?: string
   triggerType?: 'manual' | 'event' | 'webhook' | 'schedule'
   flowDef?: any
@@ -275,16 +277,13 @@ const handleRestartFlow = () => {
 // Selected step ('all-steps' = all steps, null would break URadioGroup)
 const selectedStep = ref<string>('all-steps')
 
-// Track the first step key to detect run changes
-const firstStepKey = computed(() => props.steps?.length > 0 ? props.steps[0]?.key : undefined)
-
-// Reset selection only when run changes (first step key changes), not when new events arrive
-watch(firstStepKey, (newKey, oldKey) => {
-  // Only reset if first step actually changed (indicating a new run)
-  if (oldKey !== undefined && newKey !== oldKey) {
-    selectedStep.value = 'all-steps'
-  }
+watch(() => props.runId, () => {
+  selectedStep.value = 'all-steps'
 })
+
+watch(() => props.selectedStepKey, value => {
+  selectedStep.value = value || 'all-steps'
+}, { immediate: true })
 
 // Watch selection and emit to parent
 watch(selectedStep, (newStep: string) => {
@@ -427,71 +426,7 @@ const radioItems = computed(() => {
     }
   })
 
-  const reduceItems = stepItems.filter(item => item.step?.nodeKind === 'reduce')
-  const reduceBodyItems = stepItems.filter(item => item.step?.nodeKind === 'reduce_body')
-  const groupedReduceItems = reduceItems.map((reduceItem) => ({
-    ...reduceItem,
-    clickable: false,
-    step: {
-      ...reduceItem.step,
-      nodeKind: 'reduce_group',
-      bodyItems: reduceBodyItems.filter(item => item.step?.reduceBody?.reduce === reduceItem.value),
-    },
-  }))
-  const reduceBodyValues = new Set(reduceBodyItems.map(item => item.value))
-  const reduceByValue = new Map(groupedReduceItems.map(item => [item.value, item]))
-
-  const reduceVisibleItems = stepItems.flatMap(item => {
-    if (reduceBodyValues.has(item.value)) return []
-    return reduceByValue.get(item.value) || item
-  })
-  const ifItems = reduceVisibleItems.filter(item => item.step?.nodeKind === 'if')
-  const branchItems = reduceVisibleItems.filter(item => item.step?.ifBranch?.if)
-  const branchValues = new Set(branchItems.map(item => item.value))
-  const groupedIfItems = ifItems.map((ifItem) => {
-    const nestedLoopGroups = new Map(
-      reduceVisibleItems
-        .filter(item => item.step?.isLoopGroup && item.step?.ifBranch?.if === ifItem.value)
-        .map(loopItem => [loopItem.value, {
-          ...loopItem,
-          step: {
-            ...loopItem.step,
-            loopChildren: stepItems
-              .filter(child => child.step?.inLoopGroup && child.step?.loopGroupId === loopItem.step.loopGroupId)
-              .map(child => ({ value: child.value, label: child.label, step: child.step })),
-          },
-        }]),
-    )
-    const branchItemsInOrder = (path: 'then' | 'else') => reduceVisibleItems
-      .filter(item => item.step?.ifBranch?.if === ifItem.value
-        && item.step?.ifBranch?.path === path
-        && !item.step?.inLoopGroup)
-      .map(item => nestedLoopGroups.get(item.value) || item)
-
-    return {
-      ...ifItem,
-      clickable: false,
-      step: {
-        ...ifItem.step,
-        nodeKind: 'if_group',
-        branches: {
-          then: branchItemsInOrder('then'),
-          else: branchItemsInOrder('else'),
-        },
-      },
-    }
-  })
-  const groupedIds = new Set(groupedIfItems.map(item => item.value))
-  const groupedByValue = new Map(groupedIfItems.map(item => [item.value, item]))
-
-  const visibleItems = reduceVisibleItems.flatMap(item => {
-    const ifGroup = groupedByValue.get(item.value)
-    if (ifGroup) return [ifGroup]
-    if (branchValues.has(item.value) || groupedIds.has(item.value)) return []
-    return [item]
-  })
-
-  return [allItem, ...visibleItems, ...lifecycleEventItems.value]
+  return [allItem, ...stepItems, ...lifecycleEventItems.value]
 })
 
 // Helper to format timestamps

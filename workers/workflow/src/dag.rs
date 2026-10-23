@@ -647,6 +647,9 @@ pub fn initialize_ready_reductions(
 
     let mut initialized = Vec::new();
     for (node_id, node_def) in candidates {
+        if !branch_is_selected(def, record, node_id) || record.skipped_nodes.contains(node_id) {
+            continue;
+        }
         let reduce = node_def.reduce.as_ref().expect("candidate has reduce spec");
         let source_node_id = reduce
             .over
@@ -743,6 +746,92 @@ fn if_truthy(value: &Value) -> bool {
     }
 }
 
+pub fn scoped_node_uid(def: &WorkflowDef, context: &str, target: &str) -> String {
+    let Some((context_base, index)) = context.rsplit_once('#') else {
+        return target.to_string();
+    };
+    let current_reduce = def
+        .nodes
+        .get(context_base)
+        .and_then(|node| node.reduce_body.as_ref());
+    let target_reduce = def
+        .nodes
+        .get(target)
+        .and_then(|node| node.reduce_body.as_ref());
+    if current_reduce.is_some() && current_reduce == target_reduce {
+        format!("{target}#{index}")
+    } else {
+        target.to_string()
+    }
+}
+
+pub fn branch_is_selected(def: &WorkflowDef, record: &WorkflowRunRecord, uid: &str) -> bool {
+    let mut current = uid.to_string();
+    let mut visited = HashSet::new();
+    while visited.insert(current.clone()) {
+        let base = current.split('#').next().unwrap_or(&current);
+        let Some(branch) = def.nodes.get(base).and_then(|node| node.if_branch.as_ref()) else {
+            return true;
+        };
+        let parent = scoped_node_uid(def, &current, &branch.if_node);
+        if record
+            .if_checkpoints
+            .get(&parent)
+            .and_then(|checkpoint| checkpoint.selected)
+            != Some(branch.path)
+        {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
+fn iteration_dependencies_done(def: &WorkflowDef, record: &WorkflowRunRecord, uid: &str) -> bool {
+    if !uid.contains('#') {
+        return deps_done(def, record, uid);
+    }
+    let base = uid.split('#').next().unwrap_or(uid);
+    let Some(node) = def.nodes.get(base) else {
+        return false;
+    };
+    node.depends_on.iter().all(|dependency| {
+        let dependency_uid = execution_dependency_uid(def, record, uid, dependency);
+        if record.skipped_nodes.contains(&dependency_uid) {
+            return true;
+        }
+        record
+            .nodes
+            .get(&dependency_uid)
+            .is_some_and(|checkpoint| checkpoint.state == NodeState::Done)
+    })
+}
+
+fn execution_dependency_uid(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    consumer: &str,
+    dependency: &str,
+) -> String {
+    let dependency_uid = scoped_node_uid(def, consumer, dependency);
+    let mut current = consumer.split('#').next().unwrap_or(consumer);
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        let Some(branch) = def
+            .nodes
+            .get(current)
+            .and_then(|node| node.if_branch.as_ref())
+        else {
+            break;
+        };
+        if branch.if_node == dependency {
+            return dependency_uid;
+        }
+        current = &branch.if_node;
+    }
+    resolve_output_node(def, record, &dependency_uid)
+}
+
 fn if_operand_value(value: &Value, results: &BTreeMap<String, Value>, run_input: &Value) -> Value {
     let Some(object) = value.as_object() else {
         return value.clone();
@@ -817,21 +906,119 @@ pub fn initialize_ready_ifs(
     results: &BTreeMap<String, Value>,
     run_input: &Value,
 ) -> Vec<String> {
+    let mut initialized = Vec::new();
+    loop {
+        let ready = initialize_ready_ifs_once(def, record, results, run_input);
+        if ready.is_empty() {
+            return initialized;
+        }
+        initialized.extend(ready);
+    }
+}
+
+fn initialize_ready_ifs_once(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+    run_input: &Value,
+) -> Vec<String> {
     let candidates: Vec<String> = def
         .nodes
         .iter()
         .filter_map(|(id, node)| {
-            (node.if_spec.is_some() && !record.if_checkpoints.contains_key(id))
-                .then_some(id.clone())
+            if node.if_spec.is_none() {
+                return None;
+            }
+            Some(if let Some(body) = &node.reduce_body {
+                record
+                    .reduce_checkpoints
+                    .get(&body.reduce)
+                    .map(|checkpoint| {
+                        checkpoint
+                            .active_body_uids
+                            .iter()
+                            .filter(|uid| uid.split('#').next() == Some(id.as_str()))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![id.clone()]
+            })
         })
+        .flatten()
+        .filter(|uid| !record.if_checkpoints.contains_key(uid))
         .collect();
     let mut initialized = Vec::new();
 
     for node_id in candidates {
-        let node = &def.nodes[&node_id];
-        if !deps_done(def, record, &node_id) {
+        let base_id = node_id.split('#').next().unwrap_or(&node_id);
+        let node = &def.nodes[base_id];
+        if record.skipped_nodes.contains(&node_id)
+            || !branch_is_selected(def, record, &node_id)
+            || !iteration_dependencies_done(def, record, &node_id)
+        {
             continue;
         }
+        let mut scoped_results = BTreeMap::new();
+        if let Some(body) = &node.reduce_body {
+            for (uid, value) in results {
+                if !uid.contains('#') {
+                    scoped_results.insert(uid.clone(), value.clone());
+                }
+            }
+            let Some(checkpoint) = record.reduce_checkpoints.get(&body.reduce) else {
+                continue;
+            };
+            let Some(reduce) = def
+                .nodes
+                .get(&body.reduce)
+                .and_then(|node| node.reduce.as_ref())
+            else {
+                continue;
+            };
+            let Ok(items) = resolve_reduce_over_path(def, record, &reduce.over, results) else {
+                continue;
+            };
+            scoped_results.insert(
+                "reduce_item".into(),
+                items
+                    .get(checkpoint.next_index)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            scoped_results.insert(
+                "fanout_item".into(),
+                items
+                    .get(checkpoint.next_index)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            scoped_results.insert("reduce_accumulator".into(), checkpoint.accumulator.clone());
+            scoped_results.insert(
+                format!("reduce:{}:accumulator", body.reduce),
+                checkpoint.accumulator.clone(),
+            );
+            scoped_results.insert(
+                format!("reduce:{}:index", body.reduce),
+                Value::from(checkpoint.next_index),
+            );
+            for target in def.nodes.keys() {
+                let target_uid = scoped_node_uid(def, &node_id, target);
+                if target_uid != *target {
+                    let resolved = resolve_output_node(def, record, &target_uid);
+                    scoped_results.insert(
+                        target.clone(),
+                        results.get(&resolved).cloned().unwrap_or(Value::Null),
+                    );
+                }
+            }
+        }
+        let results = if node.reduce_body.is_some() {
+            &scoped_results
+        } else {
+            results
+        };
         let spec = node
             .if_spec
             .as_ref()
@@ -843,6 +1030,7 @@ pub fn initialize_ready_ifs(
                 let source_id = source.strip_prefix("node:").unwrap_or(source);
                 results.get(source_id).cloned().unwrap_or(Value::Null)
             }
+            Value::String(source) if results.contains_key(source) => results[source].clone(),
             value => value.clone(),
         };
         let selected = match &spec.predicate {
@@ -881,27 +1069,42 @@ pub fn initialize_ready_ifs(
                 completed_at: None,
                 worker_name: Some("workflow-internal-if".to_string()),
             });
-        for (branch_id, branch_node) in def.nodes.iter() {
-            if let Some(branch) = &branch_node.if_branch {
-                if branch.if_node == node_id && branch.path != selected_path {
-                    record.nodes.insert(
-                        branch_id.clone(),
-                        NodeCheckpoint {
-                            state: NodeState::Cancelled,
-                            session_id: None,
-                            turn_id: None,
-                            result_ref: None,
-                            result_error: Some("conditional branch skipped".to_string()),
-                            child_run_id: None,
-                            pending_at: None,
-                            pending_timeout_ms: None,
-                            retries: 0,
-                            completed_at: None,
-                            worker_name: None,
-                        },
-                    );
-                    record.skipped_nodes.insert(branch_id.clone());
+        for branch_id in def.nodes.keys() {
+            let branch_uid = scoped_node_uid(def, &node_id, branch_id);
+            let mut ancestor = branch_uid.clone();
+            let mut visited = HashSet::new();
+            let mut skip = false;
+            while visited.insert(ancestor.clone()) {
+                let base = ancestor.split('#').next().unwrap_or(&ancestor);
+                let Some(branch) = def.nodes.get(base).and_then(|node| node.if_branch.as_ref())
+                else {
+                    break;
+                };
+                let parent = scoped_node_uid(def, &ancestor, &branch.if_node);
+                if parent == node_id {
+                    skip = branch.path != selected_path;
+                    break;
                 }
+                ancestor = parent;
+            }
+            if skip {
+                record.nodes.insert(
+                    branch_uid.clone(),
+                    NodeCheckpoint {
+                        state: NodeState::Cancelled,
+                        session_id: None,
+                        turn_id: None,
+                        result_ref: None,
+                        result_error: Some("conditional branch skipped".to_string()),
+                        child_run_id: None,
+                        pending_at: None,
+                        pending_timeout_ms: None,
+                        retries: 0,
+                        completed_at: None,
+                        worker_name: None,
+                    },
+                );
+                record.skipped_nodes.insert(branch_uid);
             }
         }
         initialized.push(node_id);
@@ -1035,6 +1238,9 @@ fn reduce_body_item_ready(
         if record.nodes.get(uid).map(|cp| cp.state) != Some(NodeState::Pending) {
             continue;
         }
+        if !branch_is_selected(def, record, uid) {
+            continue;
+        }
         let index = uid
             .split('#')
             .nth(1)
@@ -1051,7 +1257,16 @@ fn reduce_body_item_ready(
                         .and_then(|candidate| candidate.reduce_body.as_ref())
                         .is_some_and(|candidate| candidate.reduce == body.reduce)
                     {
-                        checkpoint_done_with_result(record, &node_uid(dep, Some(index as u32)))
+                        let dep_uid = execution_dependency_uid(def, record, uid, dep);
+                        record.skipped_nodes.contains(&dep_uid)
+                            || record.nodes.get(&dep_uid).is_some_and(|checkpoint| {
+                                checkpoint.state == NodeState::Done
+                                    && (checkpoint.result_ref.is_some()
+                                        || def
+                                            .nodes
+                                            .get(dep_uid.split('#').next().unwrap_or(&dep_uid))
+                                            .is_some_and(|node| node.if_spec.is_some()))
+                            })
                     } else if def
                         .nodes
                         .get(dep)
@@ -1321,13 +1536,8 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
             frontier.extend(reduce_body_item_ready(def, record, node_id));
             continue;
         }
-        if let Some(branch) = &node_def.if_branch {
-            let Some(checkpoint) = record.if_checkpoints.get(&branch.if_node) else {
-                continue;
-            };
-            if checkpoint.selected != Some(branch.path) {
-                continue;
-            }
+        if !branch_is_selected(def, record, node_id) {
+            continue;
         }
 
         if node_def.fanout.is_some() {
@@ -1552,9 +1762,7 @@ pub fn quiescence(def: &WorkflowDef, record: &WorkflowRunRecord) -> RunStatus {
         if node_def.reduce_body.is_some() {
             continue;
         }
-        if node_def.if_branch.is_some()
-            && record.nodes.get(node_id).map(|cp| cp.state) == Some(NodeState::Cancelled)
-        {
+        if record.skipped_nodes.contains(node_id) {
             continue;
         }
         if node_def.reduce.is_some() {
@@ -1696,13 +1904,14 @@ pub fn resolve_output_node(
         return output_node.to_string();
     };
 
+    let output_base = output_node.split('#').next().unwrap_or(output_node);
     let branch_nodes: Vec<String> = def
         .nodes
         .iter()
         .filter_map(|(node_id, node)| {
             node.if_branch
                 .as_ref()
-                .filter(|branch| branch.if_node == output_node && branch.path == selected)
+                .filter(|branch| branch.if_node == output_base && branch.path == selected)
                 .map(|_| node_id.clone())
         })
         .collect();
@@ -1718,8 +1927,70 @@ pub fn resolve_output_node(
                         .is_some_and(|node| node.depends_on.iter().any(|dep| dep == *candidate))
             })
         })
-        .cloned()
+        .map(|leaf| scoped_node_uid(def, output_node, leaf))
+        .filter(|leaf| leaf != output_node)
+        .map(|leaf| resolve_output_node(def, record, &leaf))
         .unwrap_or_else(|| output_node.to_string())
+}
+
+pub fn completed_reduce_result(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    reduce_id: &str,
+    results: &BTreeMap<String, Value>,
+) -> Result<Option<Value>, String> {
+    let Some(checkpoint) = record.reduce_checkpoints.get(reduce_id) else {
+        return Ok(None);
+    };
+    if checkpoint.state != ReduceState::Running || checkpoint.active_body_uids.is_empty() {
+        return Ok(None);
+    }
+    for uid in &checkpoint.active_body_uids {
+        if record.skipped_nodes.contains(uid) {
+            continue;
+        }
+        match record.nodes.get(uid) {
+            Some(node) if matches!(node.state, NodeState::Failed | NodeState::Cancelled) => {
+                return Err(node
+                    .result_error
+                    .clone()
+                    .unwrap_or_else(|| format!("reduce body node '{uid}' failed")));
+            }
+            Some(node) if node.state == NodeState::Done => {}
+            _ => return Ok(None),
+        }
+    }
+    let Some(reduce) = def
+        .nodes
+        .get(reduce_id)
+        .and_then(|node| node.reduce.as_ref())
+    else {
+        return Ok(None);
+    };
+    let active: Vec<&String> = reduce
+        .body
+        .iter()
+        .filter(|id| {
+            !record
+                .skipped_nodes
+                .contains(&node_uid(id, Some(checkpoint.next_index as u32)))
+        })
+        .collect();
+    let leaf = active.iter().rev().find(|candidate| {
+        !active.iter().any(|other| {
+            other != *candidate
+                && def
+                    .nodes
+                    .get(other.as_str())
+                    .is_some_and(|node| node.depends_on.contains(candidate))
+        })
+    });
+    let Some(leaf) = leaf else {
+        return Ok(Some(checkpoint.accumulator.clone()));
+    };
+    let uid = node_uid(leaf, Some(checkpoint.next_index as u32));
+    let resolved = resolve_output_node(def, record, &uid);
+    Ok(results.get(&resolved).cloned())
 }
 
 /// Resolve an If output using the branch result already available in this tick.
@@ -2452,6 +2723,149 @@ mod tests {
             vec!["if"]
         );
         assert_eq!(r.if_checkpoints["if"].selected, Some(IfBranchPath::Then));
+    }
+
+    #[test]
+    fn conditional_reduce_resumes_alternating_iterations_without_dispatching_skipped_nodes() {
+        let definition: WorkflowDef = serde_json::from_value(json!({
+            "version": 1, "output": {"from": "node:fold"}, "nodes": {
+                "source": {"function": {"id": "source"}, "input": {"from": "run_input"}},
+                "fold": {"reduce": {"over": "node:source", "mode": "sequential", "initial": {}, "body": ["choice", "then", "nested", "agent", "fallback", "else"]}, "input": {"from": "node:source"}},
+                "choice": {"reduceBody": {"reduce": "fold"}, "if": {"source": true, "predicate": {"op": "equals", "left": {"$ref": "reduce_item", "$path": ["llm"]}, "right": true}}, "input": {"from": "run_input"}},
+                "then": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "choice", "path": "then"}, "function": {"id": "prepare"}, "depends_on": ["choice"], "input": {"from": "run_input"}},
+                "nested": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "choice", "path": "then"}, "if": {"source": true, "predicate": {"op": "equals", "left": {"$ref": "node:then", "$path": ["value"]}, "right": 10}}, "depends_on": ["then"], "input": {"from": "run_input"}},
+                "agent": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "nested", "path": "then"}, "function": {"id": "agent-dispatch"}, "depends_on": ["nested"], "input": {"from": "run_input"}},
+                "fallback": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "nested", "path": "else"}, "function": {"id": "fallback"}, "depends_on": ["nested"], "input": {"from": "run_input"}},
+                "else": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "choice", "path": "else"}, "function": {"id": "execute"}, "depends_on": ["choice"], "input": {"from": "run_input"}}
+            }
+        })).unwrap();
+        let mut run = record();
+        run.nodes.insert("source".into(), done_checkpoint());
+        let mut results = BTreeMap::from([(
+            "source".into(),
+            json!([
+                {"llm": true}, {"llm": false}, {"llm": true}
+            ]),
+        )]);
+        initialize_ready_reductions(&definition, &mut run, &results);
+        for index in 0..3 {
+            materialize_reduce_iterations(&definition, &mut run);
+            initialize_ready_ifs(&definition, &mut run, &results, &Value::Null);
+            assert!(!run.if_checkpoints.contains_key("choice"));
+            let expected = if index == 1 { "else" } else { "then" };
+            assert_eq!(
+                ready_frontier(&definition, &run),
+                vec![format!("{expected}#{index}")]
+            );
+            let first_uid = format!("{expected}#{index}");
+            for terminal in [NodeState::Failed, NodeState::Cancelled] {
+                run.nodes.get_mut(&first_uid).unwrap().state = terminal;
+                assert!(completed_reduce_result(&definition, &run, "fold", &results).is_err());
+            }
+            run.nodes.get_mut(&first_uid).unwrap().state = NodeState::Pending;
+            run.nodes.get_mut(&first_uid).unwrap().retries = 1;
+            run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+            assert_eq!(ready_frontier(&definition, &run), vec![first_uid.clone()]);
+            run.nodes.get_mut(&first_uid).unwrap().state = NodeState::Running;
+            assert!(ready_frontier(&definition, &run).is_empty());
+            run.nodes.insert(first_uid.clone(), done_checkpoint());
+            results.insert(first_uid, json!({"value": if index == 0 {10} else {20}}));
+            run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+            initialize_ready_ifs(&definition, &mut run, &results, &Value::Null);
+            if index != 1 {
+                let selected = if index == 0 { "agent" } else { "fallback" };
+                let uid = format!("{selected}#{index}");
+                assert_eq!(ready_frontier(&definition, &run), vec![uid.clone()]);
+                run.nodes.get_mut(&uid).unwrap().state = NodeState::Running;
+                assert!(ready_frontier(&definition, &run).is_empty());
+                run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+                assert!(
+                    initialize_ready_ifs(&definition, &mut run, &results, &Value::Null).is_empty()
+                );
+                assert!(ready_frontier(&definition, &run).is_empty());
+                run.nodes.insert(uid.clone(), done_checkpoint());
+                results.insert(uid, json!({"value": index}));
+            } else {
+                assert!(!run.if_checkpoints.contains_key("nested#1"));
+                assert!(run.skipped_nodes.contains("agent#1"));
+                assert!(ready_frontier(&definition, &run).is_empty());
+            }
+            let next = completed_reduce_result(&definition, &run, "fold", &results)
+                .unwrap()
+                .unwrap();
+            if index != 1 {
+                assert_eq!(next, json!({"value": index}));
+            }
+            advance_reduce_checkpoint(run.reduce_checkpoints.get_mut("fold").unwrap(), &[next])
+                .unwrap();
+        }
+        assert_eq!(run.reduce_checkpoints["fold"].state, ReduceState::Done);
+        assert_eq!(run.reduce_checkpoints["fold"].next_index, 3);
+        run.nodes.insert("fold".into(), done_checkpoint());
+        assert_eq!(quiescence(&definition, &run), RunStatus::Completed);
+    }
+
+    #[test]
+    fn skipped_outer_branch_never_evaluates_inner_if_or_dispatches_its_children() {
+        let definition: WorkflowDef = serde_json::from_value(json!({
+            "version": 1, "output": {"from": "node:outer"}, "nodes": {
+                "outer": {"if": {"source": false}, "input": {"from": "run_input"}},
+                "inner": {"if": {"source": false}, "ifBranch": {"if": "outer", "path": "then"}, "depends_on": ["outer"], "input": {"from": "run_input"}},
+                "agent": {"function": {"id": "agent-start"}, "ifBranch": {"if": "inner", "path": "else"}, "depends_on": ["inner"], "input": {"from": "run_input"}},
+                "function": {"function": {"id": "execute"}, "ifBranch": {"if": "outer", "path": "else"}, "depends_on": ["outer"], "input": {"from": "run_input"}}
+            }
+        })).unwrap();
+        let mut run = record();
+        initialize_ready_ifs(&definition, &mut run, &BTreeMap::new(), &Value::Null);
+        run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        assert!(
+            initialize_ready_ifs(&definition, &mut run, &BTreeMap::new(), &Value::Null).is_empty()
+        );
+        assert!(!run.if_checkpoints.contains_key("inner"));
+        assert!(run.skipped_nodes.contains("inner"));
+        assert!(run.skipped_nodes.contains("agent"));
+        assert_eq!(ready_frontier(&definition, &run), vec!["function"]);
+        run.nodes.insert("function".into(), done_checkpoint());
+        assert_eq!(quiescence(&definition, &run), RunStatus::Completed);
+        run.nodes.get_mut("function").unwrap().state = NodeState::Cancelled;
+        assert_eq!(quiescence(&definition, &run), RunStatus::Failed);
+    }
+
+    #[test]
+    fn reduce_join_waits_for_selected_leaf_not_only_condition() {
+        let definition: WorkflowDef = serde_json::from_value(json!({
+            "version": 1, "output": {"from": "node:join"}, "nodes": {
+                "choice": {"reduceBody": {"reduce": "fold"}, "if": {"source": true}, "input": {"from": "run_input"}},
+                "selected": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "choice", "path": "then"}, "function": {"id": "selected"}, "depends_on": ["choice"], "input": {"from": "run_input"}},
+                "join": {"reduceBody": {"reduce": "fold"}, "function": {"id": "join"}, "depends_on": ["choice"], "input": {"from": "node:choice"}}
+            }
+        })).unwrap();
+        let mut run = record();
+        run.reduce_checkpoints.insert(
+            "fold".into(),
+            ReduceCheckpoint {
+                next_index: 0,
+                total_items: 1,
+                accumulator: Value::Null,
+                state: ReduceState::Running,
+                active_body_uids: vec!["choice#0".into(), "selected#0".into(), "join#0".into()],
+                error: None,
+            },
+        );
+        run.if_checkpoints.insert(
+            "choice#0".into(),
+            IfCheckpoint {
+                state: IfState::Done,
+                selected: Some(IfBranchPath::Then),
+                error: None,
+            },
+        );
+        run.nodes.insert("choice#0".into(), done_checkpoint());
+        run.nodes.insert("selected#0".into(), pending_checkpoint());
+        run.nodes.insert("join#0".into(), pending_checkpoint());
+        assert_eq!(ready_frontier(&definition, &run), vec!["selected#0"]);
+        run.nodes.insert("selected#0".into(), done_checkpoint());
+        assert_eq!(ready_frontier(&definition, &run), vec!["join#0"]);
     }
 
     #[test]

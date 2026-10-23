@@ -43,7 +43,7 @@
       <strong>#{{ step.reduceActiveIteration }}</strong>
     </div>
 
-    <div class="run-reduce-block__body">
+    <slot><div class="run-reduce-block__body">
       <div class="run-reduce-block__body-label">REDUCE BODY</div>
       <button
         v-for="item in step.bodyItems || []"
@@ -72,7 +72,7 @@
       <div v-if="!step.bodyItems?.length" class="run-reduce-block__empty">
         No reduce body steps
       </div>
-    </div>
+    </div></slot>
   </div>
 </template>
 

@@ -561,10 +561,9 @@ fn resolve_iteration_input(
                     .is_some();
 
             if source_is_iteration_node {
-                return results
-                    .get(&format!("{source_id}#{index}"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let source_uid = format!("{source_id}#{index}");
+                let resolved = dag::resolve_output_node(def, record, &source_uid);
+                return results.get(&resolved).cloned().unwrap_or(Value::Null);
             }
 
             dag::gather_input(def, record, run_input, base_id, results)
@@ -628,6 +627,14 @@ fn resolve_dynamic_payload_value(
                         .strip_prefix("node:")
                         .unwrap_or(ref_source)
                         .to_string();
+                    let scoped = dag::scoped_node_uid(def, node_id, &dep);
+                    if scoped != dep {
+                        let resolved = dag::resolve_output_node(def, record, &scoped);
+                        return value_at_path(
+                            results.get(&resolved).unwrap_or(&Value::Null),
+                            &path,
+                        );
+                    }
                     if record.if_checkpoints.contains_key(&dep) {
                         dep = dag::resolve_output_node_with_results(def, record, &dep, results);
                     }
@@ -763,7 +770,7 @@ async fn advance_completed_reductions(
     let mut advanced = Vec::new();
 
     for reduce_id in reduce_ids {
-        let Some(reduce) = def
+        let Some(_reduce) = def
             .nodes
             .get(&reduce_id)
             .and_then(|node| node.reduce.as_ref())
@@ -777,17 +784,9 @@ async fn advance_completed_reductions(
             continue;
         }
 
-        if let Some(failed_uid) = snapshot.active_body_uids.iter().find(|uid| {
-            matches!(
-                record.nodes.get(*uid).map(|cp| cp.state),
-                Some(NodeState::Failed | NodeState::Cancelled)
-            )
-        }) {
-            let error = record
-                .nodes
-                .get(failed_uid)
-                .and_then(|cp| cp.result_error.clone())
-                .unwrap_or_else(|| format!("reduce body node '{failed_uid}' failed"));
+        let completed = dag::completed_reduce_result(def, record, &reduce_id, results);
+        if let Err(error) = &completed {
+            let error = error.clone();
             if let Some(checkpoint) = record.reduce_checkpoints.get_mut(&reduce_id) {
                 checkpoint.state = ReduceState::Failed;
                 checkpoint.error = Some(error.clone());
@@ -802,27 +801,12 @@ async fn advance_completed_reductions(
             continue;
         }
 
-        if !snapshot.active_body_uids.iter().all(|uid| {
-            matches!(
-                record.nodes.get(uid).map(|cp| cp.state),
-                Some(NodeState::Done)
-            )
-        }) {
+        let Ok(Some(next_result)) = completed else {
             continue;
-        }
+        };
 
         if let Some(checkpoint) = record.reduce_checkpoints.get_mut(&reduce_id) {
-            let body_results: Vec<Value> = reduce
-                .body
-                .iter()
-                .map(|body_id| {
-                    results
-                        .get(&format!("{}#{}", body_id, snapshot.next_index))
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                })
-                .collect();
-            let Some(next_accumulator) = dag::advance_reduce_checkpoint(checkpoint, &body_results)
+            let Some(next_accumulator) = dag::advance_reduce_checkpoint(checkpoint, &[next_result])
             else {
                 continue;
             };
@@ -1980,6 +1964,7 @@ pub async fn handle(
             "initialized durable reduce checkpoints"
         );
     }
+    dag::materialize_reduce_iterations(&def, &mut record);
     let condition_input = state::get_run_input(&deps.iii, &record.run_id)
         .await?
         .or(state::get_run_input_store(&deps.iii, &record.input_ref).await?)
@@ -2024,7 +2009,9 @@ pub async fn handle(
                 let Some(branch) = &branch_node.if_branch else {
                     continue;
                 };
-                if branch.if_node != *if_id || branch.path == selected {
+                if branch.if_node != if_id.split('#').next().unwrap_or(if_id)
+                    || branch.path == selected
+                {
                     continue;
                 }
                 crate::observability::adapter()
@@ -2033,7 +2020,7 @@ pub async fn handle(
                         &state::WorkflowRunTraceRecord {
                             id: format!("tr_if_{}_{}", now, crate::ids::new_trace_id()),
                             run_id: record.run_id.clone(),
-                            node_uid: Some(branch_id.clone()),
+                            node_uid: Some(dag::scoped_node_uid(&def, if_id, branch_id)),
                             function_id: None,
                             runtime: Some("rust".to_string()),
                             event_name: "workflow.branch.skipped".to_string(),
@@ -2230,6 +2217,50 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn iteration_input_resolves_selected_conditional_leaf_not_previous_iteration() {
+        let definition: WorkflowDef = serde_json::from_value(json!({
+            "version": 1, "output": {"from": "node:consume"}, "nodes": {
+                "choice": {"reduceBody": {"reduce": "fold"}, "if": {"source": true}, "input": {"from": "run_input"}},
+                "selected": {"reduceBody": {"reduce": "fold"}, "ifBranch": {"if": "choice", "path": "then"}, "function": {"id": "selected"}, "input": {"from": "run_input"}},
+                "consume": {"reduceBody": {"reduce": "fold"}, "function": {"id": "consume"}, "input": {"from": "node:choice"}}
+            }
+        })).unwrap();
+        let mut record = fresh_record();
+        record.if_checkpoints.insert(
+            "choice#1".into(),
+            IfCheckpoint {
+                state: IfState::Done,
+                selected: Some(IfBranchPath::Then),
+                error: None,
+            },
+        );
+        let results = BTreeMap::from([
+            ("selected#0".into(), json!({"value": "previous"})),
+            ("selected#1".into(), json!({"value": "current"})),
+        ]);
+        let input = resolve_iteration_input(
+            &definition,
+            &record,
+            &Value::Null,
+            "consume#1",
+            "consume",
+            &definition.nodes["consume"],
+            &results,
+        );
+        assert_eq!(input, json!({"value": "current"}));
+        let dynamic = resolve_dynamic_payload_value(
+            &definition,
+            &record,
+            &Value::Null,
+            "consume#1",
+            &json!({"$wf_ref": "node:choice", "$wf_path": ["value"]}),
+            None,
+            &results,
+        );
+        assert_eq!(dynamic, json!("current"));
+    }
 
     #[test]
     fn transient_dispatch_errors_are_deferred() {

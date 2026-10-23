@@ -9,6 +9,7 @@ import {
 } from "#imports";
 import type { Ref } from "vue";
 import { useWorkflowAnalysis } from "../../composables/useWorkflowAnalysis";
+import { ifBranchSelection, ifCheckpointEntries } from "../../components/flow/run-outline";
 
 const { sortNodesByLevel, analyzeWorkflow } = useWorkflowAnalysis();
 const { push, route } = useComponentRouter();
@@ -515,10 +516,7 @@ const flowMeta = computed(() => {
         ifSelected: node.if
           ? status.value?.if_checkpoints?.[id]?.selected
           : undefined,
-        ifBranchSelected: node.if_branch
-          ? status.value?.if_checkpoints?.[node.if_branch.if]?.selected ===
-            node.if_branch.path
-          : undefined,
+        ifBranchSelected: ifBranchSelection(status.value?.if_checkpoints, node.if_branch),
       };
     },
   );
@@ -593,14 +591,17 @@ const stepStates = computed(() => {
       reduce_checkpoint: status.value?.reduce_checkpoints?.[id],
       if_checkpoint: status.value?.if_checkpoints?.[id],
     };
+    const nodeDef = definition.value?.nodes?.[id.split("#")[0] || id];
+    if (ifBranchSelection(status.value?.if_checkpoints, nodeDef?.if_branch || nodeDef?.ifBranch, id) === false) {
+      out[id].status = "skipped";
+      out[id].skipped = true;
+    }
   });
 
   Object.entries(definition.value?.nodes ?? {}).forEach(
     ([id, nodeDef]: [string, any]) => {
       if (!nodeDef?.if_branch) return;
-      const selected =
-        status.value?.if_checkpoints?.[nodeDef.if_branch.if]?.selected;
-      if (selected && selected !== nodeDef.if_branch.path) {
+      if (ifBranchSelection(status.value?.if_checkpoints, nodeDef.if_branch) === false) {
         out[id] = {
           ...(out[id] || {}),
           status: "skipped",
@@ -835,6 +836,19 @@ const stepStates = computed(() => {
     },
   );
 
+  for (const [id, node] of Object.entries(definition.value?.nodes || {}) as Array<[string, any]>) {
+    if (!node.if && !node.ifSpec) continue;
+    const decisions = ifCheckpointEntries(status.value?.if_checkpoints, id);
+    if (!decisions.length) continue;
+    const states = decisions.map(({ checkpoint }) => checkpoint.state);
+    out[id] = {
+      ...(out[id] || {}),
+      status: states.includes("failed") ? "failed" : states.every(state => state === "done") ? "completed" : "pending",
+      error: decisions.find(({ checkpoint }) => checkpoint.error)?.checkpoint.error,
+      if_checkpoint: status.value?.if_checkpoints?.[id],
+    };
+  }
+
   return out;
 });
 
@@ -950,10 +964,10 @@ const stepList = computed(() => {
         .flatMap((bodyId: string) =>
           Object.keys(nodeStates).filter((uid) => uid.startsWith(`${bodyId}#`)),
         )
-        .map((uid) => uid.match(/#(\d+)$/)?.[1])
-        .filter((index): index is string => typeof index === "string")
+        .map((uid: string) => uid.match(/#(\d+)$/)?.[1])
+        .filter((index: string | undefined): index is string => typeof index === "string")
         .map(Number)
-        .filter((index) =>
+        .filter((index: number) =>
           [...activeBodyUids].some((uid) => uid.endsWith(`#${index}`)),
         );
       const bodyItems = (reduceSpec.body || []).map((bodyId: string) => ({
@@ -965,7 +979,7 @@ const stepList = computed(() => {
         key: `reduce-group:${id}`,
         label: node?.label,
         status:
-          checkpoint?.state === "done" || checkpoint?.state === "completed"
+          checkpoint?.state === "done"
             ? "completed"
             : checkpoint?.state === "failed"
               ? "failed"
@@ -976,6 +990,7 @@ const stepList = computed(() => {
         nodeKind: "reduce_group",
         reduceId: id,
         reduceSpec,
+        reduceBody: reduceBodySpec,
         reduceCheckpoint: checkpoint,
         bodyItems,
         reduceIterationCount: Number(checkpoint?.total_items || 0),
@@ -989,16 +1004,11 @@ const stepList = computed(() => {
         reduceBodyResultUids: reduceBodyResultUidsByGroup[id] || [],
         canInspectResult: (reduceBodyResultUidsByGroup[id] || []).length > 0,
         ifBranch: ifBranchSpec,
-        ifBranchSelected: ifBranchSpec
-          ? status.value?.if_checkpoints?.[ifBranchSpec.if]?.selected ===
-            ifBranchSpec.path
-          : undefined,
+        ifBranchSelected: ifBranchSelection(status.value?.if_checkpoints, ifBranchSpec),
       });
       insertedGroups.add(`reduce-group:${id}`);
       continue;
     }
-
-    if (reduceBodySpec) continue;
 
     if (group && !insertedGroups.has(group.id)) {
       const groupLoopNodeStats = group.nodeIds
@@ -1109,6 +1119,7 @@ const stepList = computed(() => {
         loopResultStoreCount: loopResultCounts.store,
         loopResultMemoryCount: loopResultCounts.memory,
         loopResultPrunedCount: loopResultCounts.pruned,
+        reduceBody: reduceBodySpec,
         ifBranch: group.nodeIds
           .map(
             (memberId) =>
@@ -1167,15 +1178,13 @@ const stepList = computed(() => {
       reduceSpec,
       reduceBody: reduceBodySpec,
       ifCheckpoint: state?.if_checkpoint,
+      ifDecisions: ifSpec ? ifCheckpointEntries(status.value?.if_checkpoints, id) : undefined,
       ifSelected: ifSpec
         ? status.value?.if_checkpoints?.[id]?.selected
         : undefined,
       ifSpec,
       ifBranch: ifBranchSpec,
-      ifBranchSelected: ifBranchSpec
-        ? status.value?.if_checkpoints?.[ifBranchSpec.if]?.selected ===
-          ifBranchSpec.path
-        : undefined,
+      ifBranchSelected: ifBranchSelection(status.value?.if_checkpoints, ifBranchSpec),
       isChildWorkflow: Boolean(node?.childWorkflow),
       isVarStep: node?.function?.id === "nworkflow::internal-var-set",
       isAgent: Boolean(node?.agent),
@@ -1249,6 +1258,7 @@ function viewChildRuns(
 }
 
 const selectedStep = ref<string | null>(null);
+watch(runId, () => { selectedStep.value = null; });
 const isResultSlideoverOpen = ref(false);
 const selectedResultStepKey = ref<string | null>(null);
 const selectedResultNodeUid = ref<string | null>(null);
@@ -2482,6 +2492,7 @@ const formattedNodeResult = computed(() => {
                 :run-status="normalizedStatus"
                 :run-id="runId"
                 :steps="stepList"
+                :selected-step-key="selectedStep"
                 :started-at="status.created_at"
                 :completed-at="status.updated_at"
                 :loop-overview="loopOverviewStats"
@@ -2588,6 +2599,7 @@ const formattedNodeResult = computed(() => {
             :run-status="normalizedStatus"
             :run-id="runId"
             :steps="stepList"
+            :selected-step-key="selectedStep"
             :started-at="status.created_at"
             :completed-at="status.updated_at"
             :loop-overview="loopOverviewStats"

@@ -166,13 +166,30 @@ pub async fn start_child_workflow_task(
     // (root_run_id/root_stream_scope_id are derived at nworkflow::start time
     // from the caller_session_id chain; parent_node_uid is only knowable here,
     // once the child_run_id is back).
-    if let Some(mut child_record) = crate::state::get_run(&deps.iii, &child_run_id).await? {
-        child_record.parent_node_uid = Some(req.node_uid.clone());
-        child_record.updated_at = deps.now_ms();
-        let _ = crate::state::put_run(&deps.iii, &child_record).await;
-    }
+    stamp_parent_node(
+        &deps.locks,
+        deps.internal_state.as_ref(),
+        &child_run_id,
+        &req.node_uid,
+    )
+    .await?;
 
     Ok(ChildStartResponse { child_run_id })
+}
+
+async fn stamp_parent_node(
+    locks: &crate::locks::WorkflowLocks,
+    store: &dyn crate::internal_state::WorkflowInternalStateStore,
+    child_run_id: &str,
+    parent_node_uid: &str,
+) -> Result<(), WorkflowError> {
+    let _child_guard = locks.guard(child_run_id).await;
+    if let Some(mut record) = store.get_run(child_run_id).await? {
+        record.parent_node_uid = Some(parent_node_uid.to_string());
+        record.updated_at = crate::ids::now_ms();
+        let _ = store.put_run(&record, None).await;
+    }
+    Ok(())
 }
 
 /// `notify` target for a completed/failed/cancelled child run: resolve which
@@ -295,6 +312,44 @@ pub fn notify_spec() -> NotifySpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn parent_link_stamp_waits_for_child_tick_and_preserves_its_checkpoint() {
+        use crate::internal_state::file::FileWorkflowInternalStateStore;
+        use crate::internal_state::WorkflowInternalStateStore;
+
+        let dir = std::env::temp_dir().join(format!("nvent-child-link-{}", uuid::Uuid::new_v4()));
+        let mut config = crate::config::WorkerConfig::default();
+        config.internal_state_file_dir = dir.to_string_lossy().into_owned();
+        let store = FileWorkflowInternalStateStore::new(&config);
+        let record: crate::types::WorkflowRunRecord = serde_json::from_value(json!({
+            "run_id": "child", "step": 0, "status": "running",
+            "def_ref": "def", "input_ref": "input", "created_at": 1, "updated_at": 1
+        })).expect("child record");
+        store.put_run(&record, None).await.expect("bootstrap child");
+        let locks = crate::locks::WorkflowLocks::default();
+        let tick_guard = locks.guard("child").await;
+        let mut stamp = Box::pin(stamp_parent_node(&locks, &store, "child", "step#1"));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut stamp).await.is_err());
+
+        let mut tick_record = store.get_run("child").await.unwrap().unwrap();
+        tick_record.step = 3;
+        tick_record.status = crate::types::RunStatus::AwaitingNodes;
+        tick_record.nodes.insert("execute".to_string(), serde_json::from_value(json!({
+            "state": "running", "retries": 0, "pending_at": 100,
+            "child_run_id": "grandchild"
+        })).expect("checkpoint"));
+        store.put_run(&tick_record, None).await.expect("tick update");
+        drop(tick_guard);
+        stamp.await.expect("stamp parent linkage");
+
+        let stamped = store.get_run("child").await.unwrap().unwrap();
+        assert_eq!(stamped.parent_node_uid.as_deref(), Some("step#1"));
+        assert_eq!(stamped.step, tick_record.step);
+        assert_eq!(stamped.status, tick_record.status);
+        assert_eq!(stamped.nodes, tick_record.nodes);
+        tokio::fs::remove_dir_all(&dir).await.expect("remove test store");
+    }
 
     #[test]
     fn wrapped_trigger_payload_carries_caller_session_and_notify() {

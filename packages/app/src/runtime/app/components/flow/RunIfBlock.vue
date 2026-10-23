@@ -21,7 +21,13 @@
       <strong>{{ selectedBranch }}</strong>
     </div>
 
-    <div class="run-if-block__branches">
+    <div v-if="iterationDecisions.length" class="mt-2 flex flex-wrap gap-1 text-[10px]">
+      <span v-for="decision in iterationDecisions" :key="decision.uid" class="rounded border border-sky-200 px-1.5 py-1 dark:border-sky-800" :title="decision.checkpoint.error || decision.uid">
+        {{ decision.uid.slice(decision.uid.indexOf('#')) }}: {{ decision.checkpoint.selected?.toUpperCase() || decision.checkpoint.state || 'pending' }}
+      </span>
+    </div>
+
+    <slot><div class="run-if-block__branches">
       <section
         v-for="branch in branches"
         :key="branch.path"
@@ -72,7 +78,7 @@
           <div v-if="branch.items.length === 0" class="run-if-block__empty">No branch steps</div>
         </div>
       </section>
-    </div>
+    </div></slot>
   </div>
 </template>
 
@@ -108,7 +114,8 @@ const conditionText = computed(() => {
   return format(predicate)
 })
 
-const selectedBranch = computed(() => String(props.step?.ifSelected || 'pending').toUpperCase())
+const iterationDecisions = computed(() => (props.step?.ifDecisions || []).filter((decision: any) => decision.uid.includes('#')))
+const selectedBranch = computed(() => iterationDecisions.value.length ? 'Per iteration' : String(props.step?.ifSelected || 'pending').toUpperCase())
 const statusLabel = computed(() => String(props.step?.status || 'pending').toUpperCase())
 const statusClass = computed(() => props.step?.status === 'failed' ? 'run-if-block__status--error' : props.step?.ifSelected ? 'run-if-block__status--done' : '')
 const branches = computed(() => ['then', 'else'].map(path => ({

@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "build": "nuxt-module-build build",
+    "test": "vitest run",
     "dev": "nuxt-module-build build --stub",
     "prepack": "pnpm build"
   },

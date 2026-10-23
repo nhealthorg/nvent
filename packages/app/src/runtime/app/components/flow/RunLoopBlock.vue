@@ -19,7 +19,7 @@
       <strong>{{ step.loopItemsDone || 0 }}/{{ step.loopItemsTotal || 0 }}</strong>
       <UBadge size="xs" color="info" variant="outline">{{ step.loopMode || 'parallel' }}</UBadge>
     </div>
-    <div class="run-loop-block__children">
+    <slot><div class="run-loop-block__children">
       <div class="run-loop-block__body-label">LOOP BODY</div>
       <button
         v-for="child in children"
@@ -33,7 +33,7 @@
         <span class="ml-auto text-[10px]">{{ child.step.status || 'pending' }}</span>
       </button>
       <div v-if="children.length === 0" class="run-loop-block__empty">No loop body steps</div>
-    </div>
+    </div></slot>
   </div>
 </template>
 
