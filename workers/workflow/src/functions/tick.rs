@@ -386,17 +386,7 @@ fn run_input_required_by_active_nodes(def: &WorkflowDef, record: &WorkflowRunRec
             continue;
         };
 
-        if node.input.value.is_some() {
-            continue;
-        }
-
-        if node
-            .input
-            .from
-            .sources()
-            .iter()
-            .any(|src| input_source_requires_run_input(src))
-        {
+        if node_requires_run_input(node) {
             return true;
         }
     }
@@ -405,6 +395,18 @@ fn run_input_required_by_active_nodes(def: &WorkflowDef, record: &WorkflowRunRec
 }
 
 fn node_requires_run_input(node: &NodeDef) -> bool {
+    fn contains_run_input_ref(value: &Value) -> bool {
+        match value {
+            Value::Object(values) => values.get("$wf_ref")
+                .and_then(Value::as_str).is_some_and(input_source_requires_run_input)
+                || values.values().any(contains_run_input_ref),
+            Value::Array(values) => values.iter().any(contains_run_input_ref),
+            _ => false,
+        }
+    }
+    if serde_json::to_value(node).is_ok_and(|value| contains_run_input_ref(&value)) {
+        return true;
+    }
     // Structured payload templates (`input.value`) are fully resolved from
     // embedded literals / node refs / fanout refs at dispatch time.
     if node.input.value.is_some() {
@@ -1421,6 +1423,14 @@ pub(crate) async fn fire_node(
                 return Ok(());
             }
             Err(e) => {
+                if matches!(&e, WorkflowError::AgentCapacityDenied) {
+                    if let Some(checkpoint) = record.nodes.get_mut(node_uid) {
+                        checkpoint.state = NodeState::Pending;
+                        checkpoint.pending_at = None;
+                    }
+                    state::put_run(&deps.iii, record).await?;
+                    return Ok(());
+                }
                 let err_msg = format!("failed to start agent node: {e}");
                 if let Some(cp) = record.nodes.get_mut(node_uid) {
                     cp.state = NodeState::Failed;
@@ -3501,7 +3511,11 @@ mod tests {
             agent_options: Some(
                 serde_json::from_value(json!({
                     "model": { "$wf_ref": "node:model", "$wf_path": ["model"] },
-                    "provider": { "$wf_ref": "node:model", "$wf_path": ["provider"] }
+                    "provider": { "$wf_ref": "node:model", "$wf_path": ["provider"] },
+                    "concurrencyGroup": {
+                        "key": { "$wf_ref": "run_input", "$wf_path": ["group"] },
+                        "limit": { "$wf_ref": "node:model", "$wf_path": ["limit"] }
+                    }
                 }))
                 .unwrap(),
             ),
@@ -3596,7 +3610,7 @@ mod tests {
         let mut results = BTreeMap::new();
         results.insert(
             "model".to_string(),
-            json!({ "model": "project-model", "provider": "openai" }),
+            json!({ "model": "project-model", "provider": "openai", "limit": 3 }),
         );
         results.insert(
             "plan".to_string(),
@@ -3630,7 +3644,7 @@ mod tests {
             node.agent_options.as_ref().unwrap(),
             &def,
             &record,
-            &json!({}),
+            &json!({ "group": "project:llm" }),
             "agent#0",
             Some(&item),
             &results,
@@ -3640,6 +3654,10 @@ mod tests {
         assert_eq!(resolved_spec.input, Some(json!({ "record": "record-a" })));
         assert_eq!(resolved_options.model, Some(json!("project-model")));
         assert_eq!(resolved_options.provider, Some(json!("openai")));
+        let group = resolved_options.concurrency_group.unwrap();
+        assert_eq!(group.key, json!("project:llm"));
+        assert_eq!(group.limit, json!(3));
+        assert!(super::node_requires_run_input(node));
     }
 
     #[test]

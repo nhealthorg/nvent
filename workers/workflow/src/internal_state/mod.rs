@@ -11,6 +11,22 @@ use crate::types::{
     WorkflowRunRecord, WorkflowRunSummary,
 };
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentPermit {
+    pub owner: String,
+    pub key: String,
+    pub limit: u64,
+    pub run_id: String,
+    pub node_uid: String,
+    pub attempt: u32,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub dispatch_uncertain: bool,
+    #[serde(default)]
+    pub event_claimed: bool,
+}
+
 pub mod file;
 pub mod redis;
 
@@ -71,6 +87,12 @@ pub fn run_matches_workflow_filter(run: &WorkflowRunRecord, lowercase_filter: &s
 /// - User workflow state (workflow_run_state / ctx.workflow.state.*) remains on iii-state.
 #[async_trait]
 pub trait WorkflowInternalStateStore: Send + Sync {
+    async fn acquire_agent_permit(&self, permit: &AgentPermit) -> Result<bool, WorkflowError>;
+    async fn bind_agent_permit(&self, permit: &AgentPermit) -> Result<(), WorkflowError>;
+    async fn list_agent_permits(&self) -> Result<Vec<AgentPermit>, WorkflowError>;
+    async fn release_agent_permit(&self, owner: &str) -> Result<(), WorkflowError>;
+    async fn claim_agent_permit_event(&self, owner: &str, claim: bool) -> Result<bool, WorkflowError>;
+
     // ---------------------------------------------------------------------
     // Runs / defs / results
     // ---------------------------------------------------------------------

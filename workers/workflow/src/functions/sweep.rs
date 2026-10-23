@@ -85,6 +85,9 @@ pub struct SweepResponse {
 }
 
 pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, WorkflowError> {
+    if let Err(error) = super::agent::reconcile_permits(deps).await {
+        tracing::warn!(error = %error, "sweep: agent permit reconciliation failed");
+    }
     let runs = state::list_runs(&deps.iii).await?;
     let active = runs.iter().filter(|r| !r.status.is_terminal()).count() as u64;
     crate::telemetry::set_active_runs(active);

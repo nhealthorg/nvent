@@ -213,6 +213,7 @@ nvent adds three Nitro routes automatically:
 
 ## Next steps
 
+- [Durable agent concurrency](./agent-concurrency.md): cross-run native agent group limits
 - [Server functions](./server-functions.md) — `defineFunction`, schemas, trigger types
 - [Browser SDK](./browser-sdk.md) — `useIii()`, `useIiiStream()`
 - [Webhooks & custom triggers](./webhooks-and-triggers.md) — receiving HTTP webhooks, Kafka, etc.

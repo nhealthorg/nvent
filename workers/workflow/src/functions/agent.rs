@@ -478,12 +478,92 @@ pub(crate) fn failed_event(
     }
 }
 
+pub(crate) async fn reconcile_permits(deps: &Deps) -> Result<(), WorkflowError> {
+    for permit in deps.internal_state.list_agent_permits().await? {
+        if let Err(error) = reconcile_permit(deps, &permit).await {
+            tracing::warn!(owner = %permit.owner, error = %error, "agent permit reconciliation deferred");
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_permit(
+    deps: &Deps,
+    permit: &crate::internal_state::AgentPermit,
+) -> Result<(), WorkflowError> {
+    if permit.dispatch_uncertain {
+        tracing::warn!(owner = %permit.owner, "agent dispatch outcome unknown; permit retained for operator reconciliation");
+        return Ok(());
+    }
+    let Some(session_id) = permit.session_id.as_deref() else {
+        tracing::warn!(owner = %permit.owner, "agent dispatch outcome unknown; permit retained for operator reconciliation");
+        return Ok(());
+    };
+    let run = state::get_run(&deps.iii, &permit.run_id).await?;
+    let abandoned = run.as_ref().is_none_or(|run| run.abort || run.status.is_terminal()
+        || run.nodes.get(&permit.node_uid).is_none_or(|checkpoint|
+            checkpoint.retries != permit.attempt || matches!(checkpoint.state,
+                crate::types::NodeState::Failed | crate::types::NodeState::Cancelled)));
+    let timeout_ms = deps.cfg().await.cleanup_timeout_ms;
+    if abandoned {
+        let _ = deps.trigger_bounded(iii_sdk::protocol::TriggerRequest {
+            function_id: "harness::stop".into(),
+            payload: json!({ "session_id": session_id }), action: None, timeout_ms: None,
+        }, timeout_ms).await;
+    }
+    let status = deps.trigger_bounded(iii_sdk::protocol::TriggerRequest {
+        function_id: "harness::status".into(),
+        payload: json!({ "session_id": session_id, "verbose": true }), action: None, timeout_ms: None,
+    }, timeout_ms).await.map_err(WorkflowError::Trigger)?;
+    let Some(terminal_status) = status.get("status").and_then(Value::as_str)
+        .filter(|status| matches!(*status, "completed" | "failed" | "cancelled")) else {
+        return Ok(());
+    };
+    let turn_id = status.get("turn_id").and_then(Value::as_str).map(str::to_owned);
+    if permit.turn_id.is_some() && turn_id != permit.turn_id {
+        return Ok(());
+    }
+    let task = state::get_agent_task_by_session(session_id).await?
+        .filter(|task| task.run_id == permit.run_id && task.node_uid == permit.node_uid);
+    if task.is_none() && !abandoned {
+        return Ok(());
+    }
+    if let Some(task) = task {
+        if task.status == AgentTaskStatus::Pending {
+            tracing::warn!(owner = %permit.owner, "agent retry dispatch outcome unknown; permit retained");
+            return Ok(());
+        }
+        if !agent_node_is_terminal(&task.status) {
+            return handle_agent_event(deps, AgentEventPayload {
+                session_id: session_id.to_owned(), turn_id, event_type: None,
+                status: Some(terminal_status.to_owned()),
+                output: status.get("output").cloned(), result: status.get("result").cloned(),
+                error: status.get("error").and_then(Value::as_str).map(str::to_owned), data: None,
+            }).await;
+        }
+    }
+    if !deps.internal_state.claim_agent_permit_event(&permit.owner, true).await? {
+        return Ok(());
+    }
+    let current = deps.internal_state.list_agent_permits().await?.into_iter()
+        .find(|current| current.owner == permit.owner);
+    if current.is_some_and(|current| !current.dispatch_uncertain
+        && current.turn_id == permit.turn_id && current.session_id == permit.session_id)
+    {
+        deps.internal_state.release_agent_permit(&permit.owner).await?;
+    } else {
+        deps.internal_state.claim_agent_permit_event(&permit.owner, false).await?;
+    }
+    Ok(())
+}
+
 pub async fn handle_start(
     deps: &Deps,
     req: AgentStartRequest,
 ) -> Result<AgentStartResponse, WorkflowError> {
     let run_id = req.run_id.clone();
     let node_uid = req.node_uid.clone();
+    let _guard = deps.locks.guard(&run_id).await;
 
     match start_agent_task(deps, req).await {
         Ok(response) => {
@@ -524,6 +604,9 @@ pub async fn start_agent_task(
     let mut run_record = state::get_run(&deps.iii, &run_id)
         .await?
         .ok_or_else(|| WorkflowError::State(format!("run '{run_id}' not found")))?;
+    if run_record.abort || run_record.status.is_terminal() {
+        return Err(WorkflowError::State("cannot dispatch an agent for a terminal run".into()));
+    }
 
     let workflow_session_id = run_record
         .caller_session_id
@@ -531,6 +614,7 @@ pub async fn start_agent_task(
         .unwrap_or_else(|| run_id.clone());
 
     let opts = options.unwrap_or(AgentRuntimeOptions {
+        concurrency_group: None,
         model: None,
         provider: None,
         folder: None,
@@ -628,7 +712,11 @@ pub async fn start_agent_task(
         }
     }
 
-    let existing_session_id = run_record.agent_session_id.clone();
+    let existing_session_id = if opts.concurrency_group.is_some() {
+        None
+    } else {
+        run_record.agent_session_id.clone()
+    };
     validate_folder(opts.folder.as_deref(), existing_session_id.is_some())?;
     let (function_id, harness_payload) = if let Some(session_id) = existing_session_id.as_deref() {
         if let (Some(agent_profile), Some(options_obj)) =
@@ -672,6 +760,24 @@ pub async fn start_agent_task(
     let dispatch_timeout_ms = opts
         .timeout_ms
         .unwrap_or(deps.cfg().await.dispatch_timeout_ms);
+    let mut permit = opts.concurrency_group.as_ref().map(|group| {
+        let key = group.key.as_str().filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| WorkflowError::State("concurrencyGroup.key must resolve to a nonempty string".into()))?;
+        let limit = group.limit.as_u64().filter(|limit| *limit > 0 && *limit <= 9_007_199_254_740_991)
+            .ok_or_else(|| WorkflowError::State("concurrencyGroup.limit must resolve to a positive safe integer".into()))?;
+        let attempt = run_record.nodes.get(&node_uid).map(|checkpoint| checkpoint.retries).unwrap_or(0);
+        Ok::<_, WorkflowError>(crate::internal_state::AgentPermit {
+            owner: serde_json::to_string(&(&run_id, &node_uid, attempt))
+                .map_err(|error| WorkflowError::State(error.to_string()))?,
+            key: key.to_owned(), limit, run_id: run_id.clone(), node_uid: node_uid.clone(), attempt,
+            session_id: None, turn_id: None, dispatch_uncertain: true, event_claimed: false,
+        })
+    }).transpose()?;
+    if let Some(permit) = &permit {
+        if !deps.internal_state.acquire_agent_permit(permit).await? {
+            return Err(WorkflowError::AgentCapacityDenied);
+        }
+    }
     let harness_res = deps
         .trigger_bounded(
             iii_sdk::protocol::TriggerRequest {
@@ -695,6 +801,13 @@ pub async fn start_agent_task(
             return Err(WorkflowError::Trigger(err_msg));
         }
     };
+
+    if let Some(permit) = &mut permit {
+        permit.session_id = Some(agent_session_id.clone());
+        permit.turn_id = turn_id.clone();
+        permit.dispatch_uncertain = false;
+        deps.internal_state.bind_agent_permit(permit).await?;
+    }
 
     if run_record.agent_session_id.is_none() {
         run_record.agent_session_id = Some(agent_session_id.clone());
@@ -744,11 +857,43 @@ pub async fn start_agent_task(
 
 pub async fn handle_agent_event(
     deps: &Deps,
+    payload: AgentEventPayload,
+) -> Result<(), WorkflowError> {
+    let Some(task) = state::get_agent_task_by_session(&payload.session_id).await? else {
+        return Ok(());
+    };
+    let permit = deps.internal_state.list_agent_permits().await?.into_iter()
+        .find(|permit| permit.run_id == task.run_id && permit.node_uid == task.node_uid
+            && permit.session_id.as_deref() == Some(&task.agent_session_id));
+    if let Some(permit) = &permit {
+        if !deps.internal_state.claim_agent_permit_event(&permit.owner, true).await? {
+            return Ok(());
+        }
+    }
+    let result = handle_agent_event_inner(deps, payload).await;
+    if let Some(permit) = permit {
+        deps.internal_state.claim_agent_permit_event(&permit.owner, false).await?;
+    }
+    result
+}
+
+async fn handle_agent_event_inner(
+    deps: &Deps,
     mut payload: AgentEventPayload,
 ) -> Result<(), WorkflowError> {
     let Some(mut task) = state::get_agent_task_by_session(&payload.session_id).await? else {
         return Ok(());
     };
+    let _guard = deps.locks.guard(&task.run_id).await;
+    let Some(current_task) = state::get_agent_task(&task.task_id).await? else {
+        return Ok(());
+    };
+    task = current_task;
+    if agent_node_is_terminal(&task.status) || task.status == AgentTaskStatus::Pending {
+        return Ok(());
+    }
+    let grouped = deps.internal_state.list_agent_permits().await?.iter()
+        .any(|permit| permit.run_id == task.run_id && permit.node_uid == task.node_uid);
 
     let status_timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     let event_turn_id = payload.turn_id.clone();
@@ -769,16 +914,16 @@ pub async fn handle_agent_event(
         .await
     {
         status_refreshed = true;
-        payload.status = status
+        let reported_status = status
             .get("status")
             .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or(payload.status);
-        payload.turn_id = status
+            .map(str::to_owned);
+        payload.status = if grouped { reported_status } else { reported_status.or(payload.status) };
+        let reported_turn_id = status
             .get("turn_id")
             .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or(payload.turn_id);
+            .map(str::to_owned);
+        payload.turn_id = if grouped { reported_turn_id } else { reported_turn_id.or(payload.turn_id) };
         payload.result = status
             .get("result")
             .cloned()
@@ -792,6 +937,9 @@ pub async fn handle_agent_event(
             .or(payload.error);
     }
 
+    if grouped && status_refreshed && task.turn_id.is_some() && payload.turn_id != task.turn_id {
+        return Ok(());
+    }
     if event_is_stale(
         task.turn_id.as_deref(),
         event_turn_id.as_deref(),
@@ -822,24 +970,24 @@ pub async fn handle_agent_event(
         _ => "agents.message",
     };
 
-    let is_terminal = matches!(
+    let is_terminal = (!grouped || status_refreshed) && ((!status_refreshed && matches!(
         mapped_stream_name,
         "agents.completed" | "agents.failed" | "agents.cancelled"
-    ) || payload.status.as_deref() == Some("completed")
+    )) || payload.status.as_deref() == Some("completed")
         || payload.status.as_deref() == Some("failed")
-        || payload.status.as_deref() == Some("cancelled");
+        || payload.status.as_deref() == Some("cancelled"));
 
     if is_terminal {
         let node_uid = task_node_uid(&task).to_string();
         let mut response_validation_failed = false;
-        if payload.status.as_deref() == Some("failed") || mapped_stream_name == "agents.failed" {
+        if payload.status.as_deref() == Some("failed") || (!status_refreshed && mapped_stream_name == "agents.failed") {
             task.status = AgentTaskStatus::Failed;
             task.error = payload
                 .error
                 .clone()
                 .or_else(|| Some("agent task failed".to_string()));
         } else if payload.status.as_deref() == Some("cancelled")
-            || mapped_stream_name == "agents.cancelled"
+            || (!status_refreshed && mapped_stream_name == "agents.cancelled")
         {
             task.status = AgentTaskStatus::Cancelled;
         } else {
@@ -855,7 +1003,10 @@ pub async fn handle_agent_event(
                         .as_ref()
                         .and_then(|response| response.max_attempts)
                         .unwrap_or(2);
-                    let should_retry = task
+                    let run_active = state::get_run(&deps.iii, &task.run_id).await?
+                        .is_some_and(|run| !run.status.is_terminal() && !run.abort && run.nodes.get(&node_uid)
+                            .is_some_and(|checkpoint| checkpoint.state == crate::types::NodeState::Running));
+                    let should_retry = run_active && task
                         .response
                         .as_ref()
                         .map(|response| response.on_invalid.as_deref() == Some("retry"))
@@ -872,6 +1023,15 @@ pub async fn handle_agent_event(
                             None,
                             harness_stream_options(&task.stream_scope_id),
                         );
+                        for mut permit in deps.internal_state.list_agent_permits().await? {
+                            if permit.run_id == task.run_id && permit.node_uid == node_uid {
+                                permit.dispatch_uncertain = true;
+                                deps.internal_state.bind_agent_permit(&permit).await?;
+                            }
+                        }
+                        task.status = AgentTaskStatus::Pending;
+                        task.response_attempts += 1;
+                        state::put_agent_task(&task).await?;
                         let retry_result = deps
                             .trigger_bounded(
                                 iii_sdk::protocol::TriggerRequest {
@@ -890,9 +1050,15 @@ pub async fn handle_agent_event(
                             })?;
                         let (_, retry_turn_id) = send_ids(&retry_result, &task.agent_session_id)?;
                         task.turn_id = retry_turn_id;
-                        task.response_attempts += 1;
                         task.status = AgentTaskStatus::Running;
                         task.error = None;
+                        for mut permit in deps.internal_state.list_agent_permits().await? {
+                            if permit.run_id == task.run_id && permit.node_uid == node_uid {
+                                permit.turn_id = task.turn_id.clone();
+                                permit.dispatch_uncertain = false;
+                                deps.internal_state.bind_agent_permit(&permit).await?;
+                            }
+                        }
                     } else {
                         task.status = AgentTaskStatus::Failed;
                         task.error = Some(error);
@@ -906,7 +1072,6 @@ pub async fn handle_agent_event(
         state::put_agent_task(&task).await?;
 
         if !agent_node_is_terminal(&task.status) {
-            let _guard = deps.locks.guard(&task.run_id).await;
             let mut run = state::get_run(&deps.iii, &task.run_id)
                 .await?
                 .ok_or_else(|| WorkflowError::State(format!("run '{}' not found", task.run_id)))?;
@@ -937,6 +1102,14 @@ pub async fn handle_agent_event(
             )
             .await;
             return Ok(());
+        }
+
+        for permit in deps.internal_state.list_agent_permits().await? {
+            if permit.run_id == task.run_id && permit.node_uid == node_uid
+                && permit.session_id.as_deref() == Some(&task.agent_session_id)
+            {
+                deps.internal_state.release_agent_permit(&permit.owner).await?;
+            }
         }
 
         if response_validation_failed {
@@ -982,6 +1155,7 @@ pub async fn handle_agent_event(
             attempt: None,
         };
 
+        drop(_guard);
         node_completed::handle(deps, completion_event).await?;
     } else {
         let node_uid = task_node_uid(&task).to_string();

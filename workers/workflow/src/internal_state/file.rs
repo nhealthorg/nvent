@@ -33,6 +33,36 @@ pub struct FileWorkflowInternalStateStore {
 }
 
 impl FileWorkflowInternalStateStore {
+    async fn agent_permits<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut Vec<super::AgentPermit>) -> T + Send + 'static,
+    ) -> Result<T, WorkflowError> {
+        let base_dir = self.base_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&base_dir)?;
+            let lock = std::fs::OpenOptions::new()
+                .create(true).truncate(false).write(true)
+                .open(base_dir.join("agent-permits.lock"))?;
+            lock.lock()?;
+            let path = base_dir.join("agent-permits.json");
+            let mut permits: Vec<super::AgentPermit> = match std::fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice(&bytes)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(error) => return Err(anyhow::Error::from(error)),
+            };
+            let result = operation(&mut permits);
+            let temporary = base_dir.join("agent-permits.json.tmp");
+            let mut output = std::fs::File::create(&temporary)?;
+            std::io::Write::write_all(&mut output, &serde_json::to_vec(&permits)?)?;
+            output.sync_all()?;
+            std::fs::rename(temporary, path)?;
+            std::fs::File::open(&base_dir)?.sync_all()?;
+            Ok::<T, anyhow::Error>(result)
+        }).await
+            .map_err(|error| WorkflowError::State(format!("agent permit task: {error}")))?
+            .map_err(|error| WorkflowError::State(format!("agent permit storage: {error}")))
+    }
+
     pub fn new(cfg: &WorkerConfig) -> Self {
         Self {
             base_dir: PathBuf::from(cfg.internal_state_file_dir.clone()),
@@ -171,6 +201,54 @@ impl FileWorkflowInternalStateStore {
 
 #[async_trait]
 impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
+    async fn claim_agent_permit_event(&self, owner: &str, claim: bool) -> Result<bool, WorkflowError> {
+        let owner = owner.to_owned();
+        self.agent_permits(move |permits| {
+            let Some(permit) = permits.iter_mut().find(|permit| permit.owner == owner) else {
+                return false;
+            };
+            if claim && (permit.event_claimed || permit.dispatch_uncertain) {
+                return false;
+            }
+            permit.event_claimed = claim;
+            true
+        }).await
+    }
+
+    async fn acquire_agent_permit(&self, permit: &super::AgentPermit) -> Result<bool, WorkflowError> {
+        let permit = permit.clone();
+        self.agent_permits(move |permits| {
+            if permits.iter().any(|held| held.owner == permit.owner) {
+                return false;
+            }
+            let holders: Vec<_> = permits.iter().filter(|held| held.key == permit.key).collect();
+            let limit = holders.iter().fold(permit.limit, |limit, held| limit.min(held.limit));
+            if holders.len() as u64 >= limit {
+                return false;
+            }
+            permits.push(permit);
+            true
+        }).await
+    }
+
+    async fn bind_agent_permit(&self, permit: &super::AgentPermit) -> Result<(), WorkflowError> {
+        let permit = permit.clone();
+        self.agent_permits(move |permits| {
+            if let Some(held) = permits.iter_mut().find(|held| held.owner == permit.owner) {
+                *held = permit;
+            }
+        }).await
+    }
+
+    async fn list_agent_permits(&self) -> Result<Vec<super::AgentPermit>, WorkflowError> {
+        self.agent_permits(|permits| permits.clone()).await
+    }
+
+    async fn release_agent_permit(&self, owner: &str) -> Result<(), WorkflowError> {
+        let owner = owner.to_owned();
+        self.agent_permits(move |permits| permits.retain(|held| held.owner != owner)).await
+    }
+
     async fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRunRecord>, WorkflowError> {
         let path = self.run_path(run_id);
         let stored = read_json_opt::<StoredRun>(&path).await?;
@@ -700,6 +778,60 @@ mod tests {
 
     fn temp_store_dir() -> PathBuf {
         std::env::temp_dir().join(format!("nvent-workflow-test-{}", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn agent_admission_is_serialized_across_store_instances_and_survives_restart() {
+        let directory = temp_store_dir();
+        let mut config = WorkerConfig::default();
+        config.internal_state_file_dir = directory.to_string_lossy().into_owned();
+        let mut requests = Vec::new();
+        for index in 0..24 {
+            let store = FileWorkflowInternalStateStore::new(&config);
+            requests.push(tokio::spawn(async move {
+                store.acquire_agent_permit(&crate::internal_state::AgentPermit {
+                    owner: format!("owner-{index}"), key: "project:llm".into(), limit: 3,
+                    run_id: format!("run-{index}"), node_uid: "agent".into(), attempt: 0,
+                    session_id: None, turn_id: None, dispatch_uncertain: true, event_claimed: false,
+                }).await.unwrap()
+            }));
+        }
+        let mut admitted = 0;
+        for request in requests {
+            admitted += usize::from(request.await.unwrap());
+        }
+        assert_eq!(admitted, 3);
+        let store = FileWorkflowInternalStateStore::new(&config);
+        let permits = store.list_agent_permits().await.unwrap();
+        assert_eq!(permits.len(), 3);
+        assert!(!store.acquire_agent_permit(&permits[0]).await.unwrap());
+        assert!(!store.claim_agent_permit_event(&permits[0].owner, true).await.unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn agent_admission_uses_minimum_holder_limit_and_claims_events_exclusively() {
+        let directory = temp_store_dir();
+        let mut config = WorkerConfig::default();
+        config.internal_state_file_dir = directory.to_string_lossy().into_owned();
+        let store = FileWorkflowInternalStateStore::new(&config);
+        let first = crate::internal_state::AgentPermit {
+            owner: "first".into(), key: "project:llm".into(), limit: 1,
+            run_id: "run-first".into(), node_uid: "agent".into(), attempt: 0,
+            session_id: Some("session".into()), turn_id: Some("turn".into()),
+            dispatch_uncertain: false, event_claimed: false,
+        };
+        let mut second = first.clone();
+        second.owner = "second".into();
+        second.limit = 5;
+        assert!(store.acquire_agent_permit(&first).await.unwrap());
+        assert!(!store.acquire_agent_permit(&second).await.unwrap());
+        assert!(store.claim_agent_permit_event(&first.owner, true).await.unwrap());
+        assert!(!store.claim_agent_permit_event(&first.owner, true).await.unwrap());
+        assert!(store.claim_agent_permit_event(&first.owner, false).await.unwrap());
+        store.release_agent_permit(&first.owner).await.unwrap();
+        assert!(store.acquire_agent_permit(&second).await.unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn sample_trace(id: &str, ts_unix_ms: i64) -> WorkflowRunTraceRecord {

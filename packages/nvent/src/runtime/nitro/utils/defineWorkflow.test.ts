@@ -22,6 +22,10 @@ describe('defineWorkflow runtime agent options', () => {
           }, {
             model: iteration.cond.prop(model, 'model'),
             provider: iteration.cond.prop(model, 'provider'),
+            concurrencyGroup: {
+              key: iteration.cond.prop(model, 'group'),
+              limit: iteration.cond.prop(model, 'limit'),
+            },
           })
           return iteration.call('materialize-agent-result', { step, result })
         }, { mode: 'sequential' })
@@ -41,6 +45,11 @@ describe('defineWorkflow runtime agent options', () => {
     expect(agent.agentOptions.provider).toMatchObject({
       $ref: 'node:resolve-model', $path: ['provider'], $source: 'node',
     })
+    expect(agent.agentOptions.concurrencyGroup).toMatchObject({
+      key: { $wf_ref: 'node:resolve-model', $wf_path: ['group'] },
+      limit: { $wf_ref: 'node:resolve-model', $wf_path: ['limit'] },
+    })
+    expect(agent.depends_on).toContain('resolve-model')
     expect(body.some(([, node]) => node.childWorkflow)).toBe(false)
   })
 })

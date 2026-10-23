@@ -106,6 +106,10 @@ export interface AgentInvocationSpec {
 }
 
 export interface AgentRuntimeOptions {
+  concurrencyGroup?: {
+    key: string | WorkflowValueRef
+    limit: number | WorkflowValueRef
+  }
   model?: string | WorkflowValueRef
   provider?: string | WorkflowValueRef
   folder?: string
@@ -152,6 +156,8 @@ export interface AgentResult {
 }
 
 export interface WorkflowContext {
+  readonly agentConcurrencyGroups: true
+
   /** Build serializable conditions for durable ctx.if branches. */
   cond: WorkflowConditionBuilder
 
@@ -1179,6 +1185,7 @@ export function defineWorkflow<
       }
 
       const ctx: WorkflowContext = {
+        agentConcurrencyGroups: true,
         cond: workflowConditionBuilder,
         value: createRunInputValueRef,
         node: async (id, spec) => {
@@ -1232,6 +1239,21 @@ export function defineWorkflow<
           if (spec.agent) {
             nodeDef.agent = spec.agent
             if (spec.agentOptions) nodeDef.agentOptions = spec.agentOptions
+            if (spec.agentOptions?.concurrencyGroup) {
+              const encodeGroupValue = (value: unknown) => isWorkflowValueRef(value)
+                ? {
+                    $wf_ref: value.$source === 'fanout_item' ? 'fanout_item' : value.$ref,
+                    $wf_path: value.$path ?? [],
+                  }
+                : value
+              nodeDef.agentOptions = {
+                ...spec.agentOptions,
+                concurrencyGroup: {
+                  key: encodeGroupValue(spec.agentOptions.concurrencyGroup.key),
+                  limit: encodeGroupValue(spec.agentOptions.concurrencyGroup.limit),
+                },
+              }
+            }
           } else if (spec.childWorkflow) {
             nodeDef.childWorkflow = spec.childWorkflow
           } else if (spec.function) {

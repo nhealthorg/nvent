@@ -997,6 +997,95 @@ fn hex(v: u8) -> char {
 
 #[async_trait]
 impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
+    async fn claim_agent_permit_event(&self, owner: &str, claim: bool) -> Result<bool, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.claim_agent_permit_event(owner, claim).await;
+        }
+        let mut connection = self.conn().await?;
+        let claimed: i32 = redis::Script::new(r#"
+            local value = redis.call('HGET', KEYS[1], ARGV[1])
+            if not value then return 0 end
+            local permit = cjson.decode(value)
+            local claim = ARGV[2] == '1'
+            if claim and (permit.event_claimed or permit.dispatch_uncertain) then return 0 end
+            permit.event_claimed = claim
+            redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(permit))
+            return 1
+        "#).key("nvent:wf:agent-permits:v1").arg(owner).arg(if claim { 1 } else { 0 })
+            .invoke_async(&mut connection).await
+            .map_err(|error| WorkflowError::State(format!("agent event claim: {error}")))?;
+        Ok(claimed == 1)
+    }
+
+    async fn acquire_agent_permit(&self, permit: &super::AgentPermit) -> Result<bool, WorkflowError> {
+        if !self.has_redis() {
+            return Err(WorkflowError::State(
+                "agent concurrency groups require a configured Redis URL when the Redis backend is selected".into(),
+            ));
+        }
+        let script = redis::Script::new(r#"
+            if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then return 0 end
+            local incoming = cjson.decode(ARGV[2])
+            local limit = incoming.limit
+            local count = 0
+            for _, value in ipairs(redis.call('HVALS', KEYS[1])) do
+                local held = cjson.decode(value)
+                if held.key == incoming.key then
+                    count = count + 1
+                    limit = math.min(limit, held.limit)
+                end
+            end
+            if count >= limit then return 0 end
+            redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+            return 1
+        "#);
+        let mut connection = self.conn().await?;
+        let admitted: i32 = script.key("nvent:wf:agent-permits:v1")
+            .arg(&permit.owner)
+            .arg(serde_json::to_string(permit).map_err(|error| WorkflowError::State(error.to_string()))?)
+            .invoke_async(&mut connection).await
+            .map_err(|error| WorkflowError::State(format!("agent permit admission: {error}")))?;
+        Ok(admitted == 1)
+    }
+
+    async fn bind_agent_permit(&self, permit: &super::AgentPermit) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.bind_agent_permit(permit).await;
+        }
+        let mut connection = self.conn().await?;
+        redis::Script::new(r#"
+            if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then
+                redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+            end
+            return 1
+        "#).key("nvent:wf:agent-permits:v1")
+            .arg(&permit.owner)
+            .arg(serde_json::to_string(permit).map_err(|error| WorkflowError::State(error.to_string()))?)
+            .invoke_async::<i32>(&mut connection).await
+            .map_err(|error| WorkflowError::State(format!("agent permit binding: {error}")))?;
+        Ok(())
+    }
+
+    async fn list_agent_permits(&self) -> Result<Vec<super::AgentPermit>, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.list_agent_permits().await;
+        }
+        let mut connection = self.conn().await?;
+        let values: Vec<String> = connection.hvals("nvent:wf:agent-permits:v1").await
+            .map_err(|error| WorkflowError::State(format!("agent permit listing: {error}")))?;
+        values.iter().map(|value| serde_json::from_str(value)
+            .map_err(|error| WorkflowError::State(format!("agent permit decoding: {error}")))).collect()
+    }
+
+    async fn release_agent_permit(&self, owner: &str) -> Result<(), WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.release_agent_permit(owner).await;
+        }
+        let mut connection = self.conn().await?;
+        connection.hdel::<_, _, ()>("nvent:wf:agent-permits:v1", owner).await
+            .map_err(|error| WorkflowError::State(format!("agent permit release: {error}")))
+    }
+
     async fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRunRecord>, WorkflowError> {
         if !self.has_redis() {
             return self.fallback.get_run(run_id).await;
