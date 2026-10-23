@@ -20,6 +20,7 @@ use crate::types::{
 
 pub struct RedisWorkflowInternalStateStore {
     client: Option<redis::Client>,
+    connection: tokio::sync::OnceCell<redis::aio::ConnectionManager>,
     idempotency_ttl_ms: u64,
     redis_global_log_trace_index: bool,
     fallback: FileWorkflowInternalStateStore,
@@ -51,6 +52,7 @@ impl RedisWorkflowInternalStateStore {
 
         Self {
             client,
+            connection: tokio::sync::OnceCell::new(),
             idempotency_ttl_ms: cfg.idempotency_ttl_ms,
             redis_global_log_trace_index: cfg.redis_global_log_trace_index,
             fallback: FileWorkflowInternalStateStore::new(cfg),
@@ -61,17 +63,21 @@ impl RedisWorkflowInternalStateStore {
         self.client.is_some()
     }
 
-    async fn conn(&self) -> Result<redis::aio::MultiplexedConnection, WorkflowError> {
+    async fn conn(&self) -> Result<redis::aio::ConnectionManager, WorkflowError> {
         let Some(client) = &self.client else {
             return Err(WorkflowError::State(
                 "redis backend requested but redis client is not configured".to_string(),
             ));
         };
 
-        client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|err| WorkflowError::State(format!("redis connection failed: {err}")))
+        let connection = self.connection
+            .get_or_try_init(|| async {
+                redis::aio::ConnectionManager::new(client.clone())
+                    .await
+                    .map_err(|err| WorkflowError::State(format!("redis connection failed: {err}")))
+            })
+            .await?;
+        Ok(connection.clone())
     }
 
     fn runs_index_key(&self) -> &'static str {
@@ -277,7 +283,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn load_runs_by_ids(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         run_ids: &[String],
     ) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
         let mut out = Vec::with_capacity(run_ids.len());
@@ -298,7 +304,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn load_run_summaries_by_ids(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         run_ids: &[String],
     ) -> Result<Vec<WorkflowRunSummary>, WorkflowError> {
         if run_ids.is_empty() {
@@ -476,7 +482,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn get_run_version(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         run_id: &str,
     ) -> Result<Option<u64>, WorkflowError> {
         conn.get(self.run_ver_key(run_id)).await.map_err(|err| {
@@ -486,7 +492,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn put_run_non_cas(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         record: &WorkflowRunRecord,
     ) -> Result<(), WorkflowError> {
         let current_version = self
@@ -615,10 +621,18 @@ impl RedisWorkflowInternalStateStore {
 
     async fn put_run_cas(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        _connection: &mut redis::aio::ConnectionManager,
         record: &WorkflowRunRecord,
         expected_version: u64,
     ) -> Result<(), WorkflowError> {
+        let client = self.client.as_ref().ok_or_else(|| {
+            WorkflowError::State("redis client is not configured".to_string())
+        })?;
+        let mut dedicated_connection = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|err| WorkflowError::State(format!("redis CAS connection failed: {err}")))?;
+        let conn = &mut dedicated_connection;
         let run_key = self.run_key(&record.run_id);
         let run_ver_key = self.run_ver_key(&record.run_id);
         let payload = serde_json::to_string(record).map_err(WorkflowError::Serde)?;
@@ -796,7 +810,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn list_json_records<T: serde::de::DeserializeOwned>(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         key: &str,
         label: &str,
     ) -> Result<Vec<T>, WorkflowError> {
@@ -814,7 +828,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn list_json_records_latest_page<T: serde::de::DeserializeOwned>(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         key: &str,
         label: &str,
         offset: u32,
@@ -861,7 +875,7 @@ impl RedisWorkflowInternalStateStore {
 
     async fn overwrite_json_records<T: serde::Serialize>(
         &self,
-        conn: &mut redis::aio::MultiplexedConnection,
+        conn: &mut redis::aio::ConnectionManager,
         key: &str,
         records: &[T],
     ) -> Result<(), WorkflowError> {
