@@ -1086,6 +1086,27 @@ impl WorkflowInternalStateStore for RedisWorkflowInternalStateStore {
             .map_err(|error| WorkflowError::State(format!("agent permit release: {error}")))
     }
 
+    async fn compare_and_release_agent_permit(&self, expected: &super::AgentPermit) -> Result<bool, WorkflowError> {
+        if !self.has_redis() {
+            return self.fallback.compare_and_release_agent_permit(expected).await;
+        }
+        let mut connection = self.conn().await?;
+        let raw: Option<String> = connection.hget("nvent:wf:agent-permits:v1", &expected.owner).await
+            .map_err(|error| WorkflowError::State(format!("agent permit CAS read: {error}")))?;
+        let Some(raw) = raw else { return Ok(false); };
+        let current: super::AgentPermit = serde_json::from_str(&raw)?;
+        if &current != expected {
+            return Ok(false);
+        }
+        let released: i32 = redis::Script::new(r#"
+            if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
+            return redis.call('HDEL', KEYS[1], ARGV[1])
+        "#).key("nvent:wf:agent-permits:v1").arg(&expected.owner).arg(raw)
+            .invoke_async(&mut connection).await
+            .map_err(|error| WorkflowError::State(format!("agent permit CAS release: {error}")))?;
+        Ok(released == 1)
+    }
+
     async fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRunRecord>, WorkflowError> {
         if !self.has_redis() {
             return self.fallback.get_run(run_id).await;

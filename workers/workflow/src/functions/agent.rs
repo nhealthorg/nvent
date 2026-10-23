@@ -491,70 +491,97 @@ async fn reconcile_permit(
     deps: &Deps,
     permit: &crate::internal_state::AgentPermit,
 ) -> Result<(), WorkflowError> {
-    if permit.dispatch_uncertain {
-        tracing::warn!(owner = %permit.owner, "agent dispatch outcome unknown; permit retained for operator reconciliation");
-        return Ok(());
-    }
-    let Some(session_id) = permit.session_id.as_deref() else {
-        tracing::warn!(owner = %permit.owner, "agent dispatch outcome unknown; permit retained for operator reconciliation");
-        return Ok(());
-    };
-    let run = state::get_run(&deps.iii, &permit.run_id).await?;
-    let abandoned = run.as_ref().is_none_or(|run| run.abort || run.status.is_terminal()
-        || run.nodes.get(&permit.node_uid).is_none_or(|checkpoint|
-            checkpoint.retries != permit.attempt || matches!(checkpoint.state,
-                crate::types::NodeState::Failed | crate::types::NodeState::Cancelled)));
+    check_permit_inner(deps, permit, true).await?;
+    Ok(())
+}
+
+pub(crate) async fn check_permit(
+    deps: &Deps,
+    permit: &crate::internal_state::AgentPermit,
+) -> Result<String, WorkflowError> {
+    check_permit_inner(deps, permit, false).await
+}
+
+async fn check_permit_inner(
+    deps: &Deps,
+    permit: &crate::internal_state::AgentPermit,
+    stop_abandoned: bool,
+) -> Result<String, WorkflowError> {
     let timeout_ms = deps.cfg().await.cleanup_timeout_ms;
-    if abandoned {
-        let _ = deps.trigger_bounded(iii_sdk::protocol::TriggerRequest {
-            function_id: "harness::stop".into(),
-            payload: json!({ "session_id": session_id }), action: None, timeout_ms: None,
-        }, timeout_ms).await;
-    }
-    let status = deps.trigger_bounded(iii_sdk::protocol::TriggerRequest {
-        function_id: "harness::status".into(),
-        payload: json!({ "session_id": session_id, "verbose": true }), action: None, timeout_ms: None,
-    }, timeout_ms).await.map_err(WorkflowError::Trigger)?;
-    let Some(terminal_status) = status.get("status").and_then(Value::as_str)
-        .filter(|status| matches!(*status, "completed" | "failed" | "cancelled")) else {
-        return Ok(());
+    let Some(guard) = deps.locks.guard_bounded(&permit.run_id, timeout_ms).await else {
+        return Ok("Run is busy; permit retained.".into());
     };
-    let turn_id = status.get("turn_id").and_then(Value::as_str).map(str::to_owned);
-    if permit.turn_id.is_some() && turn_id != permit.turn_id {
-        return Ok(());
-    }
-    let task = state::get_agent_task_by_session(session_id).await?
-        .filter(|task| task.run_id == permit.run_id && task.node_uid == permit.node_uid);
-    if task.is_none() && !abandoned {
-        return Ok(());
-    }
-    if let Some(task) = task {
-        if task.status == AgentTaskStatus::Pending {
-            tracing::warn!(owner = %permit.owner, "agent retry dispatch outcome unknown; permit retained");
-            return Ok(());
-        }
-        if !agent_node_is_terminal(&task.status) {
-            return handle_agent_event(deps, AgentEventPayload {
-                session_id: session_id.to_owned(), turn_id, event_type: None,
-                status: Some(terminal_status.to_owned()),
-                output: status.get("output").cloned(), result: status.get("result").cloned(),
-                error: status.get("error").and_then(Value::as_str).map(str::to_owned), data: None,
-            }).await;
-        }
-    }
-    if !deps.internal_state.claim_agent_permit_event(&permit.owner, true).await? {
-        return Ok(());
-    }
     let current = deps.internal_state.list_agent_permits().await?.into_iter()
         .find(|current| current.owner == permit.owner);
-    if current.is_some_and(|current| !current.dispatch_uncertain
-        && current.turn_id == permit.turn_id && current.session_id == permit.session_id)
-    {
-        deps.internal_state.release_agent_permit(&permit.owner).await?;
-    } else {
-        deps.internal_state.claim_agent_permit_event(&permit.owner, false).await?;
+    if current.as_ref() != Some(permit) {
+        return Ok("Permit changed during inspection; retained.".into());
     }
-    Ok(())
+    if permit.dispatch_uncertain || permit.session_id.is_none() || permit.turn_id.is_none() {
+        return Ok("Dispatch or turn identity is uncertain; retained.".into());
+    }
+    let session_id = permit.session_id.as_deref().expect("checked session identity");
+    let run = state::get_run(&deps.iii, &permit.run_id).await?;
+    if run.as_ref().is_some_and(|run| run.nodes.get(&permit.node_uid)
+        .is_none_or(|checkpoint| checkpoint.retries != permit.attempt)) {
+        return Ok("Node attempt no longer matches; retained.".into());
+    }
+    let task = state::get_agent_task_by_session(session_id).await?;
+    if task.as_ref().is_some_and(|task| task.run_id != permit.run_id
+        || task.node_uid != permit.node_uid || task.agent_session_id != session_id
+        || task.turn_id != permit.turn_id || task.status == AgentTaskStatus::Pending) {
+        return Ok("Task identity changed or retry is pending; retained.".into());
+    }
+    if task.is_none() && run.as_ref().is_some_and(|run| !run.status.is_terminal()) {
+        return Ok("Active run has no matching task; retained.".into());
+    }
+    let abandoned = run.as_ref().is_none_or(|run| run.abort || run.status.is_terminal()
+        || run.nodes.get(&permit.node_uid).is_some_and(|checkpoint|
+            matches!(checkpoint.state, crate::types::NodeState::Failed | crate::types::NodeState::Cancelled)));
+    if stop_abandoned && abandoned {
+        let _ = deps.trigger_bounded(iii_sdk::protocol::TriggerRequest {
+            function_id: "harness::stop".into(), payload: json!({"session_id": session_id}),
+            action: None, timeout_ms: None,
+        }, timeout_ms).await;
+    }
+    let status = match deps.trigger_bounded(iii_sdk::protocol::TriggerRequest {
+        function_id: "harness::status".into(),
+        payload: json!({"session_id": session_id, "verbose": true}),
+        action: None, timeout_ms: None,
+    }, timeout_ms).await {
+        Ok(status) => status,
+        Err(_) => return Ok("Harness status could not be verified; retained.".into()),
+    };
+    let terminal = status.get("status").and_then(Value::as_str)
+        .filter(|status| matches!(*status, "completed" | "failed" | "cancelled"));
+    if terminal.is_none() || status.get("turn_id").and_then(Value::as_str) != permit.turn_id.as_deref()
+        || status.get("session_id").and_then(Value::as_str).is_some_and(|reported| reported != session_id) {
+        return Ok("Harness did not confirm the same terminal session and turn; retained.".into());
+    }
+    if task.as_ref().is_some_and(|task| !agent_node_is_terminal(&task.status))
+        && run.as_ref().is_some_and(|run| !run.status.is_terminal() && !run.abort
+            && run.nodes.get(&permit.node_uid).is_some_and(|checkpoint|
+                checkpoint.state == crate::types::NodeState::Running
+                && checkpoint.session_id.as_deref() == Some(session_id)
+                && checkpoint.turn_id == permit.turn_id)) {
+        if !permit.event_claimed
+            && !deps.internal_state.claim_agent_permit_event(&permit.owner, true).await? {
+            return Ok("Permit could not be claimed; retained.".into());
+        }
+        handle_agent_event_inner(deps, AgentEventPayload {
+            session_id: session_id.to_owned(), turn_id: permit.turn_id.clone(), event_type: None,
+            status: terminal.map(str::to_owned), output: status.get("output").cloned(),
+            result: status.get("result").cloned(),
+            error: status.get("error").and_then(Value::as_str).map(str::to_owned), data: None,
+        }, guard).await?;
+        return Ok("Verified terminal event reconciled; any new retry retains its permit.".into());
+    }
+    if task.as_ref().is_some_and(|task| !agent_node_is_terminal(&task.status))
+        && run.as_ref().is_some_and(|run| !run.status.is_terminal()) {
+        return Ok("Active task does not match the running checkpoint; retained.".into());
+    }
+    let released = deps.internal_state.compare_and_release_agent_permit(permit).await?;
+    Ok(if released { "Matching terminal harness verified; permit released." }
+        else { "Permit changed before release; retained." }.into())
 }
 
 pub async fn handle_start(
@@ -567,6 +594,7 @@ pub async fn handle_start(
 
     match start_agent_task(deps, req).await {
         Ok(response) => {
+            drop(_guard);
             stream_publish::publish_best_effort(
                 deps,
                 vec![started_event(
@@ -580,6 +608,7 @@ pub async fn handle_start(
             Ok(response)
         }
         Err(error) => {
+            drop(_guard);
             stream_publish::publish_best_effort(
                 deps,
                 vec![failed_event(&run_id, &node_uid, &error.to_string())],
@@ -862,6 +891,7 @@ pub async fn handle_agent_event(
     let Some(task) = state::get_agent_task_by_session(&payload.session_id).await? else {
         return Ok(());
     };
+    let _guard = deps.locks.guard(&task.run_id).await;
     let permit = deps.internal_state.list_agent_permits().await?.into_iter()
         .find(|permit| permit.run_id == task.run_id && permit.node_uid == task.node_uid
             && permit.session_id.as_deref() == Some(&task.agent_session_id));
@@ -870,26 +900,35 @@ pub async fn handle_agent_event(
             return Ok(());
         }
     }
-    let result = handle_agent_event_inner(deps, payload).await;
-    if let Some(permit) = permit {
-        deps.internal_state.claim_agent_permit_event(&permit.owner, false).await?;
+    handle_agent_event_inner(deps, payload, _guard).await
+}
+
+async fn clear_event_claim(deps: &Deps, task: &AgentTaskRecord) -> Result<(), WorkflowError> {
+    for permit in deps.internal_state.list_agent_permits().await? {
+        if permit.run_id == task.run_id && permit.node_uid == task.node_uid
+            && permit.session_id.as_deref() == Some(&task.agent_session_id)
+        {
+            deps.internal_state.claim_agent_permit_event(&permit.owner, false).await?;
+        }
     }
-    result
+    Ok(())
 }
 
 async fn handle_agent_event_inner(
     deps: &Deps,
     mut payload: AgentEventPayload,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<(), WorkflowError> {
     let Some(mut task) = state::get_agent_task_by_session(&payload.session_id).await? else {
         return Ok(());
     };
-    let _guard = deps.locks.guard(&task.run_id).await;
     let Some(current_task) = state::get_agent_task(&task.task_id).await? else {
+        clear_event_claim(deps, &task).await?;
         return Ok(());
     };
     task = current_task;
     if agent_node_is_terminal(&task.status) || task.status == AgentTaskStatus::Pending {
+        clear_event_claim(deps, &task).await?;
         return Ok(());
     }
     let grouped = deps.internal_state.list_agent_permits().await?.iter()
@@ -938,6 +977,7 @@ async fn handle_agent_event_inner(
     }
 
     if grouped && status_refreshed && task.turn_id.is_some() && payload.turn_id != task.turn_id {
+        clear_event_claim(deps, &task).await?;
         return Ok(());
     }
     if event_is_stale(
@@ -951,6 +991,7 @@ async fn handle_agent_event_inner(
             event_turn_id = ?event_turn_id,
             "ignoring stale harness event"
         );
+        clear_event_claim(deps, &task).await?;
         return Ok(());
     }
     if status_refreshed && payload.turn_id.is_some() {
@@ -1083,6 +1124,7 @@ async fn handle_agent_event_inner(
             }
             run.updated_at = now;
             state::put_run(&deps.iii, &run).await?;
+            clear_event_claim(deps, &task).await?;
             drop(_guard);
             let _ = stream_publish::handle(
                 deps,
@@ -1107,8 +1149,9 @@ async fn handle_agent_event_inner(
         for permit in deps.internal_state.list_agent_permits().await? {
             if permit.run_id == task.run_id && permit.node_uid == node_uid
                 && permit.session_id.as_deref() == Some(&task.agent_session_id)
+                && permit.turn_id == task.turn_id && !permit.dispatch_uncertain
             {
-                deps.internal_state.release_agent_permit(&permit.owner).await?;
+                deps.internal_state.compare_and_release_agent_permit(&permit).await?;
             }
         }
 
@@ -1123,6 +1166,9 @@ async fn handle_agent_event_inner(
             run.updated_at = now;
             state::put_run(&deps.iii, &run).await?;
         }
+
+        clear_event_claim(deps, &task).await?;
+        drop(_guard);
 
         // Publish stream event
         let _ = stream_publish::handle(
@@ -1155,7 +1201,6 @@ async fn handle_agent_event_inner(
             attempt: None,
         };
 
-        drop(_guard);
         node_completed::handle(deps, completion_event).await?;
     } else {
         let node_uid = task_node_uid(&task).to_string();
@@ -1163,6 +1208,8 @@ async fn handle_agent_event_inner(
         task.updated_at = now;
         state::put_agent_task(&task).await?;
 
+        clear_event_claim(deps, &task).await?;
+        drop(_guard);
         let _ = stream_publish::handle(
             deps,
             stream_publish::StreamPublishRequest {

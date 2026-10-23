@@ -11,7 +11,7 @@ use crate::types::{
     WorkflowRunRecord, WorkflowRunSummary,
 };
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AgentPermit {
     pub owner: String,
     pub key: String,
@@ -91,6 +91,7 @@ pub trait WorkflowInternalStateStore: Send + Sync {
     async fn bind_agent_permit(&self, permit: &AgentPermit) -> Result<(), WorkflowError>;
     async fn list_agent_permits(&self) -> Result<Vec<AgentPermit>, WorkflowError>;
     async fn release_agent_permit(&self, owner: &str) -> Result<(), WorkflowError>;
+    async fn compare_and_release_agent_permit(&self, expected: &AgentPermit) -> Result<bool, WorkflowError>;
     async fn claim_agent_permit_event(&self, owner: &str, claim: bool) -> Result<bool, WorkflowError>;
 
     // ---------------------------------------------------------------------

@@ -57,6 +57,8 @@ export default defineNuxtModule<ModuleOptions>({
     const { resolve } = resolver
 
     // Make module options available at runtime
+    const privateConfig = nuxt.options.runtimeConfig as any
+    privateConfig.nventapp = defu(privateConfig.nventapp || {}, { agentPermitAdminEnabled: true })
     nuxt.options.runtimeConfig.public.nventapp = defu(
       nuxt.options.runtimeConfig.public.nventapp as any,
       {

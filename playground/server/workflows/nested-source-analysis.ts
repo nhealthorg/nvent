@@ -51,6 +51,10 @@ export default defineWorkflow({
             },
             }, {
             model: 'google/Gemma3-4B/gemma-3-4b-it-Q8_0.gguf',
+            concurrencyGroup: {
+              key: 'research-synthesizer',
+              limit: 1,
+            },
             maxTurns: 6,
             stream: {
                 enabled: true,

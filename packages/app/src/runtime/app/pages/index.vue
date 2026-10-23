@@ -37,6 +37,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 import Workers from './workers.vue'
+import AgentLocks from './agent-locks.vue'
 import Workflows from './workflows/index.vue'
 import WorkflowRuns from './workflows/runs.vue'
 import WorkflowRun from './workflows/[id].vue'
@@ -93,6 +94,7 @@ const navItems: NavigationMenuItem[][] = [
   [
     { label: 'Workflows', icon: 'i-lucide-workflow', path: '/workflows' } as any,
     { label: 'Workers', icon: 'i-lucide-server', path: '/workers' } as any,
+    { label: 'Agent Locks', icon: 'i-lucide-lock-keyhole', path: '/agent-locks' } as any,
   ]
 ]
 
@@ -101,6 +103,7 @@ const routes = {
   '/workflows/runs': WorkflowRuns,
   '/workflows/runs/:id': WorkflowRun,
   '/workers': Workers,
+  '/agent-locks': AgentLocks,
 }
 
 // Consumer mode: read the current router context from inside this page

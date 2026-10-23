@@ -249,6 +249,17 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         self.agent_permits(move |permits| permits.retain(|held| held.owner != owner)).await
     }
 
+    async fn compare_and_release_agent_permit(&self, expected: &super::AgentPermit) -> Result<bool, WorkflowError> {
+        let expected = expected.clone();
+        self.agent_permits(move |permits| {
+            let Some(index) = permits.iter().position(|held| held == &expected) else {
+                return false;
+            };
+            permits.remove(index);
+            true
+        }).await
+    }
+
     async fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRunRecord>, WorkflowError> {
         let path = self.run_path(run_id);
         let stored = read_json_opt::<StoredRun>(&path).await?;
@@ -544,7 +555,21 @@ impl WorkflowInternalStateStore for FileWorkflowInternalStateStore {
         run_id: &str,
         entry: &WorkflowRunLogRecord,
     ) -> Result<(), WorkflowError> {
-        append_ndjson_line(&self.log_path(run_id), entry).await
+        let path = self.log_path(run_id);
+        append_ndjson_line(&path, entry).await?;
+        if entry.function_id.as_deref() == Some("nworkflow::agent-permits-manage") {
+            let file = fs::OpenOptions::new().write(true).open(&path).await
+                .map_err(|error| WorkflowError::State(format!("open permit audit: {error}")))?;
+            file.sync_all().await
+                .map_err(|error| WorkflowError::State(format!("sync permit audit: {error}")))?;
+            if let Some(parent) = path.parent() {
+                fs::File::open(parent).await
+                    .map_err(|error| WorkflowError::State(format!("open permit audit directory: {error}")))?
+                    .sync_all().await
+                    .map_err(|error| WorkflowError::State(format!("sync permit audit directory: {error}")))?;
+            }
+        }
+        Ok(())
     }
 
     async fn list_run_logs(

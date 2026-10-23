@@ -13,6 +13,7 @@ use crate::internal_state::WorkflowInternalStateStore;
 use crate::locks::WorkflowLocks;
 
 pub mod agent;
+pub mod agent_permits;
 pub mod child_workflow;
 pub mod config_get;
 pub mod lifecycle_hooks;
@@ -126,6 +127,22 @@ pub struct TickResponse {
 // ---------------------------------------------------------------------------
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
+    let d = deps.clone();
+    iii.register_function(
+        "nworkflow::agent-permits-list",
+        RegisterFunction::new_async(move |req: agent_permits::ListRequest| {
+            let d = d.clone();
+            async move { agent_permits::list(&d, req).await.map_err(Error::from) }
+        }).description("List durable agent permits and effective concurrency group usage."),
+    );
+    let d = deps.clone();
+    iii.register_function(
+        "nworkflow::agent-permits-manage",
+        RegisterFunction::new_async(move |req: agent_permits::ManageRequest| {
+            let d = d.clone();
+            async move { agent_permits::manage(&d, req).await.map_err(Error::from) }
+        }).description("Operator-only targeted permit check, workflow stop and check, or audited force release. Route to the owning worker."),
+    );
     let d = deps.clone();
     iii.register_function(
         "nworkflow::start",
