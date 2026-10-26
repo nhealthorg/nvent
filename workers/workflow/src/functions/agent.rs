@@ -643,6 +643,7 @@ pub async fn start_agent_task(
         .unwrap_or_else(|| run_id.clone());
 
     let opts = options.unwrap_or(AgentRuntimeOptions {
+        on_error: None,
         concurrency_group: None,
         model: None,
         provider: None,
@@ -1088,16 +1089,25 @@ async fn handle_agent_event_inner(
                                 WorkflowError::Trigger(format!(
                                     "harness::send validation retry failed: {send_error}"
                                 ))
-                            })?;
-                        let (_, retry_turn_id) = send_ids(&retry_result, &task.agent_session_id)?;
-                        task.turn_id = retry_turn_id;
-                        task.status = AgentTaskStatus::Running;
-                        task.error = None;
-                        for mut permit in deps.internal_state.list_agent_permits().await? {
-                            if permit.run_id == task.run_id && permit.node_uid == node_uid {
-                                permit.turn_id = task.turn_id.clone();
-                                permit.dispatch_uncertain = false;
-                                deps.internal_state.bind_agent_permit(&permit).await?;
+                            })
+                            .and_then(|result| send_ids(&result, &task.agent_session_id));
+                        match retry_result {
+                            Ok((_, retry_turn_id)) => {
+                                task.turn_id = retry_turn_id;
+                                task.status = AgentTaskStatus::Running;
+                                task.error = None;
+                                for mut permit in deps.internal_state.list_agent_permits().await? {
+                                    if permit.run_id == task.run_id && permit.node_uid == node_uid {
+                                        permit.turn_id = task.turn_id.clone();
+                                        permit.dispatch_uncertain = false;
+                                        deps.internal_state.bind_agent_permit(&permit).await?;
+                                    }
+                                }
+                            }
+                            Err(send_error) => {
+                                task.status = AgentTaskStatus::Failed;
+                                task.error = Some(send_error.to_string());
+                                response_validation_failed = true;
                             }
                         }
                     } else {
@@ -1175,7 +1185,11 @@ async fn handle_agent_event_inner(
             deps,
             stream_publish::StreamPublishRequest {
                 run_id: task.run_id.clone(),
-                stream: mapped_stream_name.to_string(),
+                stream: if response_validation_failed {
+                    "agents.failed".to_string()
+                } else {
+                    mapped_stream_name.to_string()
+                },
                 data: json!({
                     "task_id": task.task_id,
                     "node_uid": node_uid,

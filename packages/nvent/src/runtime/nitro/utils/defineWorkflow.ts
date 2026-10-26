@@ -18,7 +18,8 @@ async function getRegistry() {
       // Dynamically import registry to avoid build-time issues
       const mod = await import('#nvent/iii-registry')
       registryCache = mod.default || mod.registry
-    } catch (e) {
+    }
+    catch (e) {
       console.warn('[nvent/workflow] Failed to load function registry:', e)
       registryCache = { functions: [] }
     }
@@ -38,7 +39,7 @@ async function getFunctionExecutionConfig(functionId: string): Promise<{
 }> {
   try {
     const registry = await getRegistry()
-    
+
     if (registry?.functions) {
       const fn = registry.functions.find((f: any) => f.id === functionId)
       if (fn) {
@@ -55,10 +56,11 @@ async function getFunctionExecutionConfig(functionId: string): Promise<{
         }
       }
     }
-  } catch (e) {
+  }
+  catch (e) {
     // Registry not available, fall back to heuristics
   }
-  
+
   return { runtime: 'unknown' }
 }
 
@@ -76,7 +78,8 @@ function extractJsonSchema(schema: unknown): Record<string, unknown> | undefined
   if (typeof s.parse !== 'function') return s // raw JSON Schema
   try {
     return toJSONSchema(schema as any) as Record<string, unknown>
-  } catch {
+  }
+  catch {
     // Keep compatibility with schema libraries that expose their own converter.
   }
   if (typeof s.toJsonSchema === 'function') return s.toJsonSchema()
@@ -106,6 +109,7 @@ export interface AgentInvocationSpec {
 }
 
 export interface AgentRuntimeOptions {
+  onError?: 'fail' | 'return-error'
   concurrencyGroup?: {
     key: string | WorkflowValueRef
     limit: number | WorkflowValueRef
@@ -153,6 +157,11 @@ export interface AgentResult {
     sessionId: string
     name: string
   }
+}
+
+export interface AgentFailureResult {
+  status: 'failed'
+  error: string
 }
 
 export interface WorkflowContext {
@@ -213,7 +222,7 @@ export interface WorkflowContext {
    * Run an agent task using the iii harness loop.
    *
    * @param spec - Agent invocation specification (prompt, input, agent profile/display, task title)
-  * @param options - Agent runtime options (model/provider, folder, functions allow/deny, skills, limits)
+   * @param options - Agent runtime options (model/provider, folder, functions allow/deny, skills, limits)
    *
    * @example
    * const result = await ctx.agent({
@@ -222,29 +231,29 @@ export interface WorkflowContext {
    *   agent: 'worker-builder'
    * }, {
    *   model: 'claude-sonnet-4',
-  *   folder: '/workspace/project'
+   *   folder: '/workspace/project'
    * })
    */
   agent: <T = AgentResult>(spec: AgentInvocationSpec, options?: AgentRuntimeOptions) => Promise<T>
-  
+
   /**
    * High-level helper: call a function with automatic input mapping.
-    *
-    * Optional last argument can override function execution config per node:
-    * `{ queue, runtime, engine_retry }` (or `{ retry }` shorthand).
-    * These call/node-level values override defaults from defineFunction({ workflow }).
-   * 
+   *
+   * Optional last argument can override function execution config per node:
+   * `{ queue, runtime, engine_retry }` (or `{ retry }` shorthand).
+   * These call/node-level values override defaults from defineFunction({ workflow }).
+   *
    * @param nodeIdOrFunctionId - If only one arg, used as both node ID and function ID
    * @param functionIdOrInput - Function ID if 2 args, or input if 1 arg
    * @param input - Input data (optional, defaults to previous node or run_input)
-   * 
+   *
    * @example
    * // Simple call with auto-generated node ID
    * await ctx.call('process-text', input)
-   * 
+   *
    * // Call with explicit node ID
    * await ctx.call('step1', 'process-text', input)
-   * 
+   *
    * // Call referencing previous node
    * const result1 = await ctx.call('process', input)
    * const result2 = await ctx.call('analyze', result1)
@@ -327,17 +336,17 @@ export interface WorkflowContext {
    * @param nodeId - ID of the foreach node
    * @param items - Array of items to process
    * @param functionId - ID of the function to call for each item
-   * 
+   *
    * @example
    * await ctx.foreach('process-items', items, 'process-item')
    */
   foreach: <T = any>(nodeId: string, items: any, functionId: string) => Promise<T>
-  
+
   /**
    * Run multiple tasks in parallel.
-   * 
+   *
    * @param tasks - Array of ctx.call or ctx.node promises
-   * 
+   *
    * @example
    * const [res1, res2] = await ctx.all(c => [
    *   c.call('task1', input),
@@ -407,24 +416,24 @@ export interface WorkflowOnDeleteHookPayload extends WorkflowHookBasePayload {
   deleted_at: number
 }
 
-export type WorkflowAnyHookPayload =
-  | WorkflowOnStartHookPayload
-  | WorkflowOnTerminalHookPayload
-  | WorkflowOnDeleteHookPayload
+export type WorkflowAnyHookPayload
+  = | WorkflowOnStartHookPayload
+    | WorkflowOnTerminalHookPayload
+    | WorkflowOnDeleteHookPayload
 
 export type WorkflowHookPayloadWithStaticInput<
   TStaticInput extends WorkflowHookInput,
   TPayload extends object,
 > = Omit<TStaticInput, keyof TPayload> & TPayload
 
-export type WorkflowOnStartHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput> =
-  WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnStartHookPayload>
+export type WorkflowOnStartHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput>
+  = WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnStartHookPayload>
 
-export type WorkflowOnTerminalHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput> =
-  WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnTerminalHookPayload>
+export type WorkflowOnTerminalHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput>
+  = WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnTerminalHookPayload>
 
-export type WorkflowOnDeleteHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput> =
-  WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnDeleteHookPayload>
+export type WorkflowOnDeleteHookInput<TStaticInput extends WorkflowHookInput = WorkflowHookInput>
+  = WorkflowHookPayloadWithStaticInput<TStaticInput, WorkflowOnDeleteHookPayload>
 
 export type WorkflowHookSpec<TInput extends WorkflowHookInput = WorkflowHookInput> = string | {
   function: string
@@ -777,14 +786,14 @@ function parseCallArguments(args: any[]): ParsedCall {
   const work = [...args]
   let callOptions: CallOptions | undefined
   const lastArg = work[work.length - 1]
-  const hasEmptyOptionsObject =
-    work.length >= 3
-    && typeof work[0] === 'string'
-    && typeof work[1] !== 'string'
-    && !!lastArg
-    && typeof lastArg === 'object'
-    && !Array.isArray(lastArg)
-    && Object.keys(lastArg as Record<string, unknown>).length === 0
+  const hasEmptyOptionsObject
+    = work.length >= 3
+      && typeof work[0] === 'string'
+      && typeof work[1] !== 'string'
+      && !!lastArg
+      && typeof lastArg === 'object'
+      && !Array.isArray(lastArg)
+      && Object.keys(lastArg as Record<string, unknown>).length === 0
 
   if (work.length > 0 && (isCallOptions(lastArg) || hasEmptyOptionsObject)) {
     callOptions = work.pop()
@@ -804,7 +813,8 @@ function parseCallArguments(args: any[]): ParsedCall {
       nodeId = work[0]
       functionId = work[1]
       input = 'run_input'
-    } else {
+    }
+    else {
       functionId = work[0]
       nodeId = functionId
       input = work[1]
@@ -874,7 +884,8 @@ function parseCallWorkflowArguments(args: any[]): ParsedCallWorkflow {
       nodeId = work[0]
       workflowId = work[1]
       input = 'run_input'
-    } else {
+    }
+    else {
       workflowId = work[0]
       nodeId = workflowId
       input = work[1]
@@ -897,9 +908,9 @@ export type WorkflowHandler<TInput = any, TOutput = any> = (
 /** Any schema library with a parse method (Zod, Valibot, etc.) */
 type Parseable<T = unknown> = { parse(data: unknown): T }
 
-/** @internal Infers the handler input type from the declared trigger configs. */
-type InferHandlerInput<TTriggers extends TriggerConfig[]> =
-  [TTriggers[number]['type']] extends ['http'] ? import('./defineFunction').HttpRequest : unknown
+/** @internal */
+type InferHandlerInput<TTriggers extends TriggerConfig[]>
+  = [TTriggers[number]['type']] extends ['http'] ? import('./defineFunction').HttpRequest : unknown
 
 export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends TriggerConfig[] = TriggerConfig[]> {
   name?: string
@@ -918,7 +929,7 @@ export interface WorkflowOptions<TInput = any, TOutput = any, TTriggers extends 
   output?: Parseable<TOutput>
   /**
    * Input transport policy for the workflow invocation payload sent to
-  * nworkflow::start (run input only).
+   * nworkflow::start (run input only).
    *
    * This does not set or override per-node inputPolicy values.
    */
@@ -973,9 +984,9 @@ function normalizeWorkflowHook(spec: WorkflowHookSpec | undefined, defaultNamesp
 
 /**
  * defineWorkflow — declares a functional DAG workflow.
- * 
- * Workflows are registered as standard iii functions. When triggered, the 
- * handler compiles the local JS workflow definition into a static DAG plan 
+ *
+ * Workflows are registered as standard iii functions. When triggered, the
+ * handler compiles the local JS workflow definition into a static DAG plan
  * and sends it to the workflow-worker via `nworkflow::start`.
  */
 export function defineWorkflow<
@@ -985,7 +996,7 @@ export function defineWorkflow<
   TInput = TInSchema extends Parseable<infer T> ? T : InferHandlerInput<TTriggers>,
   TOutput = TOutSchema extends Parseable<infer T> ? T : any,
 >(
-  options: WorkflowOptions<TInput, TOutput, TTriggers>
+  options: WorkflowOptions<TInput, TOutput, TTriggers>,
 ) {
   // Extract JSON schemas if provided via input/output
   const request_format = options.request_format ?? (options.input ? extractJsonSchema(options.input) : undefined)
@@ -999,8 +1010,8 @@ export function defineWorkflow<
     request_format,
     response_format,
     $workflow: true,
-    // The "nvent" generic function handler. 
-    // When called as a standard function (e.g. via iii.trigger), it compiles 
+    // The "nvent" generic function handler.
+    // When called as a standard function (e.g. via iii.trigger), it compiles
     // the workflow and starts the execution via the workflow-worker.
     async handler(rawInput: TInput) {
       let registeredWorkflowId: string | undefined
@@ -1035,12 +1046,14 @@ export function defineWorkflow<
           workflow_id: registeredWorkflowId,
           name: options.name,
           description: options.description,
-          hooks: options.hooks ? {
-            on_start: normalizeWorkflowHook(options.hooks.onStart, hookNamespaceDefault),
-            on_end: normalizeWorkflowHook(options.hooks.onEnd, hookNamespaceDefault),
-            on_error: normalizeWorkflowHook(options.hooks.onError, hookNamespaceDefault),
-            on_delete: normalizeWorkflowHook(options.hooks.onDelete, hookNamespaceDefault),
-          } : undefined,
+          hooks: options.hooks
+            ? {
+                on_start: normalizeWorkflowHook(options.hooks.onStart, hookNamespaceDefault),
+                on_end: normalizeWorkflowHook(options.hooks.onEnd, hookNamespaceDefault),
+                on_error: normalizeWorkflowHook(options.hooks.onError, hookNamespaceDefault),
+                on_delete: normalizeWorkflowHook(options.hooks.onDelete, hookNamespaceDefault),
+              }
+            : undefined,
           created_by_worker: `nvent-nodejs-${process.pid}`,
         },
       }
@@ -1062,7 +1075,8 @@ export function defineWorkflow<
           },
           ...(workflowsNamespace ? { namespace: workflowsNamespace } : {}),
         })
-      } catch (error) {
+      }
+      catch (error) {
         console.error('[nvent/workflow] nworkflow::start invocation failed; definition shape summary:', {
           workflowName: options.name,
           outputFrom: (definition as any)?.output?.from,
@@ -1222,17 +1236,18 @@ export function defineWorkflow<
           // Update control-flow frontier
           if (parallelCollector) {
             parallelCollector.push(id)
-          } else {
+          }
+          else {
             controlFrontier = [id]
           }
 
-          // If the input was normalized to run_input by the caller, it means they might have 
+          // If the input was normalized to run_input by the caller, it means they might have
           // passed the whole object expecting it to be filtered. But Rust worker expects
           // { from: "run_input" } or { from: "node:x" }.
           if (nodeDef.input.from === 'run_input' && spec.input && typeof spec.input === 'object' && !spec.input.$ref) {
-             // This was likely a raw object passed to call(fn, { ... })
-             // In the functional DAG model, we can't pass raw JS objects yet, 
-             // so we stay with run_input but we should have stopped the warning.
+            // This was likely a raw object passed to call(fn, { ... })
+            // In the functional DAG model, we can't pass raw JS objects yet,
+            // so we stay with run_input but we should have stopped the warning.
           }
 
           // Handle executor
@@ -1254,9 +1269,11 @@ export function defineWorkflow<
                 },
               }
             }
-          } else if (spec.childWorkflow) {
+          }
+          else if (spec.childWorkflow) {
             nodeDef.childWorkflow = spec.childWorkflow
-          } else if (spec.function) {
+          }
+          else if (spec.function) {
             const fnSpec = typeof spec.function === 'string' ? { id: spec.function } : spec.function
 
             if (!fnSpec.id || typeof fnSpec.id !== 'string') {
@@ -1266,7 +1283,7 @@ export function defineWorkflow<
             if (!fnSpec.engine_retry && spec.retry) {
               fnSpec.engine_retry = spec.retry
             }
-            
+
             // Get runtime from registry instead of guessing
             if (!fnSpec.runtime || !fnSpec.queue || !fnSpec.engine_retry || !nodeDef.label) {
               const execution = await getFunctionExecutionConfig(fnSpec.id)
@@ -1276,9 +1293,10 @@ export function defineWorkflow<
               if (!fnSpec.queue && execution.queue) fnSpec.queue = execution.queue
               if (!fnSpec.engine_retry && execution.engine_retry) fnSpec.engine_retry = execution.engine_retry
             }
-            
+
             nodeDef.function = fnSpec
-          } else if (spec.executor) {
+          }
+          else if (spec.executor) {
             // Passthrough for raw executor structure
             Object.assign(nodeDef, spec.executor)
           }
@@ -1287,12 +1305,12 @@ export function defineWorkflow<
           nodeOrder.push(id)
           return createWorkflowValueRef('node', `node:${id}`) as any
         },
-        
+
         call: async (...args: any[]) => {
           const parsed = parseCallArguments(args)
           const nodeId = applyAutoNodeSuffix(parsed.nodeId)
           const functionSpec = buildFunctionSpec(parsed.functionId, parsed.callOptions)
-          
+
           return ctx.node(nodeId, {
             label: parsed.callOptions?.label,
             function: functionSpec,
@@ -1473,7 +1491,8 @@ export function defineWorkflow<
               iterationContext.item as TItem,
               iterationContext,
             )
-          } finally {
+          }
+          finally {
             activeReduceId = previousReduceId
           }
           const body = nodeOrder.slice(bodyStart)
@@ -1505,10 +1524,10 @@ export function defineWorkflow<
             ? { source: condition }
             : isWorkflowCondition(condition)
               ? { source: true, predicate: serializeWorkflowCondition(condition) }
-            : {
-                source: condition.$ref,
-                ...(condition.$path?.length ? { path: condition.$path } : {}),
-              }
+              : {
+                  source: condition.$ref,
+                  ...(condition.$path?.length ? { path: condition.$path } : {}),
+                }
           const previousFrontier = [...controlFrontier]
 
           await ctx.node(ifId, {
@@ -1528,7 +1547,8 @@ export function defineWorkflow<
             try {
               const result = await fn(ctx)
               return { result, frontier: [...controlFrontier] }
-            } finally {
+            }
+            finally {
               activeIfBranch = savedBranch
               controlFrontier = savedFrontier
             }
@@ -1557,22 +1577,24 @@ export function defineWorkflow<
           [WORKFLOW_BRANCH]: true,
           run: fn,
         }),
-        
+
         foreach: async (nodeId: string, items: any, functionId: string) => {
           // Extract the 'from' reference from items if it's a node reference
           let fanoutOver: string
           if (items && typeof items === 'object' && items.$ref) {
             fanoutOver = items.$ref
-          } else if (typeof items === 'string') {
-            fanoutOver = items
-          } else {
-            throw new Error(`foreach requires a node reference or string path, got: ${typeof items}`)
           }
-          
+          else if (typeof items === 'string') {
+            fanoutOver = items
+          }
+          else {
+            throw new TypeError(`foreach requires a node reference or string path, got: ${typeof items}`)
+          }
+
           return ctx.node(nodeId, {
             function: functionId,
             input: 'fanout_item',
-            fanout: { over: fanoutOver }
+            fanout: { over: fanoutOver },
           })
         },
 
@@ -1591,7 +1613,7 @@ export function defineWorkflow<
           // Branch mode: each branch starts from the same pre-all frontier,
           // but can advance sequentially inside the branch.
           if (taskList.some(task => isWorkflowParallelBranch(task))) {
-            const branchResults: unknown[] = new Array(taskList.length)
+            const branchResults: unknown[] = Array.from({ length: taskList.length })
 
             // Resolve non-branch tasks first while collector is active.
             // This avoids races where still-running legacy tasks would mutate
@@ -1639,7 +1661,8 @@ export function defineWorkflow<
             parallelFixedFrontier = previousFixedFrontier
             if (parallelCollector) {
               parallelCollector.push(...mergedFrontier)
-            } else {
+            }
+            else {
               controlFrontier = mergedFrontier
             }
 
@@ -1655,34 +1678,37 @@ export function defineWorkflow<
           if ((completedParallelNodes?.length ?? 0) > 0) {
             if (parallelCollector) {
               parallelCollector.push(...completedParallelNodes)
-            } else {
+            }
+            else {
               controlFrontier = reduceDependencies(completedParallelNodes)
             }
-          } else if (!parallelCollector) {
+          }
+          else if (!parallelCollector) {
             controlFrontier = previousFrontier
           }
 
           return results as any
-        }
+        },
       }
 
       const result = await options.handler(input, ctx)
       let outputNode = ''
       if (result && typeof result === 'object' && (result as any)[WORKFLOW_IF_RESULT]) {
         outputNode = (result as any)[WORKFLOW_IF_RESULT]
-      } else if (result && typeof result === 'object' && (result as any).$ref) {
+      }
+      else if (result && typeof result === 'object' && (result as any).$ref) {
         outputNode = (result as any).$ref.replace('node:', '')
-      } else if (nodeOrder.length > 0) {
+      }
+      else if (nodeOrder.length > 0) {
         outputNode = nodeOrder[nodeOrder.length - 1]!
       }
 
       return {
         nodes,
-        output: { from: outputNode }
+        output: { from: outputNode },
       }
-    }
+    },
   }
 
   return workflow
 }
-

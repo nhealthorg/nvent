@@ -325,6 +325,8 @@ pub struct AgentConcurrencyGroup {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AgentRuntimeOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<AgentErrorPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "concurrency_group")]
     pub concurrency_group: Option<AgentConcurrencyGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,6 +361,13 @@ pub struct AgentRuntimeOptions {
     pub response: Option<AgentResponseSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<NodeResultSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentErrorPolicy {
+    Fail,
+    ReturnError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

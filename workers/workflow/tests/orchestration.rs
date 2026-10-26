@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use workflow::{
     dag,
     functions::tick::{decide, TickDecision},
-    reconcile::{classify_terminal, NodeOutcome},
+    reconcile::{apply_agent_error_policy, classify_terminal, NodeOutcome},
     types::{
         ChildWorkflowSpec, FanoutMode, FanoutSpec, FunctionSpec, InputSpec, NodeCheckpoint,
         NodeDef, NodeInputReturnType, NodeState, OutputRef, RunStatus, WorkflowDef,
@@ -322,6 +322,42 @@ fn complete_with_error(record: &mut WorkflowRunRecord, node_uid_str: &str, error
     if let Some(cp) = record.nodes.get_mut(node_uid_str) {
         cp.state = NodeState::Failed;
         cp.result_error = Some(error.to_string());
+    }
+}
+
+#[test]
+fn recovered_agent_failure_runs_normal_successor_to_completion() {
+    for policy in [None, Some("fail"), Some("return-error")] {
+        let mut def = two_node_linear_def();
+        def.nodes.insert("first".to_string(), serde_json::from_value(json!({
+            "agent": { "prompt": "Extract" },
+            "agentOptions": { "onError": policy },
+            "input": { "from": "run_input" }
+        })).unwrap());
+        let mut record = new_record(json!({}));
+        let mut results = BTreeMap::new();
+        assert!(matches!(drive_step(&def, &mut record, &results), TickDecision::Fire(nodes) if nodes == vec!["first"]));
+        let outcome = apply_agent_error_policy(
+            def.nodes.get("first"),
+            classify_terminal("failed", None, Some("maximum context length exceeded".into())),
+        );
+        match outcome {
+            NodeOutcome::Done(value) => {
+                assert_eq!(policy, Some("return-error"));
+                assert_eq!(value, json!({ "status": "failed", "error": "maximum context length exceeded" }));
+                complete(&mut record, &mut results, "first", value.clone());
+                assert!(matches!(drive_step(&def, &mut record, &results), TickDecision::Fire(nodes) if nodes == vec!["second"]));
+                complete(&mut record, &mut results, "second", json!({ "materialized": value }));
+                assert!(matches!(drive_step(&def, &mut record, &results), TickDecision::Finalize(RunStatus::Completed)));
+            }
+            NodeOutcome::Failed(error) => {
+                assert_ne!(policy, Some("return-error"));
+                complete_with_error(&mut record, "first", &error);
+                assert!(matches!(drive_step(&def, &mut record, &results), TickDecision::Finalize(RunStatus::Failed)));
+                assert!(!record.nodes.contains_key("second"));
+            }
+            outcome => panic!("unexpected outcome: {outcome:?}"),
+        }
     }
 }
 

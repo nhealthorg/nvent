@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { defineWorkflow } from '../../packages/nvent/src/runtime/nitro/utils/defineWorkflow'
+
 const registryMock: { functions: any[] } = { functions: [] }
 const triggerMock = vi.fn()
 const runtimeConfigMock: any = {
@@ -26,8 +28,6 @@ vi.mock('#imports', () => ({
   }),
   useRuntimeConfig: () => runtimeConfigMock,
 }))
-
-import { defineWorkflow } from '../../packages/nvent/src/runtime/nitro/utils/defineWorkflow'
 
 describe('defineWorkflow compilation', () => {
   beforeEach(() => {
@@ -59,6 +59,41 @@ describe('defineWorkflow compilation', () => {
     expect(plan.nodes['prepare-item'].function.engine_retry).toEqual({ max_attempts: 3 })
   })
 
+  it('preserves opt-in agent failure data and native routing in reduce bodies', async () => {
+    const workflow = defineWorkflow({
+      name: 'recover-agent',
+      async handler(_input, ctx) {
+        const routing = await ctx.call('resolve-routing')
+        const items = await ctx.call('load-items')
+        return ctx.reduce(items, [], async (_accumulator, item, iteration) => {
+          const result = await iteration.agent({ input: item }, {
+            onError: 'return-error',
+            model: iteration.cond.prop(routing, 'model'),
+            provider: iteration.cond.prop(routing, 'provider'),
+            concurrencyGroup: {
+              key: iteration.cond.prop(routing, 'group'),
+              limit: iteration.cond.prop(routing, 'limit'),
+            },
+          })
+          return iteration.call('materialize-result', { result })
+        })
+      },
+    })
+
+    const plan = await workflow.compile({})
+    const agent = plan.nodes.agent_agent
+    expect(agent.agentOptions.onError).toBe('return-error')
+    expect(agent.agentOptions.model).toMatchObject({ $ref: 'node:resolve-routing', $path: ['model'] })
+    expect(agent.agentOptions.provider).toMatchObject({ $ref: 'node:resolve-routing', $path: ['provider'] })
+    expect(agent.agentOptions.concurrencyGroup).toEqual({
+      key: { $wf_ref: 'node:resolve-routing', $wf_path: ['group'] },
+      limit: { $wf_ref: 'node:resolve-routing', $wf_path: ['limit'] },
+    })
+    expect(agent.reduce_body).toEqual({ reduce: 'reduce' })
+    expect(plan.nodes['materialize-result'].depends_on).toContain('agent_agent')
+    expect(plan.nodes['materialize-result'].input.value).toBeDefined()
+  })
+
   it('preserves disabled agent message streaming in the workflow plan', async () => {
     const workflow = defineWorkflow({
       name: 'result-only-agent',
@@ -73,6 +108,7 @@ describe('defineWorkflow compilation', () => {
     const plan = await workflow.compile({})
 
     expect(plan.nodes.agent_agent.agentOptions.stream).toEqual({ enabled: false })
+    expect(plan.nodes.agent_agent.agentOptions.onError).toBeUndefined()
     expect(plan.nodes.agent_agent.result).toEqual({ returnType: 'memory' })
     expect(plan.nodes.agent_agent.label).toBe('Agent')
   })
@@ -306,11 +342,11 @@ describe('defineWorkflow compilation', () => {
         await ctx.call('seed', input)
 
         await ctx.all(c => [
-          c.branch(async b => {
+          c.branch(async (b) => {
             const a1 = await b.call('branch-a-step-1', input)
             return b.call('branch-a-step-2', a1)
           }),
-          c.branch(async b => {
+          c.branch(async (b) => {
             const b1 = await b.call('branch-b-step-1', input)
             return b.call('branch-b-step-2', b1)
           }),
@@ -428,7 +464,7 @@ describe('defineWorkflow compilation', () => {
   it('serializes condition helpers and run-input references', async () => {
     const workflow = defineWorkflow({
       name: 'durable-if-helper-api',
-      async handler(_input: { mode: string; count: number }, ctx) {
+      async handler(_input: { mode: string, count: number }, ctx) {
         const condition = ctx.cond.and(
           ctx.cond.eq(ctx.value('mode'), 'fast'),
           ctx.cond.gt(ctx.cond.prop(ctx.value('run_input'), 'count'), 0),
@@ -467,7 +503,7 @@ describe('defineWorkflow compilation', () => {
         await ctx.call('seed', input)
 
         await ctx.all(c => [
-          c.branch(async b => {
+          c.branch(async (b) => {
             const first = await b.call('a1', input)
             await b.all(inner => [
               inner.call('a2_left', first),
@@ -475,7 +511,7 @@ describe('defineWorkflow compilation', () => {
             ] as const)
             return b.call('a3', input)
           }),
-          c.branch(async b => {
+          c.branch(async (b) => {
             return b.call('b1', input)
           }),
         ] as const)
@@ -579,7 +615,7 @@ describe('defineWorkflow compilation', () => {
       async handler(input: { text: string }, ctx) {
         const items = await ctx.call('load-items', input)
 
-        const processed = await ctx.loop(items, async loop => {
+        const processed = await ctx.loop(items, async (loop) => {
           const prepared = await loop.call('prepare-item', loop.item)
           return loop.call('process-item', prepared)
         }, { mode: 'sequential' })
@@ -651,7 +687,7 @@ describe('defineWorkflow compilation', () => {
       async handler(input: { text: string }, ctx) {
         const items = await ctx.call('load-items', input)
 
-        const processed = await ctx.loop(items, async loop => {
+        const processed = await ctx.loop(items, async (loop) => {
           return loop.call('process-item', loop.item)
         }, { mode: 'batch', batchSize: 25 })
 
@@ -674,7 +710,7 @@ describe('defineWorkflow compilation', () => {
       async handler(input: { text: string }, ctx) {
         const data = await ctx.call('load-data', input)
 
-        const processed = await ctx.loop(data.items, async loop => {
+        const processed = await ctx.loop(data.items, async (loop) => {
           return loop.call('process-item', loop.item)
         })
 
@@ -696,7 +732,7 @@ describe('defineWorkflow compilation', () => {
         const items = await ctx.call('load-items', input)
 
         await ctx.all(c => [
-          c.loop(items, async loop => {
+          c.loop(items, async (loop) => {
             const a = await loop.call('branch-a-item', loop.item)
             return loop.call('branch-a-item-final', a)
           }),
@@ -721,7 +757,7 @@ describe('defineWorkflow compilation', () => {
       name: 'loop-item-result-store',
       async handler(input: { text: string }, ctx) {
         const items = await ctx.call('load-items', input)
-        const result = await ctx.loop(items, async loop => {
+        const result = await ctx.loop(items, async (loop) => {
           return loop.call('process-item', loop.item)
         }, { itemReturnType: 'store' })
 
@@ -745,11 +781,11 @@ describe('defineWorkflow compilation', () => {
       async handler(input: { text: string }, ctx) {
         const items = await ctx.call('load-items', input)
 
-        await ctx.loop(items, async loop => {
+        await ctx.loop(items, async (loop) => {
           return loop.call('branch-a-item', loop.item)
         }, { itemReturnType: 'store' })
 
-        await ctx.loop(items, async loop => {
+        await ctx.loop(items, async (loop) => {
           return loop.call('branch-b-item', loop.item)
         })
 
@@ -865,7 +901,7 @@ describe('defineWorkflow compilation', () => {
       name: 'label-payload-regression',
       async handler(input: { text: string }, ctx) {
         const items = await ctx.call('e2e::make-items', input)
-        return ctx.loop(items, async loop => {
+        return ctx.loop(items, async (loop) => {
           const loopItem = loop.item as any
           return loop.call('e2e::finalize-item', {
             id: loopItem.id,

@@ -1432,9 +1432,22 @@ pub(crate) async fn fire_node(
                     return Ok(());
                 }
                 let err_msg = format!("failed to start agent node: {e}");
+                let failure = crate::reconcile::NodeOutcome::Failed(err_msg.clone());
+                let outcome = if matches!(&e, WorkflowError::Trigger(_)) {
+                    crate::reconcile::apply_agent_error_policy(Some(node), failure)
+                } else {
+                    failure
+                };
+                let recovered = if let crate::reconcile::NodeOutcome::Done(value) = outcome {
+                    super::node_completed::store_result(deps, &record.run_id, node_uid, node.result.as_ref(), &value).await?;
+                    true
+                } else {
+                    false
+                };
                 if let Some(cp) = record.nodes.get_mut(node_uid) {
-                    cp.state = NodeState::Failed;
-                    cp.result_error = Some(err_msg.clone());
+                    cp.state = if recovered { NodeState::Done } else { NodeState::Failed };
+                    cp.result_error = if recovered { None } else { Some(err_msg.clone()) };
+                    cp.result_ref = recovered.then(|| crate::ids::new_ref_id("node_result"));
                     cp.completed_at = Some(deps.now_ms());
                 }
                 record.updated_at = deps.now_ms();
@@ -1444,6 +1457,11 @@ pub(crate) async fn fire_node(
                     node_uid,
                     &err_msg,
                 ));
+                if recovered {
+                    if let Err(error) = super::start::enqueue_tick(&deps.iii, &record.run_id, record.step + 1).await {
+                        tracing::warn!(run_id = %record.run_id, error = %error, "agent failure data persisted; tick wakeup deferred to recovery");
+                    }
+                }
                 return Ok(());
             }
         }
@@ -1905,7 +1923,7 @@ pub async fn handle(
 
     // 5. Reconcile running nodes.
     let mut pending_stream_events = Vec::new();
-    crate::reconcile::reconcile_run(deps, &mut record).await?;
+    crate::reconcile::reconcile_run(deps, &def, &mut record).await?;
     crate::reconcile::reconcile_function_nodes(deps, &def, &mut record, &mut pending_stream_events)
         .await?;
     crate::reconcile::reconcile_child_workflow_nodes(deps, &mut record).await?;

@@ -207,7 +207,7 @@ async fn sweep_one_run(
 
     // Poll running nodes for completion.
     let mut pending_stream_events = Vec::new();
-    reconcile::reconcile_run(deps, &mut record).await?;
+    reconcile::reconcile_run(deps, &def, &mut record).await?;
     reconcile::reconcile_function_nodes(deps, &def, &mut record, &mut pending_stream_events)
         .await?;
     reconcile::reconcile_child_workflow_nodes(deps, &mut record).await?;

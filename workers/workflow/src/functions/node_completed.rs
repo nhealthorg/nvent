@@ -68,6 +68,26 @@ fn should_persist_result(
     )
 }
 
+pub(crate) async fn store_result(
+    deps: &Deps,
+    run_id: &str,
+    node_uid: &str,
+    result_policy: Option<&crate::types::NodeResultSpec>,
+    value: &Value,
+) -> Result<(), WorkflowError> {
+    let return_type = result_policy.map(|result| result.return_type)
+        .unwrap_or(NodeResultReturnType::Memory);
+    let on_memory_fail = result_policy.and_then(|result| result.on_memory_fail);
+    if should_persist_result(return_type, on_memory_fail) {
+        let _ = crate::state::delete_node_result_memory(run_id, node_uid);
+        crate::state::put_node_result(&deps.iii, run_id, node_uid, value).await?;
+    } else {
+        crate::state::put_node_result_memory(run_id, node_uid, value)?;
+        crate::state::delete_node_result_store(&deps.iii, run_id, node_uid).await?;
+    }
+    Ok(())
+}
+
 /// Wake the workflow tick when a function signals completion.
 ///
 /// This is a fast-path optimization: functions CAN emit this event to trigger
@@ -131,21 +151,25 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
     // completion event still conclusively finishes the running node, so null is
     // the valid stored result in that case.
     {
-        let value = match event.result_error {
-            Some(err) => json!({ "__workflow_error__": err }),
-            None => event.result.unwrap_or(Value::Null),
-        };
-
         let ts = deps.now_ms();
         let base_node_id = event
             .node_uid
             .split('#')
             .next()
             .unwrap_or(event.node_uid.as_str());
-        let result_policy = crate::state::get_def(&deps.iii, &record.def_ref)
+        let node = crate::state::get_def(&deps.iii, &record.def_ref)
             .await?
-            .and_then(|def| def.nodes.get(base_node_id).cloned())
-            .and_then(|node| node.result);
+            .and_then(|def| def.nodes.get(base_node_id).cloned());
+        let outcome = match event.result_error {
+            Some(error) => crate::reconcile::NodeOutcome::Failed(error),
+            None => crate::reconcile::NodeOutcome::Done(event.result.unwrap_or(Value::Null)),
+        };
+        let value = match crate::reconcile::apply_agent_error_policy(node.as_ref(), outcome) {
+            crate::reconcile::NodeOutcome::Failed(error) => json!({ "__workflow_error__": error }),
+            crate::reconcile::NodeOutcome::Done(value) => value,
+            _ => unreachable!(),
+        };
+        let result_policy = node.and_then(|node| node.result);
 
         let return_type = result_policy
             .as_ref()
@@ -155,15 +179,7 @@ pub async fn handle(deps: &Deps, event: NodeCompletedEvent) -> Result<(), Workfl
             .as_ref()
             .and_then(|result| result.on_memory_fail);
 
-        if should_persist_result(return_type, on_memory_fail) {
-            let _ = crate::state::delete_node_result_memory(&event.run_id, &event.node_uid);
-            crate::state::put_node_result(&deps.iii, &event.run_id, &event.node_uid, &value)
-                .await?;
-        } else {
-            crate::state::put_node_result_memory(&event.run_id, &event.node_uid, &value)?;
-            crate::state::delete_node_result_store(&deps.iii, &event.run_id, &event.node_uid)
-                .await?;
-        }
+        store_result(deps, &event.run_id, &event.node_uid, result_policy.as_ref(), &value).await?;
 
         let event_name = match return_type {
             NodeResultReturnType::Store => "result:store",

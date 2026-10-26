@@ -33,6 +33,22 @@ pub enum NodeOutcome {
     Cancelled,
 }
 
+pub fn apply_agent_error_policy(
+    node: Option<&crate::types::NodeDef>,
+    outcome: NodeOutcome,
+) -> NodeOutcome {
+    let recover = node.filter(|node| node.agent.is_some())
+        .and_then(|node| node.agent_options.as_ref())
+        .and_then(|options| options.on_error)
+        == Some(crate::types::AgentErrorPolicy::ReturnError);
+    match outcome {
+        NodeOutcome::Failed(error) if recover => {
+            NodeOutcome::Done(json!({ "status": "failed", "error": error }))
+        }
+        outcome => outcome,
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum FunctionFailureAction {
     Retry { attempt: u32 },
@@ -520,6 +536,7 @@ pub async fn reconcile_child_workflow_nodes(
 /// `turn_id` values (re-seed guard).
 pub async fn reconcile_run(
     deps: &crate::functions::Deps,
+    def: &WorkflowDef,
     record: &mut WorkflowRunRecord,
 ) -> Result<(), WorkflowError> {
     // Collect the (uid, session_id, turn_id) tuples for all Running nodes so
@@ -546,13 +563,26 @@ pub async fn reconcile_run(
             if task.turn_id != expected_turn_id {
                 continue;
             }
+            let base_id = uid.split('#').next().unwrap_or(&uid);
             let outcome = agent_task_outcome(task.status, task.final_result, task.error);
+            let was_failed = matches!(outcome, NodeOutcome::Failed(_));
+            let outcome = apply_agent_error_policy(def.nodes.get(base_id), outcome);
             if matches!(outcome, NodeOutcome::StillRunning) {
                 continue;
             }
             match outcome {
                 NodeOutcome::Done(result) => {
-                    state::put_node_result(&deps.iii, &record.run_id, &uid, &result).await?;
+                    if was_failed {
+                        crate::functions::node_completed::store_result(
+                            deps,
+                            &record.run_id,
+                            &uid,
+                            def.nodes.get(base_id).and_then(|node| node.result.as_ref()),
+                            &result,
+                        ).await?;
+                    } else {
+                        state::put_node_result(&deps.iii, &record.run_id, &uid, &result).await?;
+                    }
                     if let Some(cp) = record.nodes.get_mut(&uid) {
                         cp.result_ref = Some(new_ref_id("node_result"));
                         cp.state = NodeState::Done;
@@ -637,7 +667,10 @@ pub async fn reconcile_run(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        match classify_terminal(status, result, result_error) {
+        let base_id = uid.split('#').next().unwrap_or(&uid);
+        let outcome = classify_terminal(status, result, result_error);
+        let was_failed = matches!(outcome, NodeOutcome::Failed(_));
+        match apply_agent_error_policy(def.nodes.get(base_id), outcome) {
             NodeOutcome::StillRunning => {
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.pending_at = Some(now);
@@ -645,7 +678,17 @@ pub async fn reconcile_run(
             }
             NodeOutcome::Done(res) => {
                 // Persist the result blob
-                state::put_node_result(&deps.iii, &record.run_id, &uid, &res).await?;
+                if was_failed {
+                    crate::functions::node_completed::store_result(
+                        deps,
+                        &record.run_id,
+                        &uid,
+                        def.nodes.get(base_id).and_then(|node| node.result.as_ref()),
+                        &res,
+                    ).await?;
+                } else {
+                    state::put_node_result(&deps.iii, &record.run_id, &uid, &res).await?;
+                }
                 // Update checkpoint
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_ref = Some(new_ref_id("node_result"));
@@ -692,6 +735,68 @@ mod tests {
     use crate::types::{EngineRetrySpec, FunctionSpec, InputSpec, NodeDef, OutputRef, WorkflowDef};
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn agent_error_policy_is_opt_in_and_does_not_recover_other_outcomes() {
+        let mut node: NodeDef = serde_json::from_value(json!({
+            "agent": { "prompt": "Extract" },
+            "agentOptions": { "onError": "return-error" },
+            "input": { "from": "run_input" }
+        })).unwrap();
+        let error = "maximum context length exceeded".to_string();
+        let expected = NodeOutcome::Done(json!({ "status": "failed", "error": error }));
+        assert_eq!(
+            apply_agent_error_policy(Some(&node), agent_task_outcome(
+                AgentTaskStatus::Failed, None, Some(error.clone())
+            )),
+            expected,
+        );
+        assert_eq!(
+            apply_agent_error_policy(Some(&node), classify_terminal("failed", None, Some(error.clone()))),
+            expected,
+        );
+        assert_eq!(
+            apply_agent_error_policy(Some(&node), NodeOutcome::Cancelled),
+            NodeOutcome::Cancelled,
+        );
+        assert_eq!(
+            apply_agent_error_policy(Some(&node), NodeOutcome::StillRunning),
+            NodeOutcome::StillRunning,
+        );
+        let success = json!({ "value": 42 });
+        assert_eq!(
+            apply_agent_error_policy(Some(&node), NodeOutcome::Done(success.clone())),
+            NodeOutcome::Done(success),
+        );
+        for policy in [None, Some(crate::types::AgentErrorPolicy::Fail)] {
+            node.agent_options.as_mut().unwrap().on_error = policy;
+            assert_eq!(
+                apply_agent_error_policy(Some(&node), NodeOutcome::Failed(error.clone())),
+                NodeOutcome::Failed(error.clone()),
+            );
+        }
+        node.agent_options.as_mut().unwrap().on_error = Some(crate::types::AgentErrorPolicy::ReturnError);
+        node.agent = None;
+        assert_eq!(
+            apply_agent_error_policy(Some(&node), NodeOutcome::Failed(error.clone())),
+            NodeOutcome::Failed(error),
+        );
+    }
+
+    #[test]
+    fn agent_error_policy_rejects_unknown_values_and_round_trips() {
+        let options: crate::types::AgentRuntimeOptions = serde_json::from_value(json!({
+            "onError": "return-error", "provider": "local", "model": "extractor",
+            "concurrencyGroup": { "key": "local", "limit": 2 }
+        })).unwrap();
+        assert_eq!(serde_json::to_value(options).unwrap(), json!({
+            "onError": "return-error", "provider": "local", "model": "extractor",
+            "concurrencyGroup": { "key": "local", "limit": 2 }
+        }));
+        assert!(serde_json::from_value::<crate::types::AgentRuntimeOptions>(json!({
+            "onError": "ignore"
+        })).is_err());
+    }
 
     #[test]
     fn agent_retry_never_completes_from_unvalidated_harness_output() {

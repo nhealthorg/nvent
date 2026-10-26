@@ -32,5 +32,7 @@ uuid = { version = "1", features = ["v4"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 [dev-dependencies]
+futures-util = "0.3"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
+tokio-tungstenite = "0.28"
