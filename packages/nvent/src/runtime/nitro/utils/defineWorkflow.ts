@@ -122,6 +122,7 @@ export interface AgentRuntimeOptions {
   functions?: {
     allow?: string[]
     deny?: string[]
+    expose?: 'native' | 'tools'
   }
   skills?: string[]
   systemPrompt?: string
@@ -147,6 +148,7 @@ export interface AgentResult {
   turnId?: string
   output?: unknown
   result?: unknown
+  code?: string
   error?: string
   trace?: {
     runId?: string
@@ -161,6 +163,7 @@ export interface AgentResult {
 
 export interface AgentFailureResult {
   status: 'failed'
+  code?: string
   error: string
 }
 

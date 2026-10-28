@@ -26,6 +26,7 @@ pub mod node_started;
 pub mod node_result;
 pub mod node_result_write;
 pub mod run_delete;
+pub mod run_cleanup;
 pub mod run_result;
 pub mod start;
 pub mod state_delete;
@@ -414,6 +415,18 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Delete one workflow run and all run-scoped artifacts (internal state, workflow state keys, streams, logs/traces, queue receipts). Also best-effort stops any running node sessions and discards tracked queue messages before delete.",
+        ),
+    );
+
+    let d = deps.clone();
+    iii.register_function(
+        "nworkflow::run-cleanup",
+        RegisterFunction::new_async(move |req: run_cleanup::RunCleanupRequest| {
+            let d = d.clone();
+            async move { run_cleanup::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description(
+            "Preview or delete terminal workflow runs older than the requested number of days. Active runs are never selected.",
         ),
     );
 

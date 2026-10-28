@@ -289,6 +289,15 @@ pub struct AgentFunctionPolicy {
     pub allow: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<AgentFunctionExposure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentFunctionExposure {
+    Native,
+    Tools,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1101,6 +1110,36 @@ mod tests {
         assert!(RunStatus::Cancelled.is_terminal());
         assert!(!RunStatus::Running.is_terminal());
         assert!(!RunStatus::AwaitingNodes.is_terminal());
+    }
+
+    #[test]
+    fn agent_function_policy_accepts_native_exposure_and_empty_allowlist() {
+        let policy: AgentFunctionPolicy = serde_json::from_value(json!({
+            "allow": [],
+            "expose": "native"
+        }))
+        .expect("valid function policy");
+
+        assert_eq!(policy.allow, Some(Vec::new()));
+        assert_eq!(policy.expose, Some(AgentFunctionExposure::Native));
+        assert_eq!(
+            serde_json::to_value(policy).expect("serialize function policy"),
+            json!({ "allow": [], "expose": "native" })
+        );
+    }
+
+    #[test]
+    fn agent_function_policy_accepts_tools_exposure_and_rejects_unknown_mode() {
+        let policy: AgentFunctionPolicy = serde_json::from_value(json!({
+            "expose": "tools"
+        }))
+        .expect("valid tools exposure");
+        assert_eq!(policy.expose, Some(AgentFunctionExposure::Tools));
+
+        assert!(serde_json::from_value::<AgentFunctionPolicy>(json!({
+            "expose": "unknown"
+        }))
+        .is_err());
     }
 
     #[test]

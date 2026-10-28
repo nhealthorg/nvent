@@ -70,6 +70,10 @@ pub const SWEEP_DESC: &str =
     "Internal cron sweep: reconcile AwaitingNodes runs and time out nodes past their deadline. \
      Not called directly.";
 
+fn is_expired_terminal_run(run: &crate::types::WorkflowRunRecord, cutoff: i64) -> bool {
+    run.status.is_terminal() && run.updated_at < cutoff
+}
+
 /// Cron event payload (schedule info ignored — the sweep scans all run records).
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SweepEvent {
@@ -144,10 +148,7 @@ pub async fn handle(deps: &Deps, _event: SweepEvent) -> Result<SweepResponse, Wo
     // the snapshot taken above, so a run that finalized THIS cycle (updated_at ~= now)
     // is never reaped here. Best-effort; a failed delete is retried next sweep.
     let cutoff = run_cutoff;
-    for run in runs
-        .iter()
-        .filter(|r| r.status.is_terminal() && r.updated_at < cutoff)
-    {
+    for run in runs.iter().filter(|run| is_expired_terminal_run(run, cutoff)) {
         match run_delete::delete_run_by_id(deps, &run.run_id).await {
             Ok(res) if res.deleted => swept += 1,
             Ok(_) => {}
@@ -276,13 +277,37 @@ async fn sweep_one_run(
                     )
                     .await;
                 }
+                let error = format!(
+                    "engine_missing_completion_timeout: no completion/result observed before timeout_ms={} (retries={}); possible causes: invalid function return payload (e.g. bare/undefined), completion state write failure, or worker crash before completion event",
+                    effective_timeout_ms,
+                    cp.retries,
+                );
+                let node = uid
+                    .split('#')
+                    .next()
+                    .and_then(|base_id| def.nodes.get(base_id));
+                let outcome = reconcile::apply_agent_error_policy(
+                    node,
+                    reconcile::NodeOutcome::Failed(error.clone()),
+                );
+                let recovered = if let reconcile::NodeOutcome::Done(value) = outcome {
+                    crate::functions::node_completed::store_result(
+                        deps,
+                        &record.run_id,
+                        &uid,
+                        node.and_then(|node| node.result.as_ref()),
+                        &value,
+                    )
+                    .await?;
+                    true
+                } else {
+                    false
+                };
                 if let Some(c) = record.nodes.get_mut(&uid) {
-                    c.state = NodeState::Failed;
-                    c.result_error = Some(format!(
-                        "engine_missing_completion_timeout: no completion/result observed before timeout_ms={} (retries={}); possible causes: invalid function return payload (e.g. bare/undefined), completion state write failure, or worker crash before completion event",
-                        effective_timeout_ms,
-                        c.retries,
-                    ));
+                    c.state = if recovered { NodeState::Done } else { NodeState::Failed };
+                    c.result_ref = recovered.then(|| crate::ids::new_ref_id("node_result"));
+                    c.result_error = (!recovered).then_some(error);
+                    c.completed_at = Some(now);
                 }
                 crate::telemetry::record_timeout(false);
                 // FailOut is terminal for this node, but reconcile only polls
@@ -438,5 +463,25 @@ mod tests {
             Some("r_child_1")
         );
         assert_eq!(child_run_id_to_stop_on_timeout(&checkpoint(None)), None);
+    }
+
+    #[test]
+    fn retention_gc_selects_only_terminal_runs_strictly_before_cutoff() {
+        let run: crate::types::WorkflowRunRecord = serde_json::from_value(serde_json::json!({
+            "run_id": "r_old",
+            "step": 0,
+            "status": "completed",
+            "def_ref": "def",
+            "input_ref": "input",
+            "created_at": 1,
+            "updated_at": 99
+        }))
+        .expect("valid run");
+        assert!(is_expired_terminal_run(&run, 100));
+        assert!(!is_expired_terminal_run(&run, 99));
+
+        let mut active = run;
+        active.status = crate::types::RunStatus::AwaitingNodes;
+        assert!(!is_expired_terminal_run(&active, 100));
     }
 }

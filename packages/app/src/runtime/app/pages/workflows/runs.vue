@@ -20,6 +20,16 @@ interface RunsResponse {
   }
 }
 
+interface CleanupResponse {
+  older_than_days: number
+  cutoff_unix_ms: number
+  eligible: number
+  deleted: number
+  failed: number
+  failures: { run_id: string, error: string }[]
+  executed: boolean
+}
+
 const { push } = useComponentRouter()
 const route = useRoute()
 
@@ -73,6 +83,69 @@ const cancelError = ref<string | null>(null)
 const deleteError = ref<string | null>(null)
 const deleteModalOpen = ref(false)
 const deleteTarget = ref<{ runId: string, workflowName: string } | null>(null)
+const cleanupPopoverOpen = ref(false)
+const cleanupConfirmOpen = ref(false)
+const cleanupDays = ref(2)
+const cleanupPending = ref(false)
+const cleanupError = ref<string | null>(null)
+const cleanupPreview = ref<CleanupResponse | null>(null)
+const cleanupResult = ref<CleanupResponse | null>(null)
+const cleanupDayOptions = [
+  { label: '1 day', value: 1 },
+  { label: '2 days', value: 2 },
+  { label: '3 days', value: 3 },
+  { label: '7 days', value: 7 },
+  { label: '14 days', value: 14 },
+  { label: '30 days', value: 30 },
+  { label: '90 days', value: 90 },
+  { label: '180 days', value: 180 },
+  { label: '365 days', value: 365 },
+]
+
+watch(cleanupDays, () => {
+  cleanupPreview.value = null
+  cleanupResult.value = null
+  cleanupError.value = null
+})
+
+async function previewCleanup() {
+  cleanupPending.value = true
+  cleanupError.value = null
+  cleanupResult.value = null
+  try {
+    cleanupPreview.value = await $fetch<CleanupResponse>('/api/_workflows/cleanup', {
+      method: 'POST',
+      body: { older_than_days: cleanupDays.value, execute: false },
+    })
+  }
+  catch (error: any) {
+    cleanupError.value = error?.data?.statusMessage || error?.message || 'Cleanup preview failed.'
+  }
+  finally {
+    cleanupPending.value = false
+  }
+}
+
+async function executeCleanup() {
+  if (!cleanupPreview.value?.eligible || cleanupPending.value) return
+  cleanupPending.value = true
+  cleanupError.value = null
+  try {
+    cleanupResult.value = await $fetch<CleanupResponse>('/api/_workflows/cleanup', {
+      method: 'POST',
+      body: { older_than_days: cleanupDays.value, execute: true },
+    })
+    cleanupConfirmOpen.value = false
+    cleanupPreview.value = null
+    await refresh()
+  }
+  catch (error: any) {
+    cleanupError.value = error?.data?.statusMessage || error?.message || 'Cleanup failed.'
+  }
+  finally {
+    cleanupPending.value = false
+  }
+}
 
 // Auto-refresh only if on first page and no specific search active
 let refreshInterval: any = null
@@ -338,6 +411,27 @@ function formatDuration(run: WorkflowRunSummary) {
       </template>
     </UModal>
 
+    <UModal v-model:open="cleanupConfirmOpen" title="Delete old workflow runs">
+      <template #body>
+        <div class="space-y-3">
+          <UAlert
+            icon="i-lucide-triangle-alert"
+            color="error"
+            variant="subtle"
+            title="This cannot be undone."
+            :description="`Delete ${cleanupPreview?.eligible ?? 0} terminal runs last updated more than ${cleanupDays} days ago, including their run-scoped data and child workflows.`"
+          />
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">Runs that are still active are excluded. Runs with child cleanup errors will be retained for retry.</p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton color="neutral" variant="ghost" label="Cancel" :disabled="cleanupPending" @click="cleanupConfirmOpen = false" />
+          <UButton icon="i-lucide-trash-2" color="error" label="Delete runs" :loading="cleanupPending" @click="executeCleanup" />
+        </div>
+      </template>
+    </UModal>
+
     <!-- Header -->
     <div class="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 shrink-0 bg-white dark:bg-zinc-950">
       <div class="flex items-center justify-between max-w-7xl mx-auto w-full">
@@ -356,6 +450,53 @@ function formatDuration(run: WorkflowRunSummary) {
           </div>
         </div>
         <div class="flex items-center gap-2">
+          <UPopover v-model:open="cleanupPopoverOpen">
+            <UButton
+              icon="i-lucide-broom"
+              label="Clean old runs"
+              size="sm"
+              color="warning"
+              variant="soft"
+            />
+            <template #content>
+              <div class="w-80 space-y-3 p-4">
+                <h2 class="text-sm font-semibold text-zinc-900 dark:text-white">Delete old runs</h2>
+                <p class="text-xs text-zinc-500 dark:text-zinc-400">Only completed, failed, and cancelled runs are considered. Active runs are never selected.</p>
+                <div class="flex items-center gap-2">
+                  <USelectMenu
+                    v-model="cleanupDays"
+                    :items="cleanupDayOptions"
+                    value-key="value"
+                    label-key="label"
+                    aria-label="Delete runs older than"
+                    class="min-w-0 flex-1"
+                  />
+                  <UButton icon="i-lucide-search" aria-label="Preview old runs" :loading="cleanupPending" @click="previewCleanup" />
+                </div>
+                <p v-if="cleanupPreview" class="text-sm" role="status">
+                  {{ cleanupPreview.eligible }} terminal runs older than {{ cleanupDays }} days.
+                </p>
+                <p v-if="cleanupResult" class="text-sm" role="status">
+                  Deleted {{ cleanupResult.deleted }} runs; {{ cleanupResult.failed }} failed.
+                </p>
+                <p v-if="cleanupError" class="text-xs text-red-600 dark:text-red-400" role="alert">{{ cleanupError }}</p>
+                <UButton
+                  v-if="cleanupPreview?.eligible"
+                  icon="i-lucide-trash-2"
+                  color="error"
+                  variant="solid"
+                  block
+                  label="Review deletion"
+                  @click="cleanupConfirmOpen = true"
+                />
+                <div v-if="cleanupResult?.failures?.length" class="max-h-28 space-y-1 overflow-y-auto border-t border-zinc-200 pt-2 dark:border-zinc-700">
+                  <p v-for="failure in cleanupResult.failures" :key="failure.run_id" class="break-all text-[11px] text-red-600 dark:text-red-400">
+                    {{ failure.run_id }}: {{ failure.error }}
+                  </p>
+                </div>
+              </div>
+            </template>
+          </UPopover>
           <USelectMenu
             v-model="workflow"
             :items="workflowOptions"

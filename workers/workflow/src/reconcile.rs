@@ -43,7 +43,14 @@ pub fn apply_agent_error_policy(
         == Some(crate::types::AgentErrorPolicy::ReturnError);
     match outcome {
         NodeOutcome::Failed(error) if recover => {
-            NodeOutcome::Done(json!({ "status": "failed", "error": error }))
+            let code = if error.starts_with("engine_missing_completion_timeout:") {
+                "engine_missing_completion_timeout"
+            } else if error.starts_with("engine_pending_timeout:") {
+                "engine_pending_timeout"
+            } else {
+                "agent_failed"
+            };
+            NodeOutcome::Done(json!({ "status": "failed", "code": code, "error": error }))
         }
         outcome => outcome,
     }
@@ -744,7 +751,11 @@ mod tests {
             "input": { "from": "run_input" }
         })).unwrap();
         let error = "maximum context length exceeded".to_string();
-        let expected = NodeOutcome::Done(json!({ "status": "failed", "error": error }));
+        let expected = NodeOutcome::Done(json!({
+            "status": "failed",
+            "code": "agent_failed",
+            "error": error
+        }));
         assert_eq!(
             apply_agent_error_policy(Some(&node), agent_task_outcome(
                 AgentTaskStatus::Failed, None, Some(error.clone())
@@ -780,6 +791,29 @@ mod tests {
         assert_eq!(
             apply_agent_error_policy(Some(&node), NodeOutcome::Failed(error.clone())),
             NodeOutcome::Failed(error),
+        );
+    }
+
+    #[test]
+    fn agent_error_policy_preserves_engine_timeout_code() {
+        let node: NodeDef = serde_json::from_value(json!({
+            "agent": { "prompt": "Extract" },
+            "agentOptions": { "onError": "return-error" },
+            "input": { "from": "run_input" }
+        }))
+        .unwrap();
+        let error = "engine_missing_completion_timeout: no completion observed";
+
+        assert_eq!(
+            apply_agent_error_policy(
+                Some(&node),
+                NodeOutcome::Failed(error.to_string())
+            ),
+            NodeOutcome::Done(json!({
+                "status": "failed",
+                "code": "engine_missing_completion_timeout",
+                "error": error
+            })),
         );
     }
 

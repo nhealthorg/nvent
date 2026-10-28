@@ -6,7 +6,7 @@ use crate::types::NodeState;
 use iii_sdk::protocol::TriggerRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunDeleteRequest {
@@ -70,9 +70,7 @@ pub async fn delete_run_by_id(
     // nworkflow::run-delete RPC a caller would use) before touching this run's
     // own artifacts. A link is only cleared once its child is confirmed gone,
     // so a failed cascade step leaves a retryable trail instead of an orphan.
-    let child_links = crate::state::list_child_workflow_links_for_run(run_id)
-        .await
-        .unwrap_or_default();
+    let child_links = crate::state::list_child_workflow_links_for_run(run_id).await?;
     let mut child_workflows_deleted = 0u32;
     let mut child_workflows_failed = 0u32;
     let cascade_timeout_ms = deps.cfg().await.cleanup_timeout_ms;
@@ -89,9 +87,18 @@ pub async fn delete_run_by_id(
             )
             .await;
         match delete_res {
-            Ok(_) => {
+            Ok(response) if child_delete_confirmed(&response) => {
                 child_workflows_deleted += 1;
-                let _ = crate::state::delete_child_workflow_link(&link.child_run_id).await;
+                crate::state::delete_child_workflow_link(&link.child_run_id).await?;
+            }
+            Ok(response) => {
+                child_workflows_failed += 1;
+                tracing::warn!(
+                    run_id = %run_id,
+                    child_run_id = %link.child_run_id,
+                    response = %response,
+                    "child workflow delete was not confirmed; retaining parent run for retry"
+                );
             }
             Err(e) => {
                 child_workflows_failed += 1;
@@ -103,6 +110,20 @@ pub async fn delete_run_by_id(
                 );
             }
         }
+    }
+
+    if child_workflows_failed > 0 {
+        return Ok(RunDeleteResponse {
+            deleted: false,
+            had_run: true,
+            was_terminal,
+            stopped_sessions: 0,
+            queue_cleanup_attempted: 0,
+            queue_cleanup_succeeded: 0,
+            queue_cleanup_errors: BTreeMap::new(),
+            child_workflows_deleted,
+            child_workflows_failed,
+        });
     }
 
     // Best-effort stop cascade for any still-running harness sessions.
@@ -166,6 +187,17 @@ pub async fn delete_run_by_id(
         child_workflows_deleted,
         child_workflows_failed,
     })
+}
+
+fn child_delete_confirmed(response: &Value) -> bool {
+    let no_failed_descendants = response
+        .get("child_workflows_failed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0;
+    no_failed_descendants
+        && (response.get("deleted").and_then(Value::as_bool) == Some(true)
+            || response.get("had_run").and_then(Value::as_bool) == Some(false))
 }
 
 async fn cleanup_queue_receipt(
@@ -268,5 +300,17 @@ mod tests {
         assert!(decoded.had_run);
         assert!(decoded.was_terminal);
         assert_eq!(decoded.queue_cleanup_succeeded, 1);
+    }
+
+    #[test]
+    fn child_delete_requires_confirmation_and_successful_descendant_cleanup() {
+        assert!(child_delete_confirmed(&json!({ "deleted": true })));
+        assert!(child_delete_confirmed(&json!({ "deleted": false, "had_run": false })));
+        assert!(!child_delete_confirmed(&json!({ "deleted": false, "had_run": true })));
+        assert!(!child_delete_confirmed(&json!({
+            "deleted": true,
+            "child_workflows_failed": 1
+        })));
+        assert!(!child_delete_confirmed(&json!({ "unexpected": true })));
     }
 }

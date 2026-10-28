@@ -151,6 +151,7 @@ interface AgentInvocationSpec {
 
 ```ts
 interface AgentRuntimeOptions {
+  onError?: 'fail' | 'return-error'
   model?: string
   provider?: string
   folder?: string
@@ -160,6 +161,7 @@ interface AgentRuntimeOptions {
   functions?: {
     allow?: string[]
     deny?: string[]
+    expose?: 'native' | 'tools'
   }
 
   skills?: string[]
@@ -190,6 +192,7 @@ Status:
 
 | Option | Status | Effektive Wirkung |
 |---|---|---|
+| `onError` | Umgesetzt | `return-error` liefert Agent-Fehler als `{ status: 'failed', code, error }`; bei ausgeschöpftem Completion-Timeout bleibt der Workflow-Node erfolgreich und Abhängigkeiten erhalten den Fehlerwert. |
 | `model` | Umgesetzt | Modell für den Harness-Turn; kann auf Folgeturns geerbt werden. |
 | `provider` | Umgesetzt | Wird als Harness-Top-Level-Feld bei `spawn` und `send` übertragen. |
 | `folder` | Umgesetzt | Setzt beim ersten Agent-Step den absoluten Harness-`filesystem_root`. |
@@ -197,12 +200,19 @@ Status:
 | `timeoutMs` | Teilweise | Begrenzt nur den unmittelbaren `spawn`-/`send`-Dispatch, nicht die gesamte Laufzeit des Agenten. |
 | `functions.allow` | Umgesetzt | Positivliste erlaubter Function-IDs/Glob-Muster. |
 | `functions.deny` | Umgesetzt | Negativliste; Deny gewinnt gegen Allow. |
+| `functions.expose` | Umgesetzt | Übergibt `native` oder `tools` an Harness, um das Tool-Calling-Verhalten des Providers zu wählen. |
 | `skills` | Umgesetzt | Filtert die für den Agenten sichtbaren Skill-IDs. |
 | `systemPrompt` | Umgesetzt | Wird ohne benanntes Agent-Profil an Harness übergeben. |
 | `systemPromptStrategy` | Umgesetzt | `enrich` oder `override`; nur ohne benanntes Agent-Profil wirksam. |
 | `stream.enabled` | Umgesetzt | Schaltet hochfrequente Agent-Message-Events im Workflow-Run-Stream ein oder aus. |
 | `result.returnType` | Umgesetzt | Wählt In-Memory- oder persistente Ergebnisablage. |
 | `result.onMemoryFail` | Umgesetzt | `store` persistiert vorsorglich; `error` lässt einen Memory-Fehler den Step fehlschlagen. |
+
+#### `onError?: 'fail' | 'return-error'`
+
+`fail` (Default) behandelt einen Agent-Fehler wie einen fehlgeschlagenen Workflow-Node. `return-error` wandelt erkannte Agent-Fehler sowie einen nach Ablauf der Node-Completion-Frist fehlenden Abschluss in ein Ergebnisobjekt um. Timeout-Ergebnisse enthalten einen stabilen Code, derzeit `engine_missing_completion_timeout`; sie werden als normales Node-Ergebnis gespeichert, sodass abhängige Nodes und Parent-Workflows weiterlaufen können. `error` enthält zusätzlich die Diagnose.
+
+Ein Completion-Timeout kann auch nach einem Harness-Worker-Absturz oder bei verlorener Completion auftreten; die konkrete Ursache ist dann nicht immer unterscheidbar. `timeoutMs` umfasst weiterhin die gesamte Zeit ab Agent-Dispatch. Automatische Agent-Retries sind deaktiviert, um nach einem Timeout keinen noch laufenden alten Harness-Turn parallel neu zu starten.
 
 ### 5.2.2 Modell, Provider und Arbeitsordner
 
@@ -252,6 +262,10 @@ Liste erlaubter Function-IDs oder Glob-Muster, zum Beispiel `['state::*', 'web::
 #### `functions.deny?: string[]`
 
 Liste explizit verbotener Function-IDs oder Glob-Muster. `deny` hat Vorrang vor einem passenden `allow`. Workflow-Agenten laufen als Harness-Leaf-Agents und erhalten zusätzlich dessen Control-Plane-Beschränkungen.
+
+#### `functions.expose?: 'native' | 'tools'`
+
+Übergibt den Exposure-Modus an Harness. `native` verwendet native Tool-/Function-Calling-Unterstützung des Providers; `tools` nutzt Harness-Tool-Aufrufe. Eine explizite leere `allow`-Liste gibt keine Functions frei und kann mit beiden Modi verwendet werden, um Function-Aufrufe zu deaktivieren.
 
 Wenn `functions` vollständig fehlt, übergibt nworkflow keine eigene Policy. Für den parentlosen Spawn gilt dann die konfigurierte Harness-Default-Policy. Das ist keine automatisch aus dem Workflow abgeleitete Function-Policy.
 
@@ -746,7 +760,8 @@ const result = await ctx.agent({
   model: 'claude-sonnet-4',
   folder: '/workspace/nvent',
   functions: {
-    allow: ['directory::skills::get', 'directory::system-prompts::get', 'web::fetch']
+    allow: ['directory::skills::get', 'directory::system-prompts::get', 'web::fetch'],
+    expose: 'native'
   }
 })
 ```
