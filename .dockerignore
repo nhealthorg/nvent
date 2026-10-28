@@ -1,0 +1,11 @@
+**/node_modules
+**/.nuxt
+**/.output
+**/.data
+**/.venv
+**/__pycache__
+**/*.pyc
+**/target
+.git
+.release-artifacts
+coverage

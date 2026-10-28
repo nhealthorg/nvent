@@ -72,6 +72,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     composeFilePath,
     daemonNamespace: composeCfg.daemonNamespace ?? iiiCfg.namespace?.default ?? 'default',
     upOnStart: composeCfg.upOnStart ?? true,
+    frozen: composeCfg.frozen ?? false,
     composeStateDir: join(nventDir, '.compose-state'),
     resetNamespaceStateOnStart: false,
     logLevel,

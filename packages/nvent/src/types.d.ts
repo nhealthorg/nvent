@@ -47,6 +47,8 @@ export interface NventComposeOptions {
   file?: string
   /** Run compose up automatically on startup in managed mode. Default: true */
   upOnStart?: boolean
+  /** Require worker-compose.lock at startup and use its resolved package versions. Default: false */
+  frozen?: boolean
   /** Log level for iii compose daemon output. Default: 'info' */
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'none'
   /** Print only key compose lifecycle lines at startup. Default: true */

@@ -36,6 +36,8 @@ export interface ComposeManagerOptions {
   engineUrl?: string
   /** Run compose::up on daemon start. Default: true */
   upOnStart?: boolean
+  /** Require the compose lock and use its resolved package versions. */
+  frozen?: boolean
   /** Working directory for the compose daemon process. */
   workingDir?: string
   /** Optional compose state root directory (sets III_COMPOSE_STATE_DIR). */
@@ -66,6 +68,16 @@ interface ComposeStartupErrorContext {
   daemonNamespace: string
   composeFilePath: string
   upTimeoutMs: number
+}
+
+export function buildComposeArgs(options: Pick<ComposeManagerOptions, 'daemonNamespace' | 'engineUrl' | 'upOnStart' | 'frozen' | 'composeFilePath'>): string[] {
+  const args = ['compose', '--namespace', options.daemonNamespace]
+  if (options.engineUrl && !options.upOnStart) args.push('--engine', options.engineUrl)
+  if (options.upOnStart) {
+    args.push('--up', '--file', options.composeFilePath)
+    if (options.frozen) args.push('--frozen')
+  }
+  return args
 }
 
 function sleep(ms: number): Promise<void> {
@@ -228,6 +240,7 @@ export class ComposeManager {
       daemonNamespace,
       engineUrl,
       upOnStart,
+      frozen,
       composeStateDir,
       resetNamespaceStateOnStart,
       logLevel,
@@ -245,13 +258,13 @@ export class ComposeManager {
       }
     }
 
-    const args = ['compose', '--namespace', daemonNamespace]
-    // `iii compose --up` should use the engine section from worker-compose.yaml.
-    // Passing `--engine` overrides that and disables managed engine startup.
-    if (engineUrl && !upOnStart) args.push('--engine', engineUrl)
-    if (upOnStart) {
-      args.push('--up', '--file', composeFilePath)
-    }
+    const args = buildComposeArgs({
+      daemonNamespace,
+      engineUrl,
+      upOnStart,
+      frozen,
+      composeFilePath,
+    })
 
     if (shouldLogLine(logLevel, 'info')) {
       if (compactLogs && logLevel === 'info') {

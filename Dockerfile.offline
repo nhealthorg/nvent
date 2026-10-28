@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7
+
+# Build this image with network access. Runtime starts without fetching iii
+# packages: engine binaries, the locked compose file and package cache are baked
+# into the final image.
+FROM rust:1-bookworm AS workflow-worker-build
+
+WORKDIR /src
+COPY workers/workflow ./workers/workflow
+RUN cargo build --release --manifest-path workers/workflow/Cargo.toml
+
+FROM node:24-bookworm-slim AS build
+
+WORKDIR /app
+ENV HOME=/home/node
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
+
+RUN mkdir -p /home/node && chown node:node /home/node
+
+COPY . .
+COPY --from=workflow-worker-build /src/workers/workflow/target/release/workflow /app/packages/workflow-worker/workflow-worker-linux-x64-gnu/bin/workflow
+
+RUN pnpm install --frozen-lockfile
+
+# The Nuxt build embeds the iii and iii-worker binaries in .output/nvent/bin.
+# This project has a local workflow-worker path source, staged by nvent.
+ARG REDIS_URL=redis://redis:6379
+ARG LLAMA_SWAP_API_URL=http://llama-swap:9292/upstream/Gemma3-4b/v1/chat/completions
+ENV REDIS_URL=${REDIS_URL}
+ENV LLAMA_SWAP_API_URL=${LLAMA_SWAP_API_URL}
+ENV NVENT_COMPOSE_FROZEN=1
+
+RUN pnpm build \
+  && pnpm dev:build
+
+# Python dependencies are prepared at image-build time, not installed on server
+# startup. Include both common requirements locations when they exist.
+RUN python3 -m venv /opt/nvent-venv \
+  && /opt/nvent-venv/bin/pip install --no-cache-dir --upgrade pip \
+  && if [ -f playground/requirements.txt ]; then /opt/nvent-venv/bin/pip install --no-cache-dir -r playground/requirements.txt; fi \
+  && if [ -f playground/server/requirements.txt ]; then /opt/nvent-venv/bin/pip install --no-cache-dir -r playground/server/requirements.txt; fi
+
+# Resolve registry workers and populate the exact cache directory used by
+# nvent's production Compose manager. The lockfile is written next to the
+# compose file in .output/nvent.
+RUN mkdir -p /app/.output/nvent/.compose-state \
+  && cd /app/.output/nvent \
+  && III_COMPOSE_STATE_DIR=/app/.output/nvent/.compose-state ./bin/iii compose build --file worker-compose.yaml
+
+# Fail the image build if the lock or any resolved worker artifact is missing;
+# this command is intentionally unable to download anything.
+RUN --network=none cd /app/.output/nvent \
+  && III_COMPOSE_STATE_DIR=/app/.output/nvent/.compose-state ./bin/iii compose build --frozen --file worker-compose.yaml
+
+FROM node:24-bookworm-slim AS runtime
+
+WORKDIR /app
+ENV HOME=/home/node
+ENV NODE_ENV=production
+ENV NVENT_PYTHON_BIN=/opt/nvent-venv/bin/python
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build --chown=node:node /app/.output ./.output
+COPY --from=build --chown=node:node /opt/nvent-venv /opt/nvent-venv
+COPY --from=build --chown=node:node /home/node/.iii /home/node/.iii
+
+# nvent starts the integrated iii engine and Compose workers inside the app
+# container. Redis and llama-swap are expected to be separate reachable services.
+EXPOSE 3000 3111 3112 3113 49134 49135
+
+USER node
+CMD ["node", ".output/server/index.mjs"]

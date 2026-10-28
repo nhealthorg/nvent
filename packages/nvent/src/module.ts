@@ -348,6 +348,7 @@ export default defineNuxtModule<NventIiiOptions>({
         compose: {
           managed,
           upOnStart: composeUpOnStart,
+          frozen: composeOpts.frozen ?? false,
           daemonNamespace: composeDaemonNamespace,
           projectNamespace: composeProjectNamespace,
           file: composeFileName,
@@ -643,6 +644,7 @@ export default defineNuxtModule<NventIiiOptions>({
               composeFilePath,
               daemonNamespace: composeDaemonNamespace,
               upOnStart: composeUpOnStart,
+              frozen: composeOpts.frozen,
               composeStateDir: join(nventDir, '.compose-state'),
               resetNamespaceStateOnStart: false,
               logLevel: composeLogLevel,

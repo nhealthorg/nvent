@@ -36,6 +36,7 @@ export default defineNuxtConfig({
       failOnInstallFailure: true,
       compose: {
         managed: true,
+        frozen: process.env.NVENT_COMPOSE_FROZEN === '1',
         logLevel: 'trace',
       },
       ade: true,
